@@ -139,7 +139,11 @@ export class DrawioEditorProvider implements vscode.CustomTextEditorProvider {
       panel.webview.onDidReceiveMessage(async (message: WebviewMessage) => {
         switch (message.type) {
           case 'ready':
-            void post({ type: 'setup', drawioConfig: config().get<object>('drawio.config') ?? {} });
+            void post({
+              type: 'setup',
+              drawioConfig: config().get<object>('drawio.config') ?? {},
+              forwardShortcuts: config().get<boolean>('drawio.vscodeShortcuts', true),
+            });
             break;
           case 'init':
             session.status.initialized = true;

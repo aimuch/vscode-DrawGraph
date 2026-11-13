@@ -265,6 +265,11 @@
           "default": "auto",
           "markdownDescription": "%config.drawio.svgColorScheme%"
         },
+        "drawGraph.drawio.vscodeShortcuts": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "%config.drawio.vscodeShortcuts%"
+        },
         "drawGraph.mermaid.theme": {
           "type": "string",
           "enum": [

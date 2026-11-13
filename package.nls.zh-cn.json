@@ -28,5 +28,6 @@
   "config.drawio.svgColorScheme": "draw.io 编辑器写出的 SVG 图片的配色（`*.drawio.svg` 文件和「导出为 SVG」）。在下次编辑或导出图表时生效。",
   "config.drawio.svgColorScheme.auto": "自适应（draw.io 默认）：查看者（GitHub、浏览器、系统）处于深色模式时，图片会切换成深色配色。",
   "config.drawio.svgColorScheme.light": "始终使用浅色配色，即浅色编辑器里看到的颜色。",
-  "config.drawio.svgColorScheme.dark": "始终使用深色配色。"
+  "config.drawio.svgColorScheme.dark": "始终使用深色配色。",
+  "config.drawio.vscodeShortcuts": "焦点在 draw.io 编辑器中时，让常用的 VS Code 快捷键依然可用：F1 / Cmd+Shift+P（命令面板）、Cmd+P（快速打开）、Cmd+W、Cmd+N、Cmd+O、Cmd+Shift+N/T/W/X、Cmd+\\\\、Cmd+1…9、Ctrl+Tab、Ctrl+`（Windows/Linux 上用 Ctrl 代替 Cmd）。开启后 Cmd+Shift+P 和 Cmd+P 不再触发 draw.io 的格式面板和打印。修改后需重新打开图表。"
 }

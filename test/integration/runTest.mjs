@@ -23,6 +23,8 @@ try {
     launchArgs: [
       workspace,
       '--disable-extensions',
+      // Lets the suite send real key presses / clicks via the Chrome DevTools protocol.
+      '--remote-debugging-port=9339',
       '--disable-workspace-trust',
       '--skip-welcome',
       '--skip-release-notes',

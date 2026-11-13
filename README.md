@@ -16,6 +16,7 @@ DrawGraph 是一个 VS Code 插件，把三种常用的图表格式放进同一�
 - 在外部修改文件（文本编辑器、`git checkout` 等）后，图表会自动重新加载。
 - 编辑器标题栏菜单可以**导出为 SVG / PNG**。导出的文件内嵌了图表数据（`.drawio.svg` / `.drawio.png`），之后还能再用 draw.io 打开编辑。
 - 点击“以文本方式打开”可查看或编辑原始 XML。
+- **焦点在 draw.io 里时，常用 VS Code 快捷键照样可用**：F1 / `Cmd+Shift+P`（命令面板）、`Cmd+P`（快速打开）、`Cmd+W`、`Cmd+N`、`Cmd+O`、`Cmd+Shift+N/T/W/X`、`Cmd+\`、`Cmd+1…9`、`Ctrl+Tab`、``Ctrl+` ``（Windows/Linux 上把 `Cmd` 换成 `Ctrl`），你自定义的快捷键也会生效。其余组合键仍归 draw.io 使用（如 `Cmd+B` 加粗、`Cmd+C/V` 复制粘贴、`Cmd+Z` 撤销）。因此 `Cmd+Shift+P` 和 `Cmd+P` 不再触发 draw.io 的格式面板和打印（两者在 draw.io 的工具栏和菜单里都有入口）；如果你更想保留 draw.io 的行为，可以关闭 `drawGraph.drawio.vscodeShortcuts`。
 - **`.drawio.svg` 文件**：既是普通的 SVG 图片（可以直接放进 README、网页、文档里显示），又能在 VS Code 里用 draw.io 打开编辑。每次编辑后，文件都会更新为最新的 SVG 图片，图表数据仍然内嵌在其中。新建图表时把文件名设为 `xxx.drawio.svg` 即可。
   - 配色：draw.io 默认写出“自适应”的 SVG，查看者（GitHub、浏览器、系统）处于深色模式时，图片会显示成深色。想让图片颜色固定，可以把 `drawGraph.drawio.svgColorScheme` 设为 `light`（或 `dark`），在下次编辑或导出时生效。
 
@@ -61,6 +62,7 @@ DrawGraph 是一个 VS Code 插件，把三种常用的图表格式放进同一�
 | `drawGraph.drawio.theme` | `auto` | `auto` / `light` / `dark` |
 | `drawGraph.drawio.config` | `{}` | 额外的 [draw.io 配置](https://www.drawio.com/doc/faq/configure-diagram-editor) |
 | `drawGraph.drawio.svgColorScheme` | `auto` | `.drawio.svg` 和「导出为 SVG」的配色：`auto` 自适应查看者的深浅色模式（draw.io 默认），`light` / `dark` 固定配色 |
+| `drawGraph.drawio.vscodeShortcuts` | `true` | 焦点在 draw.io 编辑器里时，把常用 VS Code 快捷键交给 VS Code 处理（修改后需重新打开图表） |
 | `drawGraph.mermaid.theme` | `auto` | `auto` / `default` / `dark` / `forest` / `neutral` / `base` |
 | `drawGraph.markdown.mermaid` | `true` | 在 Markdown 预览中渲染 Mermaid |
 | `drawGraph.plantuml.render` | `auto` | `auto` / `local` / `server` |

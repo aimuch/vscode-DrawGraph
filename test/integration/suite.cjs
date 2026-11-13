@@ -289,6 +289,97 @@ test('drawGraph.drawio.svgColorScheme controls the colors written to SVG', async
   }
 });
 
+// --- Keyboard shortcuts inside the draw.io editor ----------------------------------------
+// Real input is sent through the Chrome DevTools protocol (runTest.mjs opens port 9339).
+
+async function devtools() {
+  const targets = await (await fetch('http://127.0.0.1:9339/json')).json();
+  const page = targets.find((t) => t.type === 'page' && /workbench/.test(t.url));
+  const ws = new WebSocket(page.webSocketDebuggerUrl);
+  await new Promise((resolve, reject) => {
+    ws.onopen = resolve;
+    ws.onerror = reject;
+  });
+  let id = 0;
+  const pending = new Map();
+  ws.onmessage = (e) => {
+    const m = JSON.parse(e.data);
+    pending.get(m.id)?.(m);
+    pending.delete(m.id);
+  };
+  const send = (method, params = {}) =>
+    new Promise((resolve, reject) => {
+      const n = ++id;
+      pending.set(n, (m) => (m.error ? reject(new Error(JSON.stringify(m.error))) : resolve(m.result)));
+      ws.send(JSON.stringify({ id: n, method, params }));
+    });
+  const evaluate = async (expression) => (await send('Runtime.evaluate', { expression, returnByValue: true })).result.value;
+  return {
+    close: () => ws.close(),
+    evaluate,
+    async clickWebview(fx, fy) {
+      const r = await evaluate(`(() => { const f = [...document.querySelectorAll('iframe')].find((f) => f.offsetWidth > 100 && f.offsetHeight > 100); const r = f.getBoundingClientRect(); return { x: r.x, y: r.y, w: r.width, h: r.height }; })()`);
+      for (const type of ['mousePressed', 'mouseReleased']) {
+        await send('Input.dispatchMouseEvent', { type, x: r.x + r.w * fx, y: r.y + r.h * fy, button: 'left', clickCount: 1 });
+      }
+      await sleep(300);
+    },
+    // modifiers: Alt=1 Ctrl=2 Meta=4 Shift=8
+    async key(key, code, keyCode, modifiers = 0) {
+      for (const type of ['rawKeyDown', 'keyUp']) {
+        await send('Input.dispatchKeyEvent', { type, key, code, windowsVirtualKeyCode: keyCode, nativeVirtualKeyCode: keyCode, modifiers });
+      }
+      await sleep(700);
+    },
+  };
+}
+
+const PRIMARY = process.platform === 'darwin' ? 4 : 2; // Cmd on macOS, Ctrl elsewhere
+const quickInputOpen = `(() => { const w = document.querySelector('.quick-input-widget'); return !!w && getComputedStyle(w).display !== 'none'; })()`;
+
+test('VS Code shortcuts work while the draw.io editor has focus', async () => {
+  const cdp = await devtools();
+  try {
+    const uri = file('architecture.drawio');
+    await openDrawio(uri);
+    const focusCanvas = () => cdp.clickWebview(0.6, 0.75);
+
+    await focusCanvas();
+    await cdp.key('P', 'KeyP', 80, PRIMARY | 8);
+    assert.ok(await cdp.evaluate(quickInputOpen), 'Cmd/Ctrl+Shift+P opens the command palette');
+    await vscode.commands.executeCommand('workbench.action.closeQuickOpen');
+
+    await focusCanvas();
+    await cdp.key('F1', 'F1', 112);
+    assert.ok(await cdp.evaluate(quickInputOpen), 'F1 opens the command palette');
+    await vscode.commands.executeCommand('workbench.action.closeQuickOpen');
+
+    // draw.io keeps its own shortcuts: select all + delete edits the diagram.
+    await focusCanvas();
+    const before = drawioOf(uri).changes;
+    await cdp.key('a', 'KeyA', 65, PRIMARY);
+    await cdp.key('Delete', 'Delete', 46);
+    await waitFor('draw.io handled its own shortcut', () => drawioOf(uri).changes > before, 10000);
+    await vscode.commands.executeCommand('workbench.action.files.revert');
+
+    await focusCanvas();
+    await cdp.key('w', 'KeyW', 87, PRIMARY);
+    await waitFor('Cmd/Ctrl+W closed the editor', () => !drawioOf(uri), 5000);
+
+    // With the setting off, draw.io keeps the keys (Cmd/Ctrl+Shift+P toggles its format panel).
+    await vscode.workspace.getConfiguration('drawGraph').update('drawio.vscodeShortcuts', false, vscode.ConfigurationTarget.Global);
+    await openDrawio(uri);
+    await focusCanvas();
+    await cdp.key('P', 'KeyP', 80, PRIMARY | 8);
+    assert.ok(!(await cdp.evaluate(quickInputOpen)), 'not forwarded when drawGraph.drawio.vscodeShortcuts is false');
+    await cdp.key('P', 'KeyP', 80, PRIMARY | 8); // toggle draw.io's format panel back
+  } finally {
+    await vscode.workspace.getConfiguration('drawGraph').update('drawio.vscodeShortcuts', undefined, vscode.ConfigurationTarget.Global);
+    await vscode.commands.executeCommand('workbench.action.closeQuickOpen');
+    cdp.close();
+  }
+});
+
 exports.run = async function run() {
   const failures = [];
   for (const { name, fn } of tests) {
