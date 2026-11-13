@@ -1,0 +1,84 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Mermaid",
+  "scopeName": "source.mermaid",
+  "patterns": [
+    { "include": "#directive" },
+    { "include": "#comment" },
+    { "include": "#frontmatter" },
+    { "include": "#diagram-type" },
+    { "include": "#keywords" },
+    { "include": "#string" },
+    { "include": "#edge-label" },
+    { "include": "#arrows" },
+    { "include": "#style" },
+    { "include": "#numbers" }
+  ],
+  "repository": {
+    "directive": {
+      "name": "meta.directive.mermaid",
+      "begin": "%%\\{",
+      "end": "\\}%%",
+      "beginCaptures": { "0": { "name": "punctuation.definition.directive.begin.mermaid" } },
+      "endCaptures": { "0": { "name": "punctuation.definition.directive.end.mermaid" } },
+      "patterns": [{ "include": "source.json" }]
+    },
+    "comment": {
+      "name": "comment.line.percentage.mermaid",
+      "match": "%%.*$"
+    },
+    "frontmatter": {
+      "name": "meta.embedded.block.frontmatter.mermaid",
+      "begin": "\\A---\\s*$",
+      "end": "^---\\s*$",
+      "beginCaptures": { "0": { "name": "punctuation.definition.tag.begin.mermaid" } },
+      "endCaptures": { "0": { "name": "punctuation.definition.tag.end.mermaid" } },
+      "patterns": [{ "include": "source.yaml" }]
+    },
+    "diagram-type": {
+      "match": "^\\s*(graph|flowchart|sequenceDiagram|classDiagram(?:-v2)?|stateDiagram(?:-v2)?|erDiagram|journey|gantt|pie|quadrantChart|requirementDiagram|gitGraph|C4Context|C4Container|C4Component|C4Dynamic|C4Deployment|mindmap|timeline|zenuml|sankey(?:-beta)?|xychart(?:-beta)?|block(?:-beta)?|packet(?:-beta)?|kanban|architecture(?:-beta)?|radar(?:-beta)?|treemap(?:-beta)?)\\b(?:\\s+(TB|TD|BT|RL|LR))?",
+      "captures": {
+        "1": { "name": "keyword.control.diagram.mermaid" },
+        "2": { "name": "constant.language.direction.mermaid" }
+      }
+    },
+    "keywords": {
+      "patterns": [
+        {
+          "name": "keyword.control.mermaid",
+          "match": "\\b(subgraph|end|direction|participant|actor|boundary|control|entity|database|collections|queue|create|destroy|as|loop|alt|else|opt|par|and|critical|break|rect|box|note|over|left of|right of|activate|deactivate|autonumber|link|links|class|classDef|cssClass|style|linkStyle|click|callback|call|href|state|section|title|accTitle|accDescr|dateFormat|axisFormat|tickInterval|todayMarker|excludes|includes|weekday|commit|branch|checkout|merge|cherry-pick|id|type|tag|order|namespace|requirement|element|satisfies|contains|copies|derives|verifies|refines|traces|showData|x-axis|y-axis|quadrant-1|quadrant-2|quadrant-3|quadrant-4|columns|space|group|service|junction|line|bar|root)\\b"
+        },
+        {
+          "name": "constant.language.mermaid",
+          "match": "\\b(TB|TD|BT|RL|LR|done|active|crit|milestone|after|until)\\b"
+        },
+        {
+          "name": "storage.modifier.mermaid",
+          "match": "<<\\s*[\\w\\s]+\\s*>>"
+        }
+      ]
+    },
+    "string": {
+      "name": "string.quoted.double.mermaid",
+      "begin": "\"",
+      "end": "\"",
+      "patterns": [{ "name": "constant.character.escape.mermaid", "match": "#\\w+;" }]
+    },
+    "edge-label": {
+      "name": "string.unquoted.label.mermaid",
+      "match": "\\|[^|]*\\|"
+    },
+    "arrows": {
+      "name": "keyword.operator.arrow.mermaid",
+      "match": "(<\\|--|<\\|\\.\\.|\\*--|o--|--\\*|--o|\\.\\.>|<\\.\\.|\\|\\|--\\|\\{|\\}o--o\\{|[|}][|o]--[o|][|{]|[|}][|o]\\.\\.[o|][|{]|<?={2,}>?|<?-{2,}[>xo]?|-\\.+->?|<?-?->>|-->>|-x|--x|-\\)|--\\)|~~~|:::)"
+    },
+    "style": {
+      "match": "\\b(fill|stroke|stroke-width|stroke-dasharray|color|font-size|font-weight):",
+      "captures": { "1": { "name": "support.type.property-name.mermaid" } }
+    },
+    "numbers": {
+      "name": "constant.numeric.mermaid",
+      "match": "(?<![\\w-])-?\\d+(\\.\\d+)?(?![\\w-])"
+    }
+  }
+}

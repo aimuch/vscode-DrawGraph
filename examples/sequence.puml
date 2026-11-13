@@ -1,0 +1,25 @@
+' A file may contain several diagrams; the preview shows the one under the cursor.
+@startuml login
+actor 用户 as User
+participant "Web App" as Web
+database DB
+
+User -> Web : 登录
+Web -> DB : 查询用户
+DB --> Web : 用户信息
+Web --> User : 登录成功
+@enduml
+
+@startuml classes
+class DrawioEditorProvider {
+  +resolveCustomTextEditor()
+  +exportActive(format)
+}
+class PreviewManager {
+  +open(uri, toSide)
+}
+class PlantUmlRenderer {
+  +render(source, options)
+}
+PreviewManager --> PlantUmlRenderer
+@enduml

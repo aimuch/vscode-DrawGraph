@@ -1,0 +1,20 @@
+.drawgraph-mermaid {
+  margin: 1em 0;
+  text-align: center;
+  white-space: pre;
+}
+
+.drawgraph-mermaid[data-rendered] {
+  white-space: normal;
+}
+
+.drawgraph-mermaid svg {
+  max-width: 100%;
+  height: auto;
+}
+
+.drawgraph-mermaid-error {
+  text-align: left;
+  white-space: pre-wrap;
+  color: var(--vscode-errorForeground);
+}

@@ -1,0 +1,128 @@
+html,
+body {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  font-family: var(--vscode-font-family);
+  font-size: var(--vscode-font-size);
+  color: var(--vscode-foreground);
+  background: var(--vscode-editor-background);
+}
+
+body {
+  display: flex;
+  flex-direction: column;
+}
+
+#toolbar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--vscode-panel-border, transparent);
+  user-select: none;
+}
+
+#toolbar button {
+  min-width: 28px;
+  height: 24px;
+  padding: 0 8px;
+  border: 1px solid var(--vscode-button-border, transparent);
+  border-radius: 2px;
+  color: var(--vscode-button-secondaryForeground);
+  background: var(--vscode-button-secondaryBackground);
+  font: inherit;
+  cursor: pointer;
+}
+
+#toolbar button:hover {
+  background: var(--vscode-button-secondaryHoverBackground);
+}
+
+#zoomLabel {
+  min-width: 52px !important;
+}
+
+.sep {
+  width: 1px;
+  height: 16px;
+  margin: 0 4px;
+  background: var(--vscode-panel-border, rgba(128, 128, 128, 0.4));
+}
+
+#info {
+  margin-left: 8px;
+  color: var(--vscode-descriptionForeground);
+}
+
+#spinner {
+  margin-left: auto;
+  color: var(--vscode-descriptionForeground);
+}
+
+#stage {
+  position: relative;
+  flex: 1;
+  overflow: hidden;
+  cursor: grab;
+  /* PlantUML and light Mermaid themes assume a white page. */
+  background: #ffffff;
+}
+
+body[data-kind='mermaid'][data-theme='dark'] #stage {
+  background: var(--vscode-editor-background);
+}
+
+#stage.dragging {
+  cursor: grabbing;
+}
+
+#canvas {
+  position: absolute;
+  left: 0;
+  top: 0;
+  transform-origin: 0 0;
+}
+
+#canvas svg {
+  display: block;
+}
+
+#canvas.stale {
+  opacity: 0.35;
+}
+
+#error {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: 12px;
+  max-height: 40%;
+  overflow: auto;
+  margin: 0;
+  padding: 10px 12px;
+  white-space: pre-wrap;
+  font-family: var(--vscode-editor-font-family);
+  font-size: var(--vscode-editor-font-size);
+  color: var(--vscode-errorForeground);
+  background: var(--vscode-inputValidation-errorBackground, var(--vscode-editor-background));
+  border: 1px solid var(--vscode-inputValidation-errorBorder, var(--vscode-errorForeground));
+  border-radius: 3px;
+}
+
+#empty {
+  position: absolute;
+  inset: 40px 0 0 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--vscode-descriptionForeground);
+  pointer-events: none;
+}
+
+[hidden] {
+  display: none !important;
+}

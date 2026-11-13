@@ -1,0 +1,9 @@
+%% Open the preview with Cmd/Ctrl+K V
+flowchart LR
+    subgraph Editor
+        A[编辑 .mmd 文件] --> B{语法正确?}
+    end
+    B -- 是 --> C[实时预览]
+    B -- 否 --> D[显示错误]
+    D --> A
+    C --> E[(导出 SVG / PNG)]

@@ -1,0 +1,52 @@
+import * as vscode from 'vscode';
+
+export function getNonce(): string {
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+  let text = '';
+  for (let i = 0; i < 32; i++) {
+    text += chars.charAt(Math.floor(Math.random() * chars.length));
+  }
+  return text;
+}
+
+export function config(): vscode.WorkspaceConfiguration {
+  return vscode.workspace.getConfiguration('drawGraph');
+}
+
+export function isDarkTheme(): boolean {
+  const kind = vscode.window.activeColorTheme.kind;
+  return kind === vscode.ColorThemeKind.Dark || kind === vscode.ColorThemeKind.HighContrast;
+}
+
+/** Decodes a `data:` URI (base64 or percent-encoded) into raw bytes. */
+export function decodeDataUri(uri: string): Uint8Array {
+  const comma = uri.indexOf(',');
+  if (!uri.startsWith('data:') || comma < 0) {
+    throw new Error('Not a data URI');
+  }
+  const meta = uri.slice(5, comma);
+  const payload = uri.slice(comma + 1);
+  if (meta.endsWith(';base64')) {
+    return Buffer.from(payload, 'base64');
+  }
+  return Buffer.from(decodeURIComponent(payload), 'utf8');
+}
+
+/** Replaces the extension of `uri` (handling compound ones such as `.drawio.xml`). */
+export function withExtension(uri: vscode.Uri, ext: string): vscode.Uri {
+  const path = uri.path.replace(/(\.drawio\.(xml|svg|png)|\.[^./]+)$/i, '') + ext;
+  return uri.with({ path });
+}
+
+export async function saveBytes(defaultUri: vscode.Uri, data: Uint8Array, filters: Record<string, string[]>): Promise<void> {
+  const target = await vscode.window.showSaveDialog({ defaultUri, filters });
+  if (!target) {
+    return;
+  }
+  await vscode.workspace.fs.writeFile(target, data);
+  const open = vscode.l10n.t('Open');
+  const choice = await vscode.window.showInformationMessage(vscode.l10n.t('Exported to {0}', vscode.workspace.asRelativePath(target)), open);
+  if (choice === open) {
+    await vscode.commands.executeCommand('vscode.open', target);
+  }
+}

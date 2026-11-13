@@ -1,0 +1,357 @@
+{
+  "name": "drawgraph",
+  "displayName": "%displayName%",
+  "description": "%description%",
+  "version": "0.1.0",
+  "publisher": "drawgraph",
+  "license": "UNLICENSED",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Visualization",
+    "Programming Languages",
+    "Other"
+  ],
+  "keywords": [
+    "drawio",
+    "draw.io",
+    "diagrams.net",
+    "mermaid",
+    "plantuml",
+    "uml",
+    "diagram",
+    "preview"
+  ],
+  "main": "./dist/extension.js",
+  "l10n": "./l10n",
+  "activationEvents": [
+    "onLanguage:mermaid",
+    "onLanguage:plantuml",
+    "onWebviewPanel:drawGraph.preview"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "mermaid",
+        "aliases": [
+          "Mermaid",
+          "mermaid"
+        ],
+        "extensions": [
+          ".mmd",
+          ".mermaid"
+        ],
+        "configuration": "./language-configuration/mermaid.json"
+      },
+      {
+        "id": "plantuml",
+        "aliases": [
+          "PlantUML",
+          "plantuml"
+        ],
+        "extensions": [
+          ".puml",
+          ".plantuml",
+          ".pu",
+          ".iuml",
+          ".wsd"
+        ],
+        "configuration": "./language-configuration/plantuml.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "mermaid",
+        "scopeName": "source.mermaid",
+        "path": "./syntaxes/mermaid.tmLanguage.json"
+      },
+      {
+        "language": "plantuml",
+        "scopeName": "source.plantuml",
+        "path": "./syntaxes/plantuml.tmLanguage.json"
+      },
+      {
+        "scopeName": "markdown.mermaid.codeblock",
+        "path": "./syntaxes/mermaid.markdown.tmLanguage.json",
+        "injectTo": [
+          "text.html.markdown"
+        ],
+        "embeddedLanguages": {
+          "meta.embedded.block.mermaid": "mermaid"
+        }
+      }
+    ],
+    "customEditors": [
+      {
+        "viewType": "drawGraph.drawio",
+        "displayName": "%customEditor.drawio%",
+        "selector": [
+          {
+            "filenamePattern": "*.drawio"
+          },
+          {
+            "filenamePattern": "*.dio"
+          },
+          {
+            "filenamePattern": "*.drawio.xml"
+          },
+          {
+            "filenamePattern": "*.drawio.svg"
+          }
+        ],
+        "priority": "default"
+      }
+    ],
+    "commands": [
+      {
+        "command": "drawGraph.preview.open",
+        "title": "%command.preview.open%",
+        "category": "DrawGraph",
+        "icon": "$(open-preview)"
+      },
+      {
+        "command": "drawGraph.preview.openToSide",
+        "title": "%command.preview.openToSide%",
+        "category": "DrawGraph",
+        "icon": "$(open-preview)"
+      },
+      {
+        "command": "drawGraph.drawio.new",
+        "title": "%command.drawio.new%",
+        "category": "DrawGraph"
+      },
+      {
+        "command": "drawGraph.mermaid.new",
+        "title": "%command.mermaid.new%",
+        "category": "DrawGraph"
+      },
+      {
+        "command": "drawGraph.plantuml.new",
+        "title": "%command.plantuml.new%",
+        "category": "DrawGraph"
+      },
+      {
+        "command": "drawGraph.drawio.exportSvg",
+        "title": "%command.drawio.exportSvg%",
+        "category": "DrawGraph"
+      },
+      {
+        "command": "drawGraph.drawio.exportPng",
+        "title": "%command.drawio.exportPng%",
+        "category": "DrawGraph"
+      },
+      {
+        "command": "drawGraph.drawio.openAsText",
+        "title": "%command.drawio.openAsText%",
+        "category": "DrawGraph",
+        "icon": "$(go-to-file)"
+      }
+    ],
+    "menus": {
+      "editor/title": [
+        {
+          "command": "drawGraph.preview.openToSide",
+          "when": "editorLangId == mermaid || editorLangId == plantuml",
+          "group": "navigation"
+        },
+        {
+          "command": "drawGraph.drawio.openAsText",
+          "when": "activeCustomEditorId == drawGraph.drawio",
+          "group": "navigation"
+        },
+        {
+          "command": "drawGraph.drawio.exportSvg",
+          "when": "activeCustomEditorId == drawGraph.drawio",
+          "group": "1_drawgraph@1"
+        },
+        {
+          "command": "drawGraph.drawio.exportPng",
+          "when": "activeCustomEditorId == drawGraph.drawio",
+          "group": "1_drawgraph@2"
+        }
+      ],
+      "explorer/context": [
+        {
+          "command": "drawGraph.preview.open",
+          "when": "resourceLangId == mermaid || resourceLangId == plantuml",
+          "group": "navigation"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "drawGraph.preview.open",
+          "when": "editorLangId == mermaid || editorLangId == plantuml"
+        },
+        {
+          "command": "drawGraph.preview.openToSide",
+          "when": "editorLangId == mermaid || editorLangId == plantuml"
+        },
+        {
+          "command": "drawGraph.drawio.exportSvg",
+          "when": "activeCustomEditorId == drawGraph.drawio"
+        },
+        {
+          "command": "drawGraph.drawio.exportPng",
+          "when": "activeCustomEditorId == drawGraph.drawio"
+        },
+        {
+          "command": "drawGraph.drawio.openAsText",
+          "when": "activeCustomEditorId == drawGraph.drawio"
+        }
+      ]
+    },
+    "keybindings": [
+      {
+        "command": "drawGraph.preview.openToSide",
+        "key": "ctrl+k v",
+        "mac": "cmd+k v",
+        "when": "editorLangId == mermaid || editorLangId == plantuml"
+      },
+      {
+        "command": "drawGraph.preview.open",
+        "key": "ctrl+shift+v",
+        "mac": "cmd+shift+v",
+        "when": "editorLangId == mermaid || editorLangId == plantuml"
+      }
+    ],
+    "configuration": {
+      "title": "DrawGraph",
+      "properties": {
+        "drawGraph.drawio.url": {
+          "type": "string",
+          "default": "https://embed.diagrams.net/",
+          "markdownDescription": "%config.drawio.url%"
+        },
+        "drawGraph.drawio.ui": {
+          "type": "string",
+          "enum": [
+            "kennedy",
+            "min",
+            "atlas",
+            "sketch",
+            "simple"
+          ],
+          "default": "kennedy",
+          "markdownDescription": "%config.drawio.ui%"
+        },
+        "drawGraph.drawio.theme": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "light",
+            "dark"
+          ],
+          "default": "auto",
+          "markdownDescription": "%config.drawio.theme%"
+        },
+        "drawGraph.drawio.config": {
+          "type": "object",
+          "default": {},
+          "markdownDescription": "%config.drawio.config%"
+        },
+        "drawGraph.drawio.svgColorScheme": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "light",
+            "dark"
+          ],
+          "enumDescriptions": [
+            "%config.drawio.svgColorScheme.auto%",
+            "%config.drawio.svgColorScheme.light%",
+            "%config.drawio.svgColorScheme.dark%"
+          ],
+          "default": "auto",
+          "markdownDescription": "%config.drawio.svgColorScheme%"
+        },
+        "drawGraph.mermaid.theme": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "default",
+            "dark",
+            "forest",
+            "neutral",
+            "base"
+          ],
+          "default": "auto",
+          "markdownDescription": "%config.mermaid.theme%"
+        },
+        "drawGraph.markdown.mermaid": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "%config.markdown.mermaid%"
+        },
+        "drawGraph.plantuml.render": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "local",
+            "server"
+          ],
+          "enumDescriptions": [
+            "%config.plantuml.render.auto%",
+            "%config.plantuml.render.local%",
+            "%config.plantuml.render.server%"
+          ],
+          "default": "auto",
+          "markdownDescription": "%config.plantuml.render%"
+        },
+        "drawGraph.plantuml.server": {
+          "type": "string",
+          "default": "https://www.plantuml.com/plantuml",
+          "markdownDescription": "%config.plantuml.server%"
+        },
+        "drawGraph.plantuml.jar": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "%config.plantuml.jar%"
+        },
+        "drawGraph.plantuml.java": {
+          "type": "string",
+          "default": "java",
+          "markdownDescription": "%config.plantuml.java%"
+        },
+        "drawGraph.plantuml.dot": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "%config.plantuml.dot%"
+        },
+        "drawGraph.preview.debounce": {
+          "type": "number",
+          "default": 400,
+          "minimum": 0,
+          "markdownDescription": "%config.preview.debounce%"
+        }
+      }
+    },
+    "markdown.markdownItPlugins": true,
+    "markdown.previewScripts": [
+      "./media/vendor/mermaid.min.js",
+      "./media/markdown/preview.js"
+    ],
+    "markdown.previewStyles": [
+      "./media/markdown/preview.css"
+    ]
+  },
+  "scripts": {
+    "build": "node esbuild.mjs",
+    "watch": "node esbuild.mjs --watch",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test test/*.test.mjs",
+    "test:integration": "node esbuild.mjs && node test/integration/runTest.mjs",
+    "vscode:prepublish": "npm run typecheck && node esbuild.mjs --production",
+    "package": "vsce package --no-dependencies --skip-license --allow-missing-repository"
+  },
+  "devDependencies": {
+    "@types/markdown-it": "^14.2.0",
+    "@types/node": "^20.19.43",
+    "@types/vscode": "~1.85.0",
+    "@vscode/test-electron": "^3.1.0",
+    "@vscode/vsce": "^4.1.1",
+    "esbuild": "^0.28.2",
+    "mermaid": "^12.3.0",
+    "typescript": "^5.9.3"
+  }
+}
