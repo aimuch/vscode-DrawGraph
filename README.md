@@ -1,5 +1,7 @@
 # DrawGraph — 在 VS Code 中预览和编辑 Draw.io / Mermaid / PlantUML
 
+[![CI](https://github.com/aimuch/vscode-DrawGraph/actions/workflows/ci.yml/badge.svg)](https://github.com/aimuch/vscode-DrawGraph/actions/workflows/ci.yml)
+
 DrawGraph 是一个 VS Code 插件，把三种常用的图表格式放进同一个编辑器里：
 
 | 格式 | 文件扩展名 | 编辑方式 |
@@ -7,6 +9,21 @@ DrawGraph 是一个 VS Code 插件，把三种常用的图表格式放进同一�
 | **draw.io** | `.drawio` `.dio` `.drawio.xml` `.drawio.svg` | 可视化编辑器（内嵌 draw.io），直接拖拽编辑 |
 | **Mermaid** | `.mmd` `.mermaid`，以及 Markdown 中的 ```` ```mermaid ```` 代码块 | 文本编辑 + 实时预览 |
 | **PlantUML** | `.puml` `.plantuml` `.pu` `.iuml` `.wsd` | 文本编辑 + 实时预览 |
+
+## 安装
+
+在 [Releases](https://github.com/aimuch/vscode-DrawGraph/releases) 页面下载 `.vsix` 安装包：
+
+- **nightly**：`main` 分支每次推送后自动构建的最新版本（每次推送都会替换）。
+- **vX.Y.Z**：正式版本。
+
+然后在 VS Code 扩展视图右上角的 `…` 菜单中选择「从 VSIX 安装…」，或者在终端运行：
+
+```bash
+code --install-extension drawgraph-0.1.0.vsix
+```
+
+安装包是离线的（Mermaid 已打包在内），但 draw.io 编辑器默认仍从 embed.diagrams.net 加载，见下文“渲染方式与隐私”。
 
 ## 功能
 
@@ -100,6 +117,27 @@ npm run test:integration
 
 ```bash
 npm run package
+```
+
+### 持续集成与发布
+
+GitHub Actions（`.github/workflows/ci.yml`）在每次推送和 Pull Request 时运行：
+
+1. 类型检查、单元测试，并打包 `.vsix`（作为构建产物上传）。
+2. 在 Linux 上用真实 VS Code 跑集成测试（虚拟显示器，需要联网）。
+3. 推送到 `main` 后，用新的 `.vsix` 替换 Releases 中的 **nightly** 预发布版本。
+4. 推送 `v*` 标签后发布正式版本：标签必须与 `package.json` 的版本一致，发布说明取自 `CHANGELOG.md` 中对应版本的章节，且集成测试通过后才会发布。
+
+发布新版本：
+
+```bash
+npm version 0.2.0 --no-git-tag-version
+```
+
+把 `CHANGELOG.md` 的 `Unreleased` 改为 `0.2.0` 并提交，然后：
+
+```bash
+git tag v0.2.0 && git push origin main v0.2.0
 ```
 
 ### 目录结构

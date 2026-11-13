@@ -5,6 +5,14 @@
   "version": "0.1.0",
   "publisher": "drawgraph",
   "license": "UNLICENSED",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/aimuch/vscode-DrawGraph.git"
+  },
+  "bugs": {
+    "url": "https://github.com/aimuch/vscode-DrawGraph/issues"
+  },
+  "homepage": "https://github.com/aimuch/vscode-DrawGraph#readme",
   "engines": {
     "vscode": "^1.85.0"
   },
@@ -347,7 +355,7 @@
     "test": "node --test test/*.test.mjs",
     "test:integration": "node esbuild.mjs && node test/integration/runTest.mjs",
     "vscode:prepublish": "npm run typecheck && node esbuild.mjs --production",
-    "package": "vsce package --no-dependencies --skip-license --allow-missing-repository"
+    "package": "vsce package --no-dependencies --skip-license"
   },
   "devDependencies": {
     "@types/markdown-it": "^14.2.0",
