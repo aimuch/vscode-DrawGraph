@@ -3,7 +3,8 @@ import * as vscode from 'vscode';
 import type { DiagramDiagnostics } from '../language/diagramFeatures';
 import { extractMermaidErrorLine } from '../language/symbols';
 import { countPages, pickBlock, splitDiagrams } from '../plantuml/encoder';
-import { CancelledError, extractPlantUmlError, PlantUmlRenderer } from '../plantuml/renderer';
+import { CancelledError, extractPlantUmlError, PlantUmlRenderer, type WorkerPhase } from '../plantuml/renderer';
+import { StateMachine, type MachineSnapshot, type TransitionRecord, type TransitionTable } from '../stateMachine';
 import { config, decodeDataUri, getNonce, isDarkTheme, resolveAutoExportUri, saveBytes, withExtension } from '../util';
 
 export type DiagramKind = 'mermaid' | 'plantuml';
@@ -27,6 +28,83 @@ interface PreviewState {
   locked?: boolean;
 }
 
+export type PreviewPhase = 'initializing' | 'debouncing' | 'rendering' | 'ready' | 'error' | 'empty' | 'disposed';
+export type PreviewEvent =
+  | 'SCHEDULE_UPDATE'
+  | 'START_RENDER'
+  | 'RENDER_OK'
+  | 'RENDER_EMPTY'
+  | 'RENDER_ERROR'
+  | 'RENDER_CANCELLED'
+  | 'RETARGET'
+  | 'DISPOSE';
+
+const PREVIEW_TRANSITIONS: TransitionTable<PreviewPhase, PreviewEvent> = {
+  initializing: {
+    SCHEDULE_UPDATE: 'debouncing',
+    START_RENDER: 'rendering',
+    RENDER_OK: 'ready',
+    RENDER_EMPTY: 'empty',
+    RENDER_ERROR: 'error',
+    RETARGET: 'initializing',
+    DISPOSE: 'disposed',
+  },
+  debouncing: {
+    SCHEDULE_UPDATE: 'debouncing',
+    START_RENDER: 'rendering',
+    RENDER_OK: 'ready',
+    RENDER_EMPTY: 'empty',
+    RENDER_ERROR: 'error',
+    RETARGET: 'initializing',
+    DISPOSE: 'disposed',
+  },
+  rendering: {
+    SCHEDULE_UPDATE: 'debouncing',
+    START_RENDER: 'rendering',
+    RENDER_OK: 'ready',
+    RENDER_EMPTY: 'empty',
+    RENDER_ERROR: 'error',
+    RENDER_CANCELLED: 'ready',
+    RETARGET: 'initializing',
+    DISPOSE: 'disposed',
+  },
+  ready: {
+    SCHEDULE_UPDATE: 'debouncing',
+    START_RENDER: 'rendering',
+    RENDER_OK: 'ready',
+    RENDER_EMPTY: 'empty',
+    RENDER_ERROR: 'error',
+    RETARGET: 'initializing',
+    DISPOSE: 'disposed',
+  },
+  error: {
+    SCHEDULE_UPDATE: 'debouncing',
+    START_RENDER: 'rendering',
+    RENDER_OK: 'ready',
+    RENDER_EMPTY: 'empty',
+    RENDER_ERROR: 'error',
+    RETARGET: 'initializing',
+    DISPOSE: 'disposed',
+  },
+  empty: {
+    SCHEDULE_UPDATE: 'debouncing',
+    START_RENDER: 'rendering',
+    RENDER_OK: 'ready',
+    RENDER_EMPTY: 'empty',
+    RENDER_ERROR: 'error',
+    RETARGET: 'initializing',
+    DISPOSE: 'disposed',
+  },
+  disposed: {},
+};
+
+const PREVIEW_SETTLED: readonly PreviewPhase[] = ['ready', 'error', 'empty', 'disposed'];
+
+/** Explicit discriminated union replacing ad-hoc `manualBlockIndex` + `suppressCursorSync` timer flags. */
+type BlockSelectionState =
+  | { mode: 'cursor'; line: number | undefined }
+  | { mode: 'manual'; blockIndex: number; expectedEditorLine?: number };
+
 /** What the webview last reported, exposed for diagnostics and integration tests. */
 export interface RenderStatus {
   state: 'pending' | 'rendered' | 'error' | 'empty';
@@ -37,17 +115,17 @@ export interface RenderStatus {
   count: number;
 }
 
+let previewSeq = 0;
+
 /** A webview panel showing the live rendering of one Mermaid / PlantUML document. */
 class DiagramPreview {
+  readonly lifecycle: StateMachine<PreviewPhase, PreviewEvent>;
+  readonly renderer: PlantUmlRenderer;
   private readonly disposables: vscode.Disposable[] = [];
-  private readonly renderer = new PlantUmlRenderer();
   private updateTimer: NodeJS.Timeout | undefined;
   private lastBlockKey: string | undefined;
-  private cursorLine: number | undefined;
-  private manualBlockIndex: number | undefined;
+  private selection: BlockSelectionState = { mode: 'cursor', line: undefined };
   private pageIndex = 0;
-  private suppressCursorSync = false;
-  private disposed = false;
   uri: vscode.Uri;
   kind: DiagramKind;
   locked: boolean;
@@ -60,11 +138,22 @@ class DiagramPreview {
     kind: DiagramKind,
     locked: boolean,
     private readonly diagnostics: DiagramDiagnostics | undefined,
+    onTransition: ((record: TransitionRecord<string, string>, machineId: string) => void) | undefined,
     private readonly onDispose: () => void,
   ) {
+    const id = `preview:${++previewSeq}:${path.basename(uri.path)}`;
     this.uri = uri;
     this.kind = kind;
     this.locked = locked;
+    this.lifecycle = new StateMachine<PreviewPhase, PreviewEvent>({
+      id,
+      initial: 'initializing',
+      transitions: PREVIEW_TRANSITIONS,
+      settledStates: PREVIEW_SETTLED,
+      onTransition,
+    });
+    this.renderer = new PlantUmlRenderer(`${id}:plantuml`, onTransition);
+
     const media = vscode.Uri.joinPath(context.extensionUri, 'media');
     panel.webview.options = { enableScripts: true, localResourceRoots: [media] };
     panel.iconPath = vscode.Uri.joinPath(media, 'preview', 'icon.svg');
@@ -75,6 +164,18 @@ class DiagramPreview {
       panel.onDidDispose(() => this.dispose()),
       panel.webview.onDidReceiveMessage((msg) => this.onMessage(msg)),
     );
+  }
+
+  private get isDisposed(): boolean {
+    return this.lifecycle.state === 'disposed';
+  }
+
+  get selectionMode(): 'cursor' | 'manual' {
+    return this.selection.mode;
+  }
+
+  get isSettled(): boolean {
+    return this.lifecycle.isSettled && this.updateTimer === undefined && this.renderer.snapshot().isSettled;
   }
 
   private get document(): vscode.TextDocument | undefined {
@@ -105,13 +206,14 @@ class DiagramPreview {
 
   retarget(newUri: vscode.Uri, newKind: DiagramKind, cursorLine?: number): void {
     clearTimeout(this.updateTimer);
+    this.updateTimer = undefined;
     this.renderer.cancel();
     this.uri = newUri;
     this.lastBlockKey = undefined;
-    this.manualBlockIndex = undefined;
+    this.selection = { mode: 'cursor', line: cursorLine };
     this.pageIndex = 0;
-    this.cursorLine = cursorLine;
     this.status = { state: 'pending', count: 0 };
+    this.lifecycle.send('RETARGET', path.basename(newUri.path));
     this.updateTitle();
 
     if (newKind !== this.kind) {
@@ -125,25 +227,43 @@ class DiagramPreview {
 
   /** Called when the cursor moves in an editor showing this document (PlantUML: choose the diagram block). */
   setCursorLine(line: number) {
-    if (this.suppressCursorSync || this.kind !== 'plantuml' || this.cursorLine === line) {
+    if (this.kind !== 'plantuml') {
       return;
     }
-    this.cursorLine = line;
-    this.manualBlockIndex = undefined;
+    if (this.selection.mode === 'manual' && this.selection.expectedEditorLine === line) {
+      // Consume programmatic cursor sync triggered by toolbar `navigate()` without leaving manual mode.
+      this.selection = { mode: 'manual', blockIndex: this.selection.blockIndex };
+      return;
+    }
+    if (this.selection.mode === 'cursor' && this.selection.line === line) {
+      return;
+    }
+    this.selection = { mode: 'cursor', line };
     this.scheduleUpdate(50);
   }
 
   scheduleUpdate(delay = config().get<number>('preview.debounce', 400)) {
+    if (this.isDisposed) {
+      return;
+    }
     clearTimeout(this.updateTimer);
-    this.updateTimer = setTimeout(() => void this.update(), delay);
+    this.lifecycle.send('SCHEDULE_UPDATE');
+    this.updateTimer = setTimeout(() => {
+      this.updateTimer = undefined;
+      void this.update();
+    }, delay);
   }
 
   requestSilentExport(format: 'svg' | 'png'): void {
     this.post({ type: 'silentExport', format });
   }
 
+  private currentCursorLine(): number | undefined {
+    return this.selection.mode === 'cursor' ? this.selection.line : undefined;
+  }
+
   async update(force = false, bypassCache = false) {
-    if (this.disposed || !this.panel.visible) {
+    if (this.isDisposed || !this.panel.visible) {
       return;
     }
     let document = this.document;
@@ -151,24 +271,27 @@ class DiagramPreview {
       try {
         document = await vscode.workspace.openTextDocument(this.uri);
       } catch (err) {
+        this.lifecycle.send('RENDER_ERROR');
         this.post({ type: 'error', message: (err as Error).message });
         return;
       }
     }
     const text = document.getText();
     if (this.kind === 'mermaid') {
+      this.lifecycle.send('START_RENDER');
       this.post({ type: 'mermaid', source: text, theme: mermaidTheme() });
       return;
     }
 
     const blocks = splitDiagrams(text);
     const block =
-      this.manualBlockIndex !== undefined && blocks[this.manualBlockIndex]
-        ? blocks[this.manualBlockIndex]
-        : pickBlock(blocks, this.cursorLine);
+      this.selection.mode === 'manual' && blocks[this.selection.blockIndex]
+        ? blocks[this.selection.blockIndex]
+        : pickBlock(blocks, this.currentCursorLine());
     if (!block) {
       this.lastBlockKey = undefined;
       this.diagnostics?.clear(this.uri);
+      this.lifecycle.send('RENDER_EMPTY');
       this.post({ type: 'empty' });
       return;
     }
@@ -179,11 +302,15 @@ class DiagramPreview {
     }
     const blockKey = `${blockIdx}:${this.pageIndex}:${block.source}`;
     if (!force && blockKey === this.lastBlockKey) {
+      if (this.lifecycle.state === 'debouncing') {
+        this.lifecycle.send('RENDER_OK', 'unchanged block');
+      }
       return;
     }
     this.lastBlockKey = blockKey;
 
     const cfg = config();
+    this.lifecycle.send('START_RENDER');
     this.post({ type: 'loading' });
     try {
       const svg = await this.renderer.render(block.source, {
@@ -210,9 +337,11 @@ class DiagramPreview {
       this.post({ type: 'svg', svg, info, canNav: blocks.length > 1 || totalPages > 1 });
     } catch (err) {
       if (err instanceof CancelledError) {
+        this.lifecycle.send('RENDER_CANCELLED');
         return;
       }
       this.lastBlockKey = undefined;
+      this.lifecycle.send('RENDER_ERROR');
       this.post({ type: 'error', message: (err as Error).message });
     }
   }
@@ -227,7 +356,9 @@ class DiagramPreview {
       return;
     }
     const currentBlock =
-      (this.manualBlockIndex !== undefined && blocks[this.manualBlockIndex]) || pickBlock(blocks, this.cursorLine) || blocks[0];
+      (this.selection.mode === 'manual' && blocks[this.selection.blockIndex]) ||
+      pickBlock(blocks, this.currentCursorLine()) ||
+      blocks[0];
     let blockIdx = Math.max(0, blocks.indexOf(currentBlock));
     const pages = countPages(currentBlock.source);
 
@@ -235,23 +366,19 @@ class DiagramPreview {
       this.pageIndex += delta;
     } else if (blocks.length > 1) {
       blockIdx = (blockIdx + delta + blocks.length) % blocks.length;
-      this.manualBlockIndex = blockIdx;
       const nextBlock = blocks[blockIdx];
       this.pageIndex = delta < 0 ? Math.max(0, countPages(nextBlock.source) - 1) : 0;
-      this.cursorLine = nextBlock.startLine;
 
       const editor = vscode.window.visibleTextEditors.find((e) => e.document.uri.toString() === this.uri.toString());
+      this.selection = {
+        mode: 'manual',
+        blockIndex: blockIdx,
+        expectedEditorLine: editor ? nextBlock.startLine : undefined,
+      };
       if (editor) {
-        this.suppressCursorSync = true;
-        try {
-          const pos = new vscode.Position(nextBlock.startLine, 0);
-          editor.selection = new vscode.Selection(pos, pos);
-          editor.revealRange(new vscode.Range(pos, pos), vscode.TextEditorRevealType.InCenterIfOutsideViewport);
-        } finally {
-          setTimeout(() => {
-            this.suppressCursorSync = false;
-          }, 80);
-        }
+        const pos = new vscode.Position(nextBlock.startLine, 0);
+        editor.selection = new vscode.Selection(pos, pos);
+        editor.revealRange(new vscode.Range(pos, pos), vscode.TextEditorRevealType.InCenterIfOutsideViewport);
       }
     } else if (pages > 1) {
       this.pageIndex = (this.pageIndex + delta + pages) % pages;
@@ -270,14 +397,15 @@ class DiagramPreview {
     if (this.kind === 'plantuml') {
       const blocks = splitDiagrams(doc.getText());
       const activeBlock =
-        (this.manualBlockIndex !== undefined && blocks[this.manualBlockIndex]) || pickBlock(blocks, this.cursorLine);
+        (this.selection.mode === 'manual' && blocks[this.selection.blockIndex]) ||
+        pickBlock(blocks, this.currentCursorLine());
       if (activeBlock) {
         startLine = activeBlock.startLine;
         endLine = Math.min(endLine, activeBlock.endLine);
       }
     }
 
-    let targetLine = this.cursorLine ?? startLine;
+    let targetLine = this.currentCursorLine() ?? startLine;
     const needle = (label ?? '').trim();
     if (needle.length >= 2) {
       for (let i = startLine; i <= endLine; i++) {
@@ -295,7 +423,7 @@ class DiagramPreview {
   }
 
   private post(message: unknown) {
-    if (!this.disposed) {
+    if (!this.isDisposed) {
       void this.panel.webview.postMessage(message);
     }
   }
@@ -315,6 +443,13 @@ class DiagramPreview {
     switch (msg.type) {
       case 'status': {
         this.status = { state: msg.state ?? 'pending', width: msg.width, height: msg.height, error: msg.message, count: this.status.count + 1 };
+        if (msg.state === 'rendered') {
+          this.lifecycle.send('RENDER_OK');
+        } else if (msg.state === 'empty') {
+          this.lifecycle.send('RENDER_EMPTY');
+        } else if (msg.state === 'error') {
+          this.lifecycle.send('RENDER_ERROR');
+        }
         if (this.kind === 'mermaid') {
           if (msg.state === 'rendered' || msg.state === 'empty') {
             this.diagnostics?.clear(this.uri);
@@ -439,11 +574,12 @@ class DiagramPreview {
   }
 
   dispose() {
-    if (this.disposed) {
+    if (this.isDisposed) {
       return;
     }
-    this.disposed = true;
     clearTimeout(this.updateTimer);
+    this.updateTimer = undefined;
+    this.lifecycle.send('DISPOSE');
     this.renderer.dispose();
     this.disposables.forEach((d) => d.dispose());
     this.panel.dispose();
@@ -466,12 +602,14 @@ function mermaidTheme(): string {
 export class PreviewManager implements vscode.WebviewPanelSerializer {
   static readonly viewType = 'drawGraph.preview';
   private readonly previews = new Map<string, DiagramPreview>();
-  private readonly sharedExporter = new PlantUmlRenderer();
+  private readonly sharedExporter: PlantUmlRenderer;
 
   constructor(
     private readonly context: vscode.ExtensionContext,
     private readonly diagnostics?: DiagramDiagnostics,
+    private readonly onTransition?: (record: TransitionRecord<string, string>, machineId: string) => void,
   ) {
+    this.sharedExporter = new PlantUmlRenderer('plantuml-shared-exporter', onTransition);
     context.subscriptions.push(
       vscode.window.registerWebviewPanelSerializer(PreviewManager.viewType, this),
       vscode.workspace.onDidChangeTextDocument((e) => {
@@ -581,7 +719,6 @@ export class PreviewManager implements vscode.WebviewPanelSerializer {
     }
   }
 
-  /** Directly exports a specific `@start...` block from a PlantUML file (used by CodeLens). */
   async exportPlantUmlBlock(uri: vscode.Uri, blockIndex: number, format: 'svg' | 'png'): Promise<void> {
     const document = await vscode.workspace.openTextDocument(uri);
     const blocks = splitDiagrams(document.getText());
@@ -675,18 +812,54 @@ export class PreviewManager implements vscode.WebviewPanelSerializer {
     }
   }
 
-  /** Snapshot of every open preview (diagnostics / integration tests). */
-  snapshot(): Array<{ uri: string; kind: DiagramKind; locked: boolean; status: RenderStatus }> {
+  /** Snapshot of every open preview (backwards-compatible + explicit FSM metadata). */
+  snapshot(): Array<{
+    uri: string;
+    kind: DiagramKind;
+    locked: boolean;
+    phase: PreviewPhase;
+    selectionMode: 'cursor' | 'manual';
+    workerPhase: WorkerPhase;
+    isSettled: boolean;
+    status: RenderStatus;
+  }> {
     return [...this.previews.values()].map((p) => ({
       uri: p.uri.toString(),
       kind: p.kind,
       locked: p.locked,
+      phase: p.lifecycle.state,
+      selectionMode: p.selectionMode,
+      workerPhase: p.renderer.snapshot().worker.state,
+      isSettled: p.isSettled,
       status: p.status,
     }));
   }
 
+  machines(): MachineSnapshot[] {
+    const out: MachineSnapshot[] = [this.sharedExporter.snapshot().worker];
+    for (const p of this.previews.values()) {
+      out.push(p.lifecycle.snapshot());
+      if (p.kind === 'plantuml') {
+        out.push(p.renderer.snapshot().worker);
+      }
+    }
+    return out;
+  }
+
+  isSettled(): boolean {
+    if (!this.sharedExporter.snapshot().isSettled) {
+      return false;
+    }
+    for (const p of this.previews.values()) {
+      if (!p.isSettled) {
+        return false;
+      }
+    }
+    return true;
+  }
+
   private create(panel: vscode.WebviewPanel, uri: vscode.Uri, kind: DiagramKind, locked: boolean): DiagramPreview {
-    const preview = new DiagramPreview(this.context, panel, uri, kind, locked, this.diagnostics, () => {
+    const preview = new DiagramPreview(this.context, panel, uri, kind, locked, this.diagnostics, this.onTransition, () => {
       if (this.previews.get(preview.uri.toString()) === preview) {
         this.previews.delete(preview.uri.toString());
       }

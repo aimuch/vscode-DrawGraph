@@ -24,6 +24,8 @@ body {
   position: absolute;
   inset: 0;
   display: flex;
+  flex-direction: column;
+  gap: 12px;
   align-items: center;
   justify-content: center;
   padding: 2em;
@@ -34,4 +36,22 @@ body {
 
 #status.error {
   color: var(--vscode-errorForeground);
+}
+
+#retryBtn {
+  padding: 6px 14px;
+  border: 1px solid var(--vscode-button-border, transparent);
+  border-radius: 2px;
+  color: var(--vscode-button-foreground);
+  background: var(--vscode-button-background);
+  font: inherit;
+  cursor: pointer;
+}
+
+#retryBtn:hover {
+  background: var(--vscode-button-hoverBackground);
+}
+
+[hidden] {
+  display: none !important;
 }

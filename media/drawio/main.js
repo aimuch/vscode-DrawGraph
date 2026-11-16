@@ -1,23 +1,84 @@
 // @ts-check
-// Bridges the VS Code extension host and the embedded draw.io frame (JSON embed protocol).
+// Bridges the VS Code extension host and the embedded draw.io frame (JSON embed protocol)
+// via an explicit handshake state machine (`booting` -> `configured` -> `initialized` -> `ready` | `failed`).
 (function () {
   // @ts-ignore acquireVsCodeApi is injected by VS Code
   const vscode = acquireVsCodeApi();
   const frame = /** @type {HTMLIFrameElement} */ (document.getElementById('drawio'));
   const status = /** @type {HTMLElement} */ (document.getElementById('status'));
+  const statusText = /** @type {HTMLElement} */ (document.getElementById('statusText'));
+  const retryBtn = /** @type {HTMLButtonElement} */ (document.getElementById('retryBtn'));
   const frameUrl = frame.dataset.src || '';
   const frameOrigin = new URL(frameUrl).origin;
+  const loadingMessage = status.dataset.loading || statusText.textContent || 'Loading draw.io…';
+  const failMessage = status.dataset.fail || 'draw.io failed to load.';
 
+  /**
+   * Explicit bridge lifecycle phase:
+   * - `booting`: waiting for both host `setup` and iframe `configure`
+   * - `configured`: configuration sent to iframe; waiting for `init`
+   * - `initialized`: `init` received; host is sending `load`
+   * - `ready`: diagram loaded and interactive
+   * - `failed`: iframe load timed out; user can click Retry to transition back to `booting`
+   * @type {'booting' | 'configured' | 'initialized' | 'ready' | 'failed'}
+   */
+  let bridgePhase = 'booting';
   /** @type {object | undefined} */
   let drawioConfig;
   let forwardShortcuts = true;
+  let iframeRequestedConfigure = false;
+  /** @type {ReturnType<typeof setTimeout> | undefined} */
+  let failTimer;
+  /** @type {Set<number>} */
+  const clipboardPngRequests = new Set();
+
+  /** @param {typeof bridgePhase} next */
+  function setBridgePhase(next) {
+    if (bridgePhase === next) {
+      return;
+    }
+    bridgePhase = next;
+    switch (next) {
+      case 'booting':
+        status.style.display = 'flex';
+        status.classList.remove('error');
+        statusText.textContent = loadingMessage;
+        retryBtn.hidden = true;
+        frame.classList.remove('ready');
+        break;
+      case 'configured':
+      case 'initialized':
+        status.style.display = 'flex';
+        status.classList.remove('error');
+        retryBtn.hidden = true;
+        break;
+      case 'ready':
+        status.style.display = 'none';
+        status.classList.remove('error');
+        retryBtn.hidden = true;
+        frame.classList.add('ready');
+        break;
+      case 'failed':
+        status.style.display = 'flex';
+        status.classList.add('error');
+        statusText.textContent = failMessage;
+        retryBtn.hidden = false;
+        frame.classList.remove('ready');
+        break;
+    }
+    vscode.postMessage({ type: 'phase', phase: next });
+  }
+
+  function startFailTimer() {
+    clearTimeout(failTimer);
+    failTimer = setTimeout(() => {
+      if (bridgePhase === 'booting' || bridgePhase === 'configured') {
+        setBridgePhase('failed');
+      }
+    }, 30000);
+  }
 
   // --- VS Code shortcuts inside draw.io -------------------------------------------------
-  // Keys pressed inside the cross-origin draw.io frame never reach VS Code. draw.io's
-  // `passThroughKeys` option makes it hand the listed combinations to us instead
-  // ({event: 'shortcut'}); we replay them as key presses in this document, which VS Code
-  // forwards to its keybinding service, so user keybindings still apply.
-  // `primary` is Cmd on macOS and Ctrl elsewhere (draw.io treats Ctrl and Cmd alike).
   const isMac = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
   const FORWARDED_SHORTCUTS = [
     { key: 'F1', code: 'F1' }, // command palette
@@ -75,32 +136,28 @@
         bubbles: true,
         cancelable: true,
       });
-      // keyCode/which cannot be set through the constructor.
       Object.defineProperty(event, 'keyCode', { get: () => keyCode });
       Object.defineProperty(event, 'which', { get: () => keyCode });
       window.dispatchEvent(event);
     }
   }
 
-  let configureRequested = false;
-  let initialized = false;
-  /** @type {Set<number>} */
-  const clipboardPngRequests = new Set();
-
   /** @param {object} message */
   function postToDrawio(message) {
     frame.contentWindow?.postMessage(JSON.stringify(message), frameOrigin);
   }
 
-  function sendConfigure(force = false) {
-    if ((configureRequested || force) && drawioConfig) {
-      // The user's own drawGraph.drawio.config wins over our defaults (including passThroughKeys).
+  function trySendConfigure(liveUpdate = false) {
+    if ((iframeRequestedConfigure || liveUpdate) && drawioConfig) {
       const defaults = {
         compressXml: false,
-        passThroughKeys: forwardShortcuts ? passThroughKeys() : force ? [] : undefined,
+        passThroughKeys: forwardShortcuts ? passThroughKeys() : liveUpdate ? [] : undefined,
       };
       postToDrawio({ action: 'configure', config: Object.assign(defaults, drawioConfig) });
-      configureRequested = false;
+      iframeRequestedConfigure = false;
+      if (bridgePhase === 'booting') {
+        setBridgePhase('configured');
+      }
     }
   }
 
@@ -111,12 +168,15 @@
     await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
   }
 
-  const failTimer = setTimeout(() => {
-    if (!initialized) {
-      status.textContent = status.dataset.fail || 'draw.io failed to load.';
-      status.classList.add('error');
-    }
-  }, 30000);
+  retryBtn.addEventListener('click', () => {
+    iframeRequestedConfigure = false;
+    setBridgePhase('booting');
+    startFailTimer();
+    frame.src = 'about:blank';
+    setTimeout(() => {
+      frame.src = frameUrl;
+    }, 20);
+  });
 
   window.addEventListener('message', (event) => {
     if (event.source === frame.contentWindow) {
@@ -139,20 +199,20 @@
       return;
     }
     switch (msg.type) {
-      case 'setup':
+      case 'setup': {
+        const isLiveUpdate = bridgePhase === 'initialized' || bridgePhase === 'ready';
         drawioConfig = msg.drawioConfig || {};
         forwardShortcuts = msg.forwardShortcuts !== false;
-        sendConfigure(initialized);
+        trySendConfigure(isLiveUpdate);
         break;
+      }
       case 'load':
         postToDrawio({ action: 'load', xml: msg.xml || '', autosave: 1, title: msg.title, saveAndExit: '0', noSaveBtn: '1', noExitBtn: '1' });
         break;
       case 'action':
-        // Raw draw.io embed action (diagnostics / integration tests).
         postToDrawio(msg.action);
         break;
       case 'export':
-        // draw.io echoes the request back in `message`, which is how replies are matched.
         if (msg.copyToClipboard) {
           clipboardPngRequests.add(msg.requestId);
         }
@@ -165,17 +225,17 @@
   function handleDrawioEvent(msg) {
     switch (msg.event) {
       case 'configure':
-        configureRequested = true;
-        sendConfigure();
+        iframeRequestedConfigure = true;
+        trySendConfigure(false);
         break;
       case 'init':
-        initialized = true;
         clearTimeout(failTimer);
+        setBridgePhase('initialized');
         vscode.postMessage({ type: 'init' });
         break;
       case 'load':
-        status.style.display = 'none';
-        frame.classList.add('ready');
+        clearTimeout(failTimer);
+        setBridgePhase('ready');
         vscode.postMessage({ type: 'loaded' });
         break;
       case 'shortcut':
@@ -204,6 +264,7 @@
     }
   }
 
+  startFailTimer();
   vscode.postMessage({ type: 'ready' });
   // Start loading draw.io only now that the message listener above is installed.
   frame.src = frameUrl;

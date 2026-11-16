@@ -128,6 +128,9 @@ test('Document symbols, CodeLens, templates and preview lock work', async () => 
   assert.ok(tplDoc && tplDoc.isUntitled && tplDoc.getText().includes('sequenceDiagram'));
   await waitFor('template preview rendered while locked preview stays open', () => previewOf(tplDoc.uri)?.status.state === 'rendered');
   assert.ok(previewOf(mmdUri), 'locked preview was preserved');
+  await waitFor('all state machines settled', () => api.diagnostics.isSettled());
+  const machines = api.diagnostics.machines();
+  assert.ok(Array.isArray(machines) && machines.some((m) => m.id.startsWith('preview:') && m.state === 'ready' && m.transitions.length > 0));
   await vscode.commands.executeCommand('workbench.action.revertAndCloseActiveEditor');
   await vscode.commands.executeCommand('workbench.action.closeAllEditors');
 });

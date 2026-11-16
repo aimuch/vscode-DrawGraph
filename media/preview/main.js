@@ -1,6 +1,6 @@
 // @ts-check
 // Diagram preview: renders Mermaid in the webview, displays PlantUML SVG from the host,
-// and provides zoom / pan / background switching / multi-diagram navigation / export / copy.
+// and coordinates UI display, viewport pan/zoom, and async Mermaid rendering via explicit states.
 (function () {
   // @ts-ignore injected by VS Code
   const vscode = acquireVsCodeApi();
@@ -37,7 +37,8 @@
     zoom: typeof saved.zoom === 'number' ? saved.zoom : 1,
     x: typeof saved.x === 'number' ? saved.x : 0,
     y: typeof saved.y === 'number' ? saved.y : 0,
-    autoFit: saved.autoFit !== false,
+    /** @type {'auto_fit' | 'manual'} */
+    mode: saved.autoFit === false ? 'manual' : 'auto_fit',
     bg: BG_MODES.includes(saved.bg) ? saved.bg : 'auto',
   };
   let natural = { width: 0, height: 0 };
@@ -46,6 +47,51 @@
   let rafId = 0;
   /** @type {ReturnType<typeof setTimeout> | undefined} */
   let persistTimer;
+
+  /**
+   * Single source of truth for preview overlay visibility (`spinner`, `errorBox`, `emptyBox`, `#canvas.stale`).
+   * @type {'booting' | 'loading' | 'rendered' | 'error' | 'empty'}
+   */
+  let uiPhase = 'booting';
+
+  /**
+   * @param {typeof uiPhase} nextPhase
+   * @param {string} [errorMessageText]
+   */
+  function transitionUiPhase(nextPhase, errorMessageText) {
+    uiPhase = nextPhase;
+    switch (nextPhase) {
+      case 'booting':
+        spinner.hidden = true;
+        errorBox.hidden = true;
+        emptyBox.hidden = true;
+        canvas.classList.remove('stale');
+        break;
+      case 'loading':
+        spinner.hidden = false;
+        emptyBox.hidden = true;
+        break;
+      case 'rendered':
+        spinner.hidden = true;
+        errorBox.hidden = true;
+        emptyBox.hidden = true;
+        canvas.classList.remove('stale');
+        break;
+      case 'error':
+        spinner.hidden = true;
+        errorBox.textContent = errorMessageText || 'Unknown error';
+        errorBox.hidden = false;
+        emptyBox.hidden = true;
+        canvas.classList.toggle('stale', currentSvg !== null);
+        break;
+      case 'empty':
+        spinner.hidden = true;
+        errorBox.hidden = true;
+        emptyBox.hidden = false;
+        canvas.classList.remove('stale');
+        break;
+    }
+  }
 
   function syncLockUi() {
     lockToggle.setAttribute('aria-pressed', locked ? 'true' : 'false');
@@ -68,7 +114,15 @@
       clearTimeout(persistTimer);
       persistTimer = undefined;
     }
-    vscode.setState({ uri: ds.uri, locked, zoom: view.zoom, x: view.x, y: view.y, autoFit: view.autoFit, bg: view.bg });
+    vscode.setState({
+      uri: ds.uri,
+      locked,
+      zoom: view.zoom,
+      x: view.x,
+      y: view.y,
+      autoFit: view.mode === 'auto_fit',
+      bg: view.bg,
+    });
   }
 
   function schedulePersist() {
@@ -129,7 +183,7 @@
     view.x = cx - ((cx - view.x) * zoom) / view.zoom;
     view.y = cy - ((cy - view.y) * zoom) / view.zoom;
     view.zoom = zoom;
-    view.autoFit = false;
+    view.mode = 'manual';
     applyView(immediate);
   }
 
@@ -182,10 +236,8 @@
     node.style.maxWidth = 'none';
     node.style.width = `${natural.width}px`;
     node.style.height = `${natural.height}px`;
-    canvas.classList.remove('stale');
-    errorBox.hidden = true;
-    emptyBox.hidden = true;
-    if (view.autoFit) {
+    transitionUiPhase('rendered');
+    if (view.mode === 'auto_fit') {
       fit(false);
     } else {
       applyView(true);
@@ -217,10 +269,7 @@
    * @param {number} [line]
    */
   function showError(message, line) {
-    errorBox.textContent = message;
-    errorBox.hidden = false;
-    emptyBox.hidden = true;
-    canvas.classList.add('stale');
+    transitionUiPhase('error', message);
     vscode.postMessage({ type: 'status', state: 'error', message, line });
   }
 
@@ -228,34 +277,39 @@
     canvas.replaceChildren();
     currentSvg = null;
     natural = { width: 0, height: 0 };
-    errorBox.hidden = true;
-    emptyBox.hidden = false;
+    transitionUiPhase('empty');
     vscode.postMessage({ type: 'status', state: 'empty' });
   }
 
-  // Mermaid rendering is asynchronous; only the latest request is rendered.
+  // Explicit single-flight coalescing state machine for Mermaid renders:
+  // `idle` -> `rendering` <-> `rendering_dirty` -> `idle`
   let mermaidTheme = '';
   let renderCount = 0;
-  let rendering = false;
+  /** @type {'idle' | 'rendering' | 'rendering_dirty'} */
+  let mermaidPhase = 'idle';
   /** @type {{source: string, theme: string} | null} */
-  let queued = null;
+  let nextMermaidJob = null;
 
   async function renderMermaid(/** @type {string} */ source, /** @type {string} */ theme) {
-    queued = { source, theme };
-    if (rendering) {
+    nextMermaidJob = { source, theme };
+    if (mermaidPhase === 'rendering' || mermaidPhase === 'rendering_dirty') {
+      mermaidPhase = 'rendering_dirty';
       return;
     }
-    rendering = true;
-    spinner.hidden = false;
+    mermaidPhase = 'rendering';
+    transitionUiPhase('loading');
     try {
-      while (queued) {
-        const job = queued;
-        queued = null;
+      while (nextMermaidJob) {
+        const job = nextMermaidJob;
+        nextMermaidJob = null;
+        mermaidPhase = 'rendering';
         await renderMermaidNow(job.source, job.theme);
       }
     } finally {
-      rendering = false;
-      spinner.hidden = true;
+      mermaidPhase = 'idle';
+      if (uiPhase === 'loading') {
+        spinner.hidden = true;
+      }
     }
   }
 
@@ -274,7 +328,6 @@
         startOnLoad: false,
         theme,
         securityLevel: 'strict',
-        // SVG text labels (instead of HTML in <foreignObject>) keep PNG export working.
         htmlLabels: false,
         flowchart: { htmlLabels: false },
       });
@@ -283,9 +336,15 @@
     const id = `drawgraph-mermaid-${++renderCount}`;
     try {
       const { svg } = await mermaid.render(id, source);
+      if (mermaidPhase === 'rendering_dirty') {
+        // Superseded by a newer queued edit; skip DOM replacement and render latest immediately.
+        return;
+      }
       showSvg(svg);
     } catch (err) {
-      showError(errorMessage(err), errorLine(err));
+      if (mermaidPhase !== 'rendering_dirty') {
+        showError(errorMessage(err), errorLine(err));
+      }
     } finally {
       document.getElementById(`d${id}`)?.remove();
       const leftover = document.getElementById(id);
@@ -405,7 +464,7 @@
   $('zoomOut').addEventListener('click', () => zoomTo(view.zoom / 1.25));
   zoomLabel.addEventListener('click', () => zoomTo(1));
   $('fit').addEventListener('click', () => {
-    view.autoFit = true;
+    view.mode = 'auto_fit';
     fit(true);
   });
   bgToggle.addEventListener('click', () => {
@@ -449,35 +508,39 @@
       } else {
         view.x -= e.deltaX;
         view.y -= e.deltaY;
-        view.autoFit = false;
+        view.mode = 'manual';
         applyView(false);
       }
     },
     { passive: false },
   );
 
-  /** @type {{x: number, y: number} | null} */
-  let drag = null;
+  /**
+   * Explicit pointer gesture state: `idle` | `panning`
+   * @type {{ phase: 'idle' } | { phase: 'panning', anchorX: number, anchorY: number }}
+   */
+  let pointerGesture = { phase: 'idle' };
+
   stage.addEventListener('pointerdown', (e) => {
     if (e.button !== 0) {
       return;
     }
-    drag = { x: e.clientX - view.x, y: e.clientY - view.y };
+    pointerGesture = { phase: 'panning', anchorX: e.clientX - view.x, anchorY: e.clientY - view.y };
     stage.setPointerCapture(e.pointerId);
     stage.classList.add('dragging');
   });
   stage.addEventListener('pointermove', (e) => {
-    if (!drag) {
+    if (pointerGesture.phase !== 'panning') {
       return;
     }
-    view.x = e.clientX - drag.x;
-    view.y = e.clientY - drag.y;
-    view.autoFit = false;
+    view.x = e.clientX - pointerGesture.anchorX;
+    view.y = e.clientY - pointerGesture.anchorY;
+    view.mode = 'manual';
     applyView(false);
   });
   const endDrag = () => {
-    if (drag) {
-      drag = null;
+    if (pointerGesture.phase === 'panning') {
+      pointerGesture = { phase: 'idle' };
       stage.classList.remove('dragging');
       persistNow();
     }
@@ -496,7 +559,7 @@
     } else if (e.key === '0') {
       zoomTo(1);
     } else if (e.key === 'f') {
-      view.autoFit = true;
+      view.mode = 'auto_fit';
       fit(true);
     } else if (e.key === '[') {
       vscode.postMessage({ type: 'navigate', delta: -1 });
@@ -506,7 +569,7 @@
   });
 
   window.addEventListener('resize', () => {
-    if (view.autoFit) {
+    if (view.mode === 'auto_fit') {
       fit(false);
     }
   });
@@ -527,7 +590,6 @@
         void renderMermaid(String(msg.source ?? ''), String(msg.theme || 'default'));
         break;
       case 'svg':
-        spinner.hidden = true;
         info.textContent = msg.info || '';
         prevItem.hidden = !msg.canNav;
         nextItem.hidden = !msg.canNav;
@@ -558,22 +620,21 @@
         }
         break;
       case 'loading':
-        spinner.hidden = false;
+        transitionUiPhase('loading');
         break;
       case 'empty':
-        spinner.hidden = true;
         info.textContent = '';
         prevItem.hidden = true;
         nextItem.hidden = true;
         showEmpty();
         break;
       case 'error':
-        spinner.hidden = true;
         showError(String(msg.message));
         break;
     }
   });
 
+  transitionUiPhase('booting');
   syncBgUi();
   syncLockUi();
   renderTransform();

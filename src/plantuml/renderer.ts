@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import * as path from 'node:path';
 import { encodePlantUmlAsync } from './encoder';
+import { StateMachine, type MachineSnapshot, type TransitionRecord, type TransitionTable } from '../stateMachine';
 
 export interface PlantUmlOptions {
   mode: 'auto' | 'local' | 'server';
@@ -14,6 +15,55 @@ export interface PlantUmlOptions {
   page?: number;
   /** Skip the in-memory SVG cache (used on explicit config/theme refreshes). */
   noCache?: boolean;
+}
+
+export type WorkerPhase = 'cold' | 'busy' | 'draining_cancelled' | 'warm_idle' | 'disposed';
+export type WorkerEvent =
+  | 'START_REQUEST'
+  | 'CANCEL_INFLIGHT'
+  | 'DRAINED_TO_IDLE'
+  | 'DRAINED_TO_NEXT'
+  | 'RESET_TO_COLD'
+  | 'IDLE_EXPIRED'
+  | 'DISPOSE';
+
+const WORKER_TRANSITIONS: TransitionTable<WorkerPhase, WorkerEvent> = {
+  cold: {
+    START_REQUEST: 'busy',
+    RESET_TO_COLD: 'cold',
+    DISPOSE: 'disposed',
+  },
+  busy: {
+    CANCEL_INFLIGHT: 'draining_cancelled',
+    DRAINED_TO_IDLE: 'warm_idle',
+    DRAINED_TO_NEXT: 'busy',
+    RESET_TO_COLD: 'cold',
+    DISPOSE: 'disposed',
+  },
+  draining_cancelled: {
+    DRAINED_TO_IDLE: 'warm_idle',
+    DRAINED_TO_NEXT: 'busy',
+    RESET_TO_COLD: 'cold',
+    DISPOSE: 'disposed',
+  },
+  warm_idle: {
+    START_REQUEST: 'busy',
+    IDLE_EXPIRED: 'cold',
+    RESET_TO_COLD: 'cold',
+    DISPOSE: 'disposed',
+  },
+  disposed: {},
+};
+
+const WORKER_SETTLED: readonly WorkerPhase[] = ['cold', 'warm_idle', 'disposed'];
+
+export interface RendererSnapshot {
+  worker: MachineSnapshot<WorkerPhase, WorkerEvent>;
+  workerPid?: number;
+  hasQueuedRequest: boolean;
+  serverInFlight: boolean;
+  cacheSize: number;
+  isSettled: boolean;
 }
 
 const TIMEOUT_MS = 30000;
@@ -44,10 +94,11 @@ function killProcess(child: ChildProcess): void {
 }
 
 /**
- * Persistent `java -jar plantuml.jar -pipe -pipedelimitor` worker that keeps a warm JVM
- * alive across edits so local renders avoid JVM startup overhead.
+ * Persistent `java -jar plantuml.jar -pipe -pipedelimitor` worker modeled as an explicit
+ * lifecycle state machine (`cold` -> `busy` <-> `warm_idle` / `draining_cancelled` -> `disposed`).
  */
 class LocalPipeWorker {
+  readonly fsm: StateMachine<WorkerPhase, WorkerEvent>;
   private child: ChildProcess | undefined;
   private stdoutBuf = '';
   private stderrBuf = '';
@@ -57,18 +108,35 @@ class LocalPipeWorker {
   private timeoutTimer: NodeJS.Timeout | undefined;
   private cancelGraceTimer: NodeJS.Timeout | undefined;
   private idleTimer: NodeJS.Timeout | undefined;
-  private disposed = false;
 
   constructor(
+    id: string,
     readonly key: string,
     private readonly java: string,
     private readonly jar: string,
     private readonly dot: string,
     private readonly baseDir: string | undefined,
-  ) {}
+    onTransition?: (record: TransitionRecord<string, string>, machineId: string) => void,
+  ) {
+    this.fsm = new StateMachine<WorkerPhase, WorkerEvent>({
+      id,
+      initial: 'cold',
+      transitions: WORKER_TRANSITIONS,
+      settledStates: WORKER_SETTLED,
+      onTransition,
+    });
+  }
+
+  get pid(): number | undefined {
+    return this.child?.pid;
+  }
+
+  get hasQueued(): boolean {
+    return this.queued !== undefined;
+  }
 
   render(source: string): Promise<string> {
-    if (this.disposed) {
+    if (this.fsm.state === 'disposed') {
       return Promise.reject(new CancelledError());
     }
     this.cancelPending();
@@ -91,13 +159,13 @@ class LocalPipeWorker {
     if (this.inflight && !this.inflight.cancelled) {
       const active = this.inflight;
       active.cancelled = true;
+      this.fsm.send('CANCEL_INFLIGHT');
       active.reject(new CancelledError());
-      // Let a fast in-flight render finish draining so the JVM stays warm; kill if stuck.
       if (!this.cancelGraceTimer) {
         this.cancelGraceTimer = setTimeout(() => {
           this.cancelGraceTimer = undefined;
           if (this.inflight === active) {
-            this.resetChild();
+            this.resetChild('cancel grace expired');
             this.pumpNext();
           }
         }, CANCEL_GRACE_MS);
@@ -107,10 +175,9 @@ class LocalPipeWorker {
   }
 
   dispose(): void {
-    if (this.disposed) {
+    if (this.fsm.state === 'disposed') {
       return;
     }
-    this.disposed = true;
     this.clearTimers();
     if (this.queued) {
       this.queued.reject(new CancelledError());
@@ -121,11 +188,17 @@ class LocalPipeWorker {
       this.inflight.reject(new CancelledError());
     }
     this.inflight = undefined;
-    this.resetChild();
+    const proc = this.child;
+    this.child = undefined;
+    if (proc) {
+      proc.stdin?.end();
+      killProcess(proc);
+    }
+    this.fsm.send('DISPOSE');
   }
 
-  private startRequest(req: PipeRequest): void {
-    if (this.disposed) {
+  private startRequest(req: PipeRequest, fromDrain = false): void {
+    if (this.fsm.state === 'disposed') {
       req.reject(new CancelledError());
       return;
     }
@@ -135,6 +208,9 @@ class LocalPipeWorker {
     if (!this.child && !this.spawnChild(req)) {
       return;
     }
+    if (!fromDrain) {
+      this.fsm.send('START_REQUEST');
+    }
     this.inflight = req;
     this.stdoutBuf = '';
     this.stderrBuf = '';
@@ -143,7 +219,7 @@ class LocalPipeWorker {
     this.timeoutTimer = setTimeout(() => {
       if (this.inflight === req) {
         this.inflight = undefined;
-        this.resetChild();
+        this.resetChild('render timeout');
         if (!req.cancelled) {
           req.reject(new Error(`PlantUML did not finish within ${TIMEOUT_MS / 1000}s`));
         }
@@ -169,6 +245,7 @@ class LocalPipeWorker {
     try {
       proc = spawn(this.java || 'java', args, { cwd: this.baseDir ?? path.dirname(this.jar), windowsHide: true });
     } catch (err) {
+      this.fsm.send('RESET_TO_COLD', 'spawn threw');
       initialReq.reject(err as Error);
       return false;
     }
@@ -182,7 +259,7 @@ class LocalPipeWorker {
       if (this.stdoutBytes > MAX_OUTPUT_BYTES) {
         const active = this.inflight;
         this.inflight = undefined;
-        this.resetChild();
+        this.resetChild('output limit exceeded');
         if (active && !active.cancelled) {
           active.reject(new Error('PlantUML output exceeded the 32 MB safety limit.'));
         }
@@ -205,6 +282,7 @@ class LocalPipeWorker {
       }
       this.child = undefined;
       this.clearInflightTimers();
+      this.fsm.send('RESET_TO_COLD', err.code ?? 'process error');
       const formatted =
         err.code === 'ENOENT'
           ? new Error(`Java executable "${this.java}" not found. Install Java or set "drawGraph.plantuml.java".`)
@@ -227,6 +305,7 @@ class LocalPipeWorker {
       }
       this.child = undefined;
       this.clearInflightTimers();
+      this.fsm.send('RESET_TO_COLD', `exit ${code}`);
       const active = this.inflight;
       this.inflight = undefined;
       if (active && !active.cancelled) {
@@ -274,27 +353,44 @@ class LocalPipeWorker {
       }
     }
     this.stderrBuf = '';
-    this.pumpNext();
+    this.pumpNext(true);
   }
 
-  private pumpNext(): void {
-    if (this.disposed) {
+  private pumpNext(fromDrain = false): void {
+    if (this.fsm.state === 'disposed') {
       return;
     }
     if (this.queued) {
       const next = this.queued;
       this.queued = undefined;
-      this.startRequest(next);
+      if (fromDrain && this.child) {
+        this.fsm.send('DRAINED_TO_NEXT');
+        this.startRequest(next, true);
+      } else {
+        this.startRequest(next, false);
+      }
     } else if (this.child) {
-      this.idleTimer = setTimeout(() => this.resetChild(), IDLE_TIMEOUT_MS);
+      if (fromDrain) {
+        this.fsm.send('DRAINED_TO_IDLE');
+      }
+      this.idleTimer = setTimeout(() => {
+        this.idleTimer = undefined;
+        this.fsm.send('IDLE_EXPIRED');
+        this.terminateChild();
+      }, IDLE_TIMEOUT_MS);
       this.idleTimer.unref?.();
     }
   }
 
-  private resetChild(): void {
+  private resetChild(reason: string): void {
     this.clearInflightTimers();
     clearTimeout(this.idleTimer);
     this.idleTimer = undefined;
+    this.fsm.send('RESET_TO_COLD', reason);
+    this.terminateChild();
+  }
+
+  private terminateChild(): void {
     const proc = this.child;
     this.child = undefined;
     this.stdoutBuf = '';
@@ -320,14 +416,26 @@ class LocalPipeWorker {
   }
 }
 
+let rendererSeq = 0;
+
 /**
  * Renders PlantUML source to SVG. Starting a new render cancels the previous one;
  * local mode reuses a warm PlantUML pipe worker and both modes share a small LRU cache.
  */
 export class PlantUmlRenderer {
+  private readonly id: string;
+  private readonly onTransition?: (record: TransitionRecord<string, string>, machineId: string) => void;
   private serverAbort: AbortController | undefined;
   private worker: LocalPipeWorker | undefined;
   private readonly cache = new Map<string, string>();
+
+  constructor(
+    id = `plantuml-renderer-${++rendererSeq}`,
+    onTransition?: (record: TransitionRecord<string, string>, machineId: string) => void,
+  ) {
+    this.id = id;
+    this.onTransition = onTransition;
+  }
 
   cancel(): void {
     this.serverAbort?.abort();
@@ -340,6 +448,21 @@ export class PlantUmlRenderer {
     this.worker?.dispose();
     this.worker = undefined;
     this.cache.clear();
+  }
+
+  snapshot(): RendererSnapshot {
+    const workerSnap: MachineSnapshot<WorkerPhase, WorkerEvent> = this.worker
+      ? this.worker.fsm.snapshot()
+      : { id: `${this.id}:worker`, state: 'cold', allowedEvents: ['START_REQUEST', 'DISPOSE'], isSettled: true, transitions: [] };
+    const serverInFlight = this.serverAbort !== undefined;
+    return {
+      worker: workerSnap,
+      workerPid: this.worker?.pid,
+      hasQueuedRequest: this.worker?.hasQueued ?? false,
+      serverInFlight,
+      cacheSize: this.cache.size,
+      isSettled: workerSnap.isSettled && !serverInFlight && !(this.worker?.hasQueued ?? false),
+    };
   }
 
   async render(source: string, options: PlantUmlOptions): Promise<string> {
@@ -355,7 +478,6 @@ export class PlantUmlRenderer {
     if (!options.noCache) {
       const cached = this.cache.get(cacheKey);
       if (cached !== undefined) {
-        // Refresh LRU order.
         this.cache.delete(cacheKey);
         this.cache.set(cacheKey, cached);
         return cached;
@@ -421,7 +543,6 @@ export class PlantUmlRenderer {
       const pageSegment = page > 0 ? `${page}/` : '';
       const response = await fetch(`${base}/svg/${pageSegment}${encoded}`, { signal: controller.signal });
       const body = await response.text();
-      // The server answers syntax errors with HTTP 400 *and* an SVG describing the error.
       if (body.includes('<svg')) {
         return extractSvg(body);
       }
@@ -466,7 +587,15 @@ export class PlantUmlRenderer {
       this.worker = undefined;
     }
     if (!this.worker) {
-      this.worker = new LocalPipeWorker(workerKey, options.java || 'java', jar, options.dot.trim(), options.baseDir);
+      this.worker = new LocalPipeWorker(
+        `${this.id}:worker`,
+        workerKey,
+        options.java || 'java',
+        jar,
+        options.dot.trim(),
+        options.baseDir,
+        this.onTransition,
+      );
     }
     return this.worker.render(source);
   }

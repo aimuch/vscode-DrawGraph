@@ -6,6 +6,7 @@ import { convertMermaidToDrawioXml } from './drawio/mermaidToDrawio';
 import { registerLanguageFeatures } from './language/diagramFeatures';
 import { disposeMarkdownPlantUml, mermaidMarkdownPlugin } from './markdown/markdownIt';
 import { PreviewManager } from './preview/previewManager';
+import type { TransitionRecord } from './stateMachine';
 import { DIAGRAM_TEMPLATES, DRAWIO_TEMPLATE, MERMAID_TEMPLATE, PLANTUML_TEMPLATE } from './templates';
 import { withExtension } from './util';
 
@@ -43,9 +44,15 @@ async function createAndOpenDrawio(target: vscode.Uri): Promise<void> {
 }
 
 export function activate(context: vscode.ExtensionContext) {
+  const log = vscode.window.createOutputChannel('DrawGraph', { log: true });
+  const traceTransition = (rec: TransitionRecord, machineId: string) => {
+    log.debug(`[${machineId}] ${rec.from} --(${rec.event})--> ${rec.to}${rec.note ? ` (${rec.note})` : ''}`);
+  };
+  context.subscriptions.push(log);
+
   const diagnostics = registerLanguageFeatures(context);
-  const drawio = DrawioEditorProvider.register(context);
-  const previews = new PreviewManager(context, diagnostics);
+  const drawio = DrawioEditorProvider.register(context, traceTransition);
+  const previews = new PreviewManager(context, diagnostics, traceTransition);
   context.subscriptions.push({ dispose: () => disposeMarkdownPlantUml() });
 
   const register = (id: string, fn: (...args: any[]) => unknown) =>
@@ -162,6 +169,8 @@ export function activate(context: vscode.ExtensionContext) {
       previews: () => previews.snapshot(),
       drawioEditors: () => drawio.snapshot(),
       drawioAction: (uri: string, action: Record<string, unknown>) => drawio.postAction(uri, action),
+      machines: () => [...drawio.machines(), ...previews.machines()],
+      isSettled: () => drawio.isSettled() && previews.isSettled(),
     };
   }
   return api;

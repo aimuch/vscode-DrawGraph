@@ -143,6 +143,8 @@ process.stdin.on('data', (chunk) => {
     assert.match(svg1, /data-seq="1"/);
     assert.match(svg2, /data-seq="2"/);
     assert.match(svg2, /<svg id="nested"\/>/, 'nested SVG preserved');
+    assert.equal(r.snapshot().worker.state, 'warm_idle');
+    assert.equal(r.snapshot().isSettled, true);
 
     // Repeat render of the first diagram comes from the LRU cache (still seq="1").
     const cached = await r.render('@startuml\nA -> B\n@enduml', opts);

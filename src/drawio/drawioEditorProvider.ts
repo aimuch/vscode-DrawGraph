@@ -1,5 +1,13 @@
 import * as path from 'node:path';
 import * as vscode from 'vscode';
+import {
+  CoalescedTaskMachine,
+  StateMachine,
+  type MachineSnapshot,
+  type SyncPhase,
+  type TransitionRecord,
+  type TransitionTable,
+} from '../stateMachine';
 import { config, decodeDataUri, getNonce, isDarkTheme, resolveAutoExportUri, saveBytes, withExtension } from '../util';
 import { extractDiagramFromPng, pngBytesToDataUri } from './drawioPng';
 import { extractDiagramFromSvg, isSvgDiagramPath, replaceEmbeddedDiagram } from './drawioSvg';
@@ -7,9 +15,62 @@ import { extractDiagramFromSvg, isSvgDiagramPath, replaceEmbeddedDiagram } from 
 type ExportFormat = 'xmlsvg' | 'xmlpng' | 'png';
 type ExportResult = { data?: string; error?: string };
 
+export type DrawioSessionPhase = 'booting' | 'configured' | 'loading_diagram' | 'ready' | 'failed' | 'disposed';
+export type DrawioSessionEvent =
+  | 'SETUP_SENT'
+  | 'BRIDGE_CONFIGURED'
+  | 'INIT_RECEIVED'
+  | 'LOAD_SENT'
+  | 'DIAGRAM_LOADED'
+  | 'RELOAD_EXTERNAL'
+  | 'LOAD_FAILED'
+  | 'RETRY_BOOT'
+  | 'DISPOSE';
+
+const SESSION_TRANSITIONS: TransitionTable<DrawioSessionPhase, DrawioSessionEvent> = {
+  booting: {
+    SETUP_SENT: 'booting',
+    BRIDGE_CONFIGURED: 'configured',
+    INIT_RECEIVED: 'loading_diagram',
+    LOAD_FAILED: 'failed',
+    DISPOSE: 'disposed',
+  },
+  configured: {
+    SETUP_SENT: 'configured',
+    INIT_RECEIVED: 'loading_diagram',
+    LOAD_FAILED: 'failed',
+    RETRY_BOOT: 'booting',
+    DISPOSE: 'disposed',
+  },
+  loading_diagram: {
+    SETUP_SENT: 'loading_diagram',
+    LOAD_SENT: 'loading_diagram',
+    DIAGRAM_LOADED: 'ready',
+    LOAD_FAILED: 'failed',
+    RETRY_BOOT: 'booting',
+    DISPOSE: 'disposed',
+  },
+  ready: {
+    SETUP_SENT: 'ready',
+    LOAD_SENT: 'loading_diagram',
+    RELOAD_EXTERNAL: 'loading_diagram',
+    DIAGRAM_LOADED: 'ready',
+    DISPOSE: 'disposed',
+  },
+  failed: {
+    RETRY_BOOT: 'booting',
+    INIT_RECEIVED: 'loading_diagram',
+    DISPOSE: 'disposed',
+  },
+  disposed: {},
+};
+
+const SESSION_SETTLED: readonly DrawioSessionPhase[] = ['ready', 'failed', 'disposed'];
+
 /** Messages sent from the webview to the extension host. */
 type WebviewMessage =
   | { type: 'ready' }
+  | { type: 'phase'; phase: 'booting' | 'configured' | 'initialized' | 'ready' | 'failed' }
   | { type: 'init' }
   | { type: 'loaded' }
   | { type: 'change'; xml: string }
@@ -21,8 +82,11 @@ interface EditorSession {
   panel: vscode.WebviewPanel;
   uri: vscode.Uri;
   isBinaryPng: boolean;
+  lifecycle: StateMachine<DrawioSessionPhase, DrawioSessionEvent>;
+  syncMachine?: CoalescedTaskMachine<unknown>;
   pendingExports: Map<number, (result: ExportResult) => void>;
   status: { initialized: boolean; loads: number; changes: number };
+  isEditQueueIdle: () => boolean;
 }
 
 class DrawioPngDocument implements vscode.CustomDocument {
@@ -69,7 +133,7 @@ class DrawioPngDocument implements vscode.CustomDocument {
   }
 }
 
-const SVG_SYNC_DEBOUNCE_MS = 200;
+const IMAGE_SYNC_DEBOUNCE_MS = 200;
 const DEFAULT_BUILTIN_LIBRARIES = 'general;uml;er;bpmn;flowchart;basic;arrows2';
 
 /**
@@ -83,13 +147,17 @@ export class DrawioEditorProvider implements vscode.CustomTextEditorProvider {
   private readonly sessions = new Set<EditorSession>();
   private activeSession: EditorSession | undefined;
   private exportCounter = 0;
+  private sessionSeq = 0;
   private readonly pendingInitialXml = new Map<string, string>();
-  private readonly pngSyncFlushers = new Map<string, () => Promise<boolean>>();
+  private readonly pngSyncMachines = new Map<string, CoalescedTaskMachine<Uint8Array>>();
   private readonly pngReloaders = new Map<string, () => void>();
   private readonly onDidChangePngDocEmitter = new vscode.EventEmitter<vscode.CustomDocumentEditEvent<DrawioPngDocument>>();
 
-  static register(context: vscode.ExtensionContext): DrawioEditorProvider {
-    const provider = new DrawioEditorProvider(context);
+  static register(
+    context: vscode.ExtensionContext,
+    onTransition?: (record: TransitionRecord<string, string>, machineId: string) => void,
+  ): DrawioEditorProvider {
+    const provider = new DrawioEditorProvider(context, onTransition);
     const pngProvider: vscode.CustomEditorProvider<DrawioPngDocument> = {
       onDidChangeCustomDocument: provider.onDidChangePngDocEmitter.event,
       openCustomDocument: (uri, openContext) => provider.openPngDocument(uri, openContext),
@@ -126,11 +194,24 @@ export class DrawioEditorProvider implements vscode.CustomTextEditorProvider {
     return provider;
   }
 
-  private constructor(private readonly context: vscode.ExtensionContext) {}
+  private constructor(
+    private readonly context: vscode.ExtensionContext,
+    private readonly onTransition?: (record: TransitionRecord<string, string>, machineId: string) => void,
+  ) {}
 
   /** Queues converted `<mxfile>` XML to be loaded and persisted as SVG/PNG when `uri` opens. */
   queueInitialXml(uri: vscode.Uri, mxfileXml: string): void {
     this.pendingInitialXml.set(uri.toString(), mxfileXml);
+  }
+
+  private createLifecycleMachine(uri: vscode.Uri): StateMachine<DrawioSessionPhase, DrawioSessionEvent> {
+    return new StateMachine<DrawioSessionPhase, DrawioSessionEvent>({
+      id: `drawio-editor:${++this.sessionSeq}:${displayName(uri)}`,
+      initial: 'booting',
+      transitions: SESSION_TRANSITIONS,
+      settledStates: SESSION_SETTLED,
+      onTransition: this.onTransition,
+    });
   }
 
   private buildSetupPayloadSyncOrAsync(): Record<string, unknown> | Promise<Record<string, unknown>> {
@@ -162,6 +243,7 @@ export class DrawioEditorProvider implements vscode.CustomTextEditorProvider {
   private async broadcastSetup(): Promise<void> {
     const payload = await this.buildSetupPayloadSyncOrAsync();
     for (const s of this.sessions) {
+      s.lifecycle.send('SETUP_SENT');
       void s.panel.webview.postMessage(payload);
     }
   }
@@ -174,7 +256,6 @@ export class DrawioEditorProvider implements vscode.CustomTextEditorProvider {
     if (mode !== 'svg' && mode !== 'png') {
       return;
     }
-    // Skip files that are already self-contained image diagrams.
     if (/\.(?:svg|png)$/i.test(savedUri.path)) {
       return;
     }
@@ -198,12 +279,17 @@ export class DrawioEditorProvider implements vscode.CustomTextEditorProvider {
   // ---- Text-backed custom editor (.drawio, .dio, .drawio.xml, .drawio.svg) --------------
 
   async resolveCustomTextEditor(document: vscode.TextDocument, panel: vscode.WebviewPanel): Promise<void> {
+    const lifecycle = this.createLifecycleMachine(document.uri);
+    let pendingEdits = 0;
+
     const session: EditorSession = {
       panel,
       uri: document.uri,
       isBinaryPng: false,
+      lifecycle,
       pendingExports: new Map(),
       status: { initialized: false, loads: 0, changes: 0 },
+      isEditQueueIdle: () => pendingEdits === 0 && session.pendingExports.size === 0,
     };
     this.sessions.add(session);
     if (panel.active) {
@@ -217,22 +303,24 @@ export class DrawioEditorProvider implements vscode.CustomTextEditorProvider {
     let webviewXml: string | undefined;
     let lastAppliedVersion = -1;
     let applyingEdit = false;
-    let disposed = false;
-    let persistAfterMermaidLoad = false;
+    let initialLoadPersist: 'none' | 'persist_on_first_load' = 'none';
     let editQueue: Promise<boolean> = Promise.resolve(true);
+    let latestXml: string | undefined;
 
+    const isDisposed = () => lifecycle.state === 'disposed';
     const post = (message: unknown) => {
-      if (!disposed) {
+      if (!isDisposed()) {
         void panel.webview.postMessage(message);
       }
     };
     const svgFile = isSvgDiagramPath(document.uri.path);
 
-    const sendLoad = () => {
+    const sendLoad = (event: 'LOAD_SENT' | 'RELOAD_EXTERNAL' = 'LOAD_SENT') => {
+      lifecycle.send(event);
       const pendingXml = this.pendingInitialXml.get(document.uri.toString());
       if (pendingXml !== undefined) {
         this.pendingInitialXml.delete(document.uri.toString());
-        persistAfterMermaidLoad = true;
+        initialLoadPersist = 'persist_on_first_load';
         latestXml = pendingXml;
         post({ type: 'load', xml: pendingXml, title: displayName(document.uri) });
         return;
@@ -258,115 +346,60 @@ export class DrawioEditorProvider implements vscode.CustomTextEditorProvider {
 
     const applyXml = (xml: string): Promise<boolean> => {
       webviewXml = xml;
+      pendingEdits++;
       const next = editQueue.then(async () => {
-        if (disposed) {
-          return false;
-        }
-        if (document.getText() === xml) {
-          lastAppliedVersion = document.version;
-          return true;
-        }
-        const edit = new vscode.WorkspaceEdit();
-        const fullRange = new vscode.Range(0, 0, document.lineCount, 0);
-        edit.replace(document.uri, fullRange, xml);
-        applyingEdit = true;
         try {
-          const ok = await vscode.workspace.applyEdit(edit);
-          if (ok) {
-            lastAppliedVersion = document.version;
+          if (isDisposed()) {
+            return false;
           }
-          return ok;
+          if (document.getText() === xml) {
+            lastAppliedVersion = document.version;
+            return true;
+          }
+          const edit = new vscode.WorkspaceEdit();
+          const fullRange = new vscode.Range(0, 0, document.lineCount, 0);
+          edit.replace(document.uri, fullRange, xml);
+          applyingEdit = true;
+          try {
+            const ok = await vscode.workspace.applyEdit(edit);
+            if (ok) {
+              lastAppliedVersion = document.version;
+            }
+            return ok;
+          } finally {
+            applyingEdit = false;
+          }
         } finally {
-          applyingEdit = false;
+          pendingEdits--;
         }
       });
       editQueue = next.catch(() => false);
       return next;
     };
 
-    let svgSync: Promise<boolean> | undefined;
-    let svgSyncAgain = false;
-    let svgDebounceTimer: NodeJS.Timeout | undefined;
-    let pendingDebouncedSync: { promise: Promise<boolean>; resolve: (ok: boolean) => void } | undefined;
-    let latestXml: string | undefined;
-
-    const cancelPendingSvgDebounce = () => {
-      if (svgDebounceTimer !== undefined) {
-        clearTimeout(svgDebounceTimer);
-        svgDebounceTimer = undefined;
-      }
-      if (pendingDebouncedSync) {
-        pendingDebouncedSync.resolve(false);
-        pendingDebouncedSync = undefined;
-      }
-    };
-
-    const syncSvgNow = (): Promise<boolean> => {
-      if (svgDebounceTimer !== undefined) {
-        clearTimeout(svgDebounceTimer);
-        svgDebounceTimer = undefined;
-      }
-      const waiter = pendingDebouncedSync;
-      pendingDebouncedSync = undefined;
-
-      if (svgSync) {
-        svgSyncAgain = true;
-        if (waiter) {
-          void svgSync.then(waiter.resolve);
-        }
-        return svgSync;
-      }
-      svgSync = (async () => {
-        let finalSvg: string | undefined;
-        do {
-          svgSyncAgain = false;
-          const xmlSnapshot = latestXml;
-          const result = await this.requestExport(session, 'xmlsvg', svgColorOptions());
-          if (disposed) {
-            return false;
-          }
-          if (!result.data) {
-            void vscode.window.showErrorMessage(vscode.l10n.t('Could not update {0}: {1}', displayName(document.uri), result.error ?? 'no data'));
-            return false;
-          }
-          if (svgSyncAgain) {
-            continue;
-          }
-          const svg = Buffer.from(decodeDataUri(result.data)).toString('utf8');
-          const xmlToEmbed = latestXml ?? xmlSnapshot;
-          finalSvg = xmlToEmbed ? replaceEmbeddedDiagram(svg, xmlToEmbed) : svg;
-        } while (svgSyncAgain && !disposed);
-        return finalSvg !== undefined ? applyXml(finalSvg) : false;
-      })().finally(() => {
-        svgSync = undefined;
-      });
-      if (waiter) {
-        void svgSync.then(waiter.resolve);
-      }
-      return svgSync;
-    };
-
-    const scheduleSvgSync = (): Promise<boolean> => {
-      if (svgSync) {
-        svgSyncAgain = true;
-        return svgSync;
-      }
-      if (!pendingDebouncedSync) {
-        let resolveFn!: (ok: boolean) => void;
-        const promise = new Promise<boolean>((r) => {
-          resolveFn = r;
-        });
-        pendingDebouncedSync = { promise, resolve: resolveFn };
-      }
-      if (svgDebounceTimer !== undefined) {
-        clearTimeout(svgDebounceTimer);
-      }
-      svgDebounceTimer = setTimeout(() => {
-        svgDebounceTimer = undefined;
-        void syncSvgNow();
-      }, SVG_SYNC_DEBOUNCE_MS);
-      return pendingDebouncedSync.promise;
-    };
+    const svgSyncMachine = svgFile
+      ? new CoalescedTaskMachine<string>({
+          id: `${lifecycle.id}:svg-sync`,
+          debounceMs: IMAGE_SYNC_DEBOUNCE_MS,
+          onTransition: this.onTransition,
+          produce: async () => {
+            const xmlSnapshot = latestXml;
+            const result = await this.requestExport(session, 'xmlsvg', svgColorOptions());
+            if (isDisposed()) {
+              return undefined;
+            }
+            if (!result.data) {
+              void vscode.window.showErrorMessage(vscode.l10n.t('Could not update {0}: {1}', displayName(document.uri), result.error ?? 'no data'));
+              return undefined;
+            }
+            const svg = Buffer.from(decodeDataUri(result.data)).toString('utf8');
+            const xmlToEmbed = latestXml ?? xmlSnapshot;
+            return xmlToEmbed ? replaceEmbeddedDiagram(svg, xmlToEmbed) : svg;
+          },
+          commit: (finalSvg) => applyXml(finalSvg),
+        })
+      : undefined;
+    session.syncMachine = svgSyncMachine as CoalescedTaskMachine<unknown> | undefined;
 
     let messageChain: Promise<void> = Promise.resolve();
     const disposables: vscode.Disposable[] = [];
@@ -380,29 +413,41 @@ export class DrawioEditorProvider implements vscode.CustomTextEditorProvider {
         }
         messageChain = messageChain
           .then(async () => {
-            if (disposed) {
+            if (isDisposed()) {
               return;
             }
             switch (message.type) {
               case 'ready': {
+                lifecycle.send('SETUP_SENT');
                 const setup = this.buildSetupPayloadSyncOrAsync();
                 post(setup instanceof Promise ? await setup : setup);
                 break;
               }
+              case 'phase':
+                if (message.phase === 'configured') {
+                  lifecycle.send('BRIDGE_CONFIGURED');
+                } else if (message.phase === 'failed') {
+                  lifecycle.send('LOAD_FAILED');
+                } else if (message.phase === 'booting') {
+                  lifecycle.send('RETRY_BOOT');
+                }
+                break;
               case 'init':
                 session.status.initialized = true;
-                sendLoad();
+                lifecycle.send('INIT_RECEIVED');
+                sendLoad('LOAD_SENT');
                 break;
               case 'loaded':
                 session.status.loads++;
-                if (persistAfterMermaidLoad) {
-                  persistAfterMermaidLoad = false;
+                lifecycle.send('DIAGRAM_LOADED');
+                if (initialLoadPersist === 'persist_on_first_load') {
+                  initialLoadPersist = 'none';
                   const exported = await this.requestExport(session, 'xmlsvg', svgColorOptions());
-                  if (exported.data && !disposed) {
+                  if (exported.data && !isDisposed()) {
                     const svg = Buffer.from(decodeDataUri(exported.data)).toString('utf8');
                     const embeddedXml = extractDiagramFromSvg(svg);
                     const ok = await applyXml(svgFile ? (embeddedXml ? replaceEmbeddedDiagram(svg, embeddedXml) : svg) : (embeddedXml ?? svg));
-                    if (ok && !disposed) {
+                    if (ok && !isDisposed()) {
                       await document.save();
                     }
                   }
@@ -410,7 +455,7 @@ export class DrawioEditorProvider implements vscode.CustomTextEditorProvider {
                 break;
               case 'change': {
                 latestXml = message.xml;
-                const applied = await (svgFile ? scheduleSvgSync() : applyXml(message.xml));
+                const applied = await (svgSyncMachine ? svgSyncMachine.schedule() : applyXml(message.xml));
                 if (applied) {
                   session.status.changes++;
                 }
@@ -418,8 +463,8 @@ export class DrawioEditorProvider implements vscode.CustomTextEditorProvider {
               }
               case 'save': {
                 latestXml = message.xml;
-                const ok = await (svgFile ? syncSvgNow() : applyXml(message.xml));
-                if (ok && !disposed) {
+                const ok = await (svgSyncMachine ? svgSyncMachine.flush() : applyXml(message.xml));
+                if (ok && !isDisposed()) {
                   await document.save();
                 }
                 break;
@@ -432,8 +477,8 @@ export class DrawioEditorProvider implements vscode.CustomTextEditorProvider {
           .catch(() => undefined);
       }),
       vscode.workspace.onWillSaveTextDocument((e) => {
-        if (e.document.uri.toString() === document.uri.toString() && svgFile && svgDebounceTimer !== undefined) {
-          e.waitUntil(syncSvgNow().then(() => []));
+        if (e.document.uri.toString() === document.uri.toString() && svgSyncMachine?.hasPendingDebounce) {
+          e.waitUntil(svgSyncMachine.flush().then(() => []));
         }
       }),
       vscode.workspace.onDidChangeTextDocument((e) => {
@@ -446,8 +491,8 @@ export class DrawioEditorProvider implements vscode.CustomTextEditorProvider {
           return;
         }
         if (document.getText() !== webviewXml) {
-          cancelPendingSvgDebounce();
-          sendLoad();
+          svgSyncMachine?.cancel('external document edit');
+          sendLoad('RELOAD_EXTERNAL');
         }
       }),
       panel.onDidChangeViewState(() => {
@@ -460,8 +505,8 @@ export class DrawioEditorProvider implements vscode.CustomTextEditorProvider {
     );
 
     panel.onDidDispose(() => {
-      disposed = true;
-      cancelPendingSvgDebounce();
+      svgSyncMachine?.dispose();
+      lifecycle.send('DISPOSE');
       this.sessions.delete(session);
       if (this.activeSession === session) {
         this.activeSession = undefined;
@@ -499,12 +544,15 @@ export class DrawioEditorProvider implements vscode.CustomTextEditorProvider {
 
   private async resolvePngEditor(document: DrawioPngDocument, panel: vscode.WebviewPanel): Promise<void> {
     const key = document.uri.toString();
+    const lifecycle = this.createLifecycleMachine(document.uri);
     const session: EditorSession = {
       panel,
       uri: document.uri,
       isBinaryPng: true,
+      lifecycle,
       pendingExports: new Map(),
       status: { initialized: false, loads: 0, changes: 0 },
+      isEditQueueIdle: () => session.pendingExports.size === 0,
     };
     this.sessions.add(session);
     if (panel.active) {
@@ -515,21 +563,22 @@ export class DrawioEditorProvider implements vscode.CustomTextEditorProvider {
     panel.webview.options = { enableScripts: true, localResourceRoots: [mediaRoot] };
     panel.webview.html = this.getHtml(panel.webview);
 
-    let disposed = false;
-    let persistAfterMermaidLoad = false;
+    let initialLoadPersist: 'none' | 'persist_on_first_load' = 'none';
     let writingDisk = false;
 
+    const isDisposed = () => lifecycle.state === 'disposed';
     const post = (message: unknown) => {
-      if (!disposed) {
+      if (!isDisposed()) {
         void panel.webview.postMessage(message);
       }
     };
 
-    const sendLoad = () => {
+    const sendLoad = (event: 'LOAD_SENT' | 'RELOAD_EXTERNAL' = 'LOAD_SENT') => {
+      lifecycle.send(event);
       const pendingXml = this.pendingInitialXml.get(key);
       if (pendingXml !== undefined) {
         this.pendingInitialXml.delete(key);
-        persistAfterMermaidLoad = true;
+        initialLoadPersist = 'persist_on_first_load';
         post({ type: 'load', xml: pendingXml, title: displayName(document.uri) });
         return;
       }
@@ -549,115 +598,49 @@ export class DrawioEditorProvider implements vscode.CustomTextEditorProvider {
       post({ type: 'load', xml: pngBytesToDataUri(document.bytes), title: displayName(document.uri) });
     };
 
-    let pngSync: Promise<boolean> | undefined;
-    let pngSyncAgain = false;
-    let pngDebounceTimer: NodeJS.Timeout | undefined;
-    let pendingDebouncedSync: { promise: Promise<boolean>; resolve: (ok: boolean) => void } | undefined;
-
-    const cancelPendingPngDebounce = () => {
-      if (pngDebounceTimer !== undefined) {
-        clearTimeout(pngDebounceTimer);
-        pngDebounceTimer = undefined;
-      }
-      if (pendingDebouncedSync) {
-        pendingDebouncedSync.resolve(false);
-        pendingDebouncedSync = undefined;
-      }
-    };
-
-    const applyPngBytes = (nextBytes: Uint8Array, emitEditEvent = true): boolean => {
-      if (disposed) {
-        return false;
-      }
-      const prevBytes = document.bytes;
-      if (prevBytes.length === nextBytes.length && Buffer.compare(prevBytes, nextBytes) === 0) {
-        return true;
-      }
-      document.setBytes(nextBytes);
-      if (emitEditEvent) {
+    const pngSyncMachine = new CoalescedTaskMachine<Uint8Array>({
+      id: `${lifecycle.id}:png-sync`,
+      debounceMs: IMAGE_SYNC_DEBOUNCE_MS,
+      onTransition: this.onTransition,
+      produce: async () => {
+        const result = await this.requestExport(session, 'xmlpng', { border: 10, background: '#ffffff' });
+        if (isDisposed()) {
+          return undefined;
+        }
+        if (!result.data) {
+          void vscode.window.showErrorMessage(vscode.l10n.t('Could not update {0}: {1}', displayName(document.uri), result.error ?? 'no data'));
+          return undefined;
+        }
+        return decodeDataUri(result.data);
+      },
+      commit: (nextBytes) => {
+        if (isDisposed()) {
+          return false;
+        }
+        const prevBytes = document.bytes;
+        if (prevBytes.length === nextBytes.length && Buffer.compare(prevBytes, nextBytes) === 0) {
+          return true;
+        }
+        document.setBytes(nextBytes);
         this.onDidChangePngDocEmitter.fire({
           document,
           undo: () => {
             document.setBytes(prevBytes);
-            sendLoad();
+            sendLoad('RELOAD_EXTERNAL');
           },
           redo: () => {
             document.setBytes(nextBytes);
-            sendLoad();
+            sendLoad('RELOAD_EXTERNAL');
           },
         });
-      }
-      return true;
-    };
-
-    const syncPngNow = (): Promise<boolean> => {
-      if (pngDebounceTimer !== undefined) {
-        clearTimeout(pngDebounceTimer);
-        pngDebounceTimer = undefined;
-      }
-      const waiter = pendingDebouncedSync;
-      pendingDebouncedSync = undefined;
-
-      if (pngSync) {
-        pngSyncAgain = true;
-        if (waiter) {
-          void pngSync.then(waiter.resolve);
-        }
-        return pngSync;
-      }
-      pngSync = (async () => {
-        let latestBytes: Uint8Array | undefined;
-        do {
-          pngSyncAgain = false;
-          const result = await this.requestExport(session, 'xmlpng', { border: 10, background: '#ffffff' });
-          if (disposed) {
-            return false;
-          }
-          if (!result.data) {
-            void vscode.window.showErrorMessage(vscode.l10n.t('Could not update {0}: {1}', displayName(document.uri), result.error ?? 'no data'));
-            return false;
-          }
-          if (pngSyncAgain) {
-            continue;
-          }
-          latestBytes = decodeDataUri(result.data);
-        } while (pngSyncAgain && !disposed);
-        return latestBytes ? applyPngBytes(latestBytes) : false;
-      })().finally(() => {
-        pngSync = undefined;
-      });
-      if (waiter) {
-        void pngSync.then(waiter.resolve);
-      }
-      return pngSync;
-    };
-
-    const schedulePngSync = (): Promise<boolean> => {
-      if (pngSync) {
-        pngSyncAgain = true;
-        return pngSync;
-      }
-      if (!pendingDebouncedSync) {
-        let resolveFn!: (ok: boolean) => void;
-        const promise = new Promise<boolean>((r) => {
-          resolveFn = r;
-        });
-        pendingDebouncedSync = { promise, resolve: resolveFn };
-      }
-      if (pngDebounceTimer !== undefined) {
-        clearTimeout(pngDebounceTimer);
-      }
-      pngDebounceTimer = setTimeout(() => {
-        pngDebounceTimer = undefined;
-        void syncPngNow();
-      }, SVG_SYNC_DEBOUNCE_MS);
-      return pendingDebouncedSync.promise;
-    };
-
-    this.pngSyncFlushers.set(key, () => (pngDebounceTimer !== undefined || pngSync ? syncPngNow() : Promise.resolve(true)));
+        return true;
+      },
+    });
+    session.syncMachine = pngSyncMachine as CoalescedTaskMachine<unknown>;
+    this.pngSyncMachines.set(key, pngSyncMachine);
     this.pngReloaders.set(key, () => {
-      cancelPendingPngDebounce();
-      sendLoad();
+      pngSyncMachine.cancel('revert document');
+      sendLoad('RELOAD_EXTERNAL');
     });
 
     const disposables: vscode.Disposable[] = [];
@@ -666,14 +649,15 @@ export class DrawioEditorProvider implements vscode.CustomTextEditorProvider {
         new vscode.RelativePattern(vscode.Uri.joinPath(document.uri, '..'), path.basename(document.uri.fsPath)),
       );
       watcher.onDidChange(async () => {
-        if (writingDisk || document.isDirty || disposed) {
+        if (writingDisk || document.isDirty || isDisposed()) {
           return;
         }
         try {
           const disk = await vscode.workspace.fs.readFile(document.uri);
           if (Buffer.compare(disk, document.bytes) !== 0) {
             document.markSaved(disk);
-            sendLoad();
+            pngSyncMachine.cancel('external disk edit');
+            sendLoad('RELOAD_EXTERNAL');
           }
         } catch {
           // Ignore transient read errors.
@@ -693,25 +677,37 @@ export class DrawioEditorProvider implements vscode.CustomTextEditorProvider {
         }
         messageChain = messageChain
           .then(async () => {
-            if (disposed) {
+            if (isDisposed()) {
               return;
             }
             switch (message.type) {
               case 'ready': {
+                lifecycle.send('SETUP_SENT');
                 const setup = this.buildSetupPayloadSyncOrAsync();
                 post(setup instanceof Promise ? await setup : setup);
                 break;
               }
+              case 'phase':
+                if (message.phase === 'configured') {
+                  lifecycle.send('BRIDGE_CONFIGURED');
+                } else if (message.phase === 'failed') {
+                  lifecycle.send('LOAD_FAILED');
+                } else if (message.phase === 'booting') {
+                  lifecycle.send('RETRY_BOOT');
+                }
+                break;
               case 'init':
                 session.status.initialized = true;
-                sendLoad();
+                lifecycle.send('INIT_RECEIVED');
+                sendLoad('LOAD_SENT');
                 break;
               case 'loaded':
                 session.status.loads++;
-                if (persistAfterMermaidLoad) {
-                  persistAfterMermaidLoad = false;
-                  const ok = await syncPngNow();
-                  if (ok && !disposed) {
+                lifecycle.send('DIAGRAM_LOADED');
+                if (initialLoadPersist === 'persist_on_first_load') {
+                  initialLoadPersist = 'none';
+                  const ok = await pngSyncMachine.flush();
+                  if (ok && !isDisposed()) {
                     writingDisk = true;
                     try {
                       await vscode.workspace.fs.writeFile(document.uri, document.bytes);
@@ -723,15 +719,15 @@ export class DrawioEditorProvider implements vscode.CustomTextEditorProvider {
                 }
                 break;
               case 'change': {
-                const applied = await schedulePngSync();
+                const applied = await pngSyncMachine.schedule();
                 if (applied) {
                   session.status.changes++;
                 }
                 break;
               }
               case 'save': {
-                const ok = await syncPngNow();
-                if (ok && !disposed) {
+                const ok = await pngSyncMachine.flush();
+                if (ok && !isDisposed()) {
                   await vscode.commands.executeCommand('workbench.action.files.save');
                 }
                 break;
@@ -753,9 +749,9 @@ export class DrawioEditorProvider implements vscode.CustomTextEditorProvider {
     );
 
     panel.onDidDispose(() => {
-      disposed = true;
-      cancelPendingPngDebounce();
-      this.pngSyncFlushers.delete(key);
+      pngSyncMachine.dispose();
+      lifecycle.send('DISPOSE');
+      this.pngSyncMachines.delete(key);
       this.pngReloaders.delete(key);
       this.sessions.delete(session);
       if (this.activeSession === session) {
@@ -770,9 +766,9 @@ export class DrawioEditorProvider implements vscode.CustomTextEditorProvider {
   }
 
   private async savePngDocument(document: DrawioPngDocument, _cancellation: vscode.CancellationToken): Promise<void> {
-    const flush = this.pngSyncFlushers.get(document.uri.toString());
-    if (flush) {
-      await flush();
+    const sync = this.pngSyncMachines.get(document.uri.toString());
+    if (sync && !sync.isSettled) {
+      await sync.flush();
     }
     await vscode.workspace.fs.writeFile(document.uri, document.bytes);
     document.markSaved();
@@ -783,9 +779,9 @@ export class DrawioEditorProvider implements vscode.CustomTextEditorProvider {
     destination: vscode.Uri,
     _cancellation: vscode.CancellationToken,
   ): Promise<void> {
-    const flush = this.pngSyncFlushers.get(document.uri.toString());
-    if (flush) {
-      await flush();
+    const sync = this.pngSyncMachines.get(document.uri.toString());
+    if (sync && !sync.isSettled) {
+      await sync.flush();
     }
     await vscode.workspace.fs.writeFile(destination, document.bytes);
     document.markSaved();
@@ -802,9 +798,9 @@ export class DrawioEditorProvider implements vscode.CustomTextEditorProvider {
     context: vscode.CustomDocumentBackupContext,
     _cancellation: vscode.CancellationToken,
   ): Promise<vscode.CustomDocumentBackup> {
-    const flush = this.pngSyncFlushers.get(document.uri.toString());
-    if (flush) {
-      await flush();
+    const sync = this.pngSyncMachines.get(document.uri.toString());
+    if (sync && !sync.isSettled) {
+      await sync.flush();
     }
     await vscode.workspace.fs.writeFile(context.destination, document.bytes);
     return {
@@ -819,16 +815,12 @@ export class DrawioEditorProvider implements vscode.CustomTextEditorProvider {
     };
   }
 
-  // ---- Shared commands & helpers --------------------------------------------------------
+  // ---- Shared commands & introspection --------------------------------------------------
 
   private get currentSession(): EditorSession | undefined {
     return this.activeSession ?? [...this.sessions].find((s) => s.panel.visible);
   }
 
-  /**
-   * Exports the active draw.io editor. Without `target` the user picks a file;
-   * with `target` (e.g. from a script or `executeCommand`) it is written directly.
-   */
   async exportActive(format: 'xmlsvg' | 'xmlpng', target?: vscode.Uri): Promise<void> {
     const session = this.currentSession;
     if (!session) {
@@ -856,7 +848,6 @@ export class DrawioEditorProvider implements vscode.CustomTextEditorProvider {
     );
   }
 
-  /** Copies the active draw.io diagram to the system clipboard as SVG text or a PNG image. */
   async copyActive(format: 'svg' | 'png'): Promise<void> {
     const session = this.currentSession;
     if (!session) {
@@ -894,7 +885,6 @@ export class DrawioEditorProvider implements vscode.CustomTextEditorProvider {
     void vscode.window.setStatusBarMessage(vscode.l10n.t('PNG copied to clipboard'), 2000);
   }
 
-  /** Asks the draw.io frame for an export; `options` are passed to draw.io's export action. */
   private requestExport(
     session: EditorSession,
     format: ExportFormat,
@@ -916,9 +906,48 @@ export class DrawioEditorProvider implements vscode.CustomTextEditorProvider {
     });
   }
 
-  /** Snapshot of every open draw.io editor (diagnostics / integration tests). */
-  snapshot(): Array<{ uri: string; active: boolean; initialized: boolean; loads: number; changes: number }> {
-    return [...this.sessions].map((s) => ({ uri: s.uri.toString(), active: s === this.activeSession, ...s.status }));
+  /** Snapshot of every open draw.io editor (backwards-compatible + explicit FSM state). */
+  snapshot(): Array<{
+    uri: string;
+    active: boolean;
+    initialized: boolean;
+    loads: number;
+    changes: number;
+    phase: DrawioSessionPhase;
+    syncPhase: SyncPhase;
+    isSettled: boolean;
+  }> {
+    return [...this.sessions].map((s) => {
+      const syncSettled = s.syncMachine ? s.syncMachine.isSettled : true;
+      return {
+        uri: s.uri.toString(),
+        active: s === this.activeSession,
+        ...s.status,
+        phase: s.lifecycle.state,
+        syncPhase: s.syncMachine ? s.syncMachine.state : 'idle',
+        isSettled: s.lifecycle.isSettled && syncSettled && s.isEditQueueIdle(),
+      };
+    });
+  }
+
+  machines(): MachineSnapshot[] {
+    const out: MachineSnapshot[] = [];
+    for (const s of this.sessions) {
+      out.push(s.lifecycle.snapshot());
+      if (s.syncMachine) {
+        out.push(s.syncMachine.snapshot());
+      }
+    }
+    return out;
+  }
+
+  isSettled(): boolean {
+    for (const s of this.sessions) {
+      if (!s.lifecycle.isSettled || !s.isEditQueueIdle() || (s.syncMachine && !s.syncMachine.isSettled)) {
+        return false;
+      }
+    }
+    return true;
   }
 
   /** Sends a raw draw.io embed-protocol action to the editor of `uri` (diagnostics / integration tests). */
@@ -951,6 +980,7 @@ export class DrawioEditorProvider implements vscode.CustomTextEditorProvider {
     const failText = escapeHtml(
       vscode.l10n.t('draw.io did not load from {0}. Check your network connection or the "drawGraph.drawio.url" setting.', drawioUrl.origin),
     );
+    const retryText = escapeHtml(vscode.l10n.t('Retry'));
 
     return /* html */ `<!DOCTYPE html>
 <html lang="en">
@@ -961,7 +991,10 @@ export class DrawioEditorProvider implements vscode.CustomTextEditorProvider {
   <link href="${mediaUri('main.css')}" rel="stylesheet">
 </head>
 <body>
-  <div id="status" data-fail="${failText}">${loadingText}</div>
+  <div id="status" data-loading="${loadingText}" data-fail="${failText}">
+    <span id="statusText">${loadingText}</span>
+    <button id="retryBtn" type="button" hidden>${retryText}</button>
+  </div>
   <!-- main.js sets src only after its message listener is in place: a cached draw.io can
        otherwise send its first handshake message before anyone is listening. -->
   <iframe id="drawio" data-src="${escapeHtml(drawioUrl.toString())}" frameborder="0"></iframe>
@@ -1041,11 +1074,6 @@ export function parseMxLibraryXml(raw: string): unknown[] | undefined {
   }
 }
 
-/**
- * draw.io export options for the `drawGraph.drawio.svgColorScheme` setting. By default
- * draw.io writes adaptive SVGs (CSS `light-dark()` colors following the viewer's color
- * scheme); `light` / `dark` pin the colors.
- */
 function svgColorOptions(): Record<string, unknown> {
   const scheme = config().get<string>('drawio.svgColorScheme', 'auto');
   return scheme === 'light' || scheme === 'dark' ? { theme: scheme } : {};

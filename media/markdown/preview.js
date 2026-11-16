@@ -7,6 +7,11 @@
   const initialNonce = (ownScript && ownScript.nonce) || '';
 
   let counter = 0;
+  /**
+   * Explicit lazy-loader state: `unloaded` -> `loading` -> `ready` | `failed`
+   * @type {'unloaded' | 'loading' | 'ready' | 'failed'}
+   */
+  let loaderPhase = 'unloaded';
   /** @type {Promise<any> | null} */
   let loader = null;
 
@@ -18,15 +23,18 @@
   function ensureMermaid() {
     // @ts-ignore global injected by mermaid.min.js
     if (window.mermaid) {
+      loaderPhase = 'ready';
       // @ts-ignore
       return Promise.resolve(window.mermaid);
     }
-    if (loader) {
+    if (loaderPhase === 'loading' && loader) {
       return loader;
     }
     if (!mermaidUrl) {
+      loaderPhase = 'failed';
       return Promise.reject(new Error('Could not resolve Mermaid script URL.'));
     }
+    loaderPhase = 'loading';
     loader = new Promise((resolve, reject) => {
       const script = document.createElement('script');
       const nonce = initialNonce || document.querySelector('script[nonce]')?.nonce || '';
@@ -37,14 +45,17 @@
       script.onload = () => {
         // @ts-ignore
         if (window.mermaid) {
+          loaderPhase = 'ready';
           // @ts-ignore
           resolve(window.mermaid);
         } else {
+          loaderPhase = 'failed';
           loader = null;
           reject(new Error('Mermaid script loaded without exposing window.mermaid.'));
         }
       };
       script.onerror = () => {
+        loaderPhase = 'failed';
         loader = null;
         script.remove();
         reject(new Error('Failed to load Mermaid library.'));
