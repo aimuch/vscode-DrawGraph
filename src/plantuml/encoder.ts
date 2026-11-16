@@ -1,5 +1,12 @@
 import { promisify } from 'node:util';
-import { deflateRaw, deflateRawSync } from 'node:zlib';
+import {
+  brotliDecompressSync,
+  constants as zlibConstants,
+  deflateRaw,
+  deflateRawSync,
+  inflateRawSync,
+  inflateSync,
+} from 'node:zlib';
 
 const deflateRawAsync = promisify(deflateRaw);
 const ALPHABET = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz-_';
@@ -29,6 +36,82 @@ export function encodePlantUml(source: string): string {
 export async function encodePlantUmlAsync(source: string): Promise<string> {
   const compressed = await deflateRawAsync(Buffer.from(source, 'utf8'), { level: 6 });
   return encodeBytes(compressed);
+}
+
+/**
+ * Decodes a PlantUML URL-encoded payload (`~1` header or raw deflate + PlantUML's 64-char alphabet)
+ * back into UTF-8 PlantUML source text.
+ */
+export function decodePlantUml(encoded: string): string | undefined {
+  let clean = encoded.trim();
+  if (clean.startsWith('~1')) {
+    clean = clean.slice(2);
+  }
+  if (!clean || !/^[0-9A-Za-z\-_]+$/.test(clean)) {
+    return undefined;
+  }
+  const bytes: number[] = [];
+  for (let i = 0; i < clean.length; i += 4) {
+    const c1 = ALPHABET.indexOf(clean[i] ?? '0');
+    const c2 = ALPHABET.indexOf(clean[i + 1] ?? '0');
+    const c3 = i + 2 < clean.length ? ALPHABET.indexOf(clean[i + 2]) : -1;
+    const c4 = i + 3 < clean.length ? ALPHABET.indexOf(clean[i + 3]) : -1;
+    bytes.push((c1 << 2) | (c2 >> 4));
+    if (c3 >= 0) {
+      bytes.push(((c2 & 0xf) << 4) | (c3 >> 2));
+    }
+    if (c4 >= 0) {
+      bytes.push(((c3 & 0x3) << 6) | c4);
+    }
+  }
+  const buf = Buffer.from(bytes);
+  try {
+    return inflateRawSync(buf, { finishFlush: zlibConstants.Z_SYNC_FLUSH }).toString('utf8');
+  } catch {
+    // Not raw deflate; try zlib or Brotli (used by PlantUML's `<!--SRC=[...]-->` metadata).
+  }
+  try {
+    return inflateSync(buf, { finishFlush: zlibConstants.Z_SYNC_FLUSH }).toString('utf8');
+  } catch {
+    // Not standard zlib; try Brotli below.
+  }
+  for (let pad = 0; pad <= 2 && buf.length > pad; pad++) {
+    try {
+      return brotliDecompressSync(pad === 0 ? buf : buf.subarray(0, buf.length - pad)).toString('utf8');
+    } catch {
+      // Try next padding length (PlantUML's 6-bit encoder pads 3-byte groups with up to 2 zero bytes).
+    }
+  }
+  return undefined;
+}
+
+function ensureStartEndWrapper(decoded: string): string {
+  const trimmed = decoded.trim();
+  if (!trimmed) {
+    return trimmed;
+  }
+  if (/^@start\w+/i.test(trimmed)) {
+    return decoded;
+  }
+  return `@startuml\n${trimmed}\n@enduml\n`;
+}
+
+/**
+ * Extracts original PlantUML source code embedded in a PlantUML-generated SVG
+ * (`<!--SRC=[...]-->` comment or PlantUML server URL metadata).
+ */
+export function extractPlantUmlSourceFromSvg(svg: string): string | undefined {
+  const commentMatch = /<!--\s*SRC=\[([~0-9A-Za-z\-_]+)\]\s*-->/.exec(svg);
+  if (commentMatch) {
+    const decoded = decodePlantUml(commentMatch[1]);
+    return decoded ? ensureStartEndWrapper(decoded) : undefined;
+  }
+  const urlMatch = /plantuml[^"']*?\/(?:svg|png|uml)\/([~0-9A-Za-z\-_]{8,})/i.exec(svg);
+  if (urlMatch) {
+    const decoded = decodePlantUml(urlMatch[1]);
+    return decoded ? ensureStartEndWrapper(decoded) : undefined;
+  }
+  return undefined;
 }
 
 export interface DiagramBlock {

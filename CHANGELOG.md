@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Diagram preview minimap (`m` or `Map` toolbar button) with viewport indicator and click/drag panning, plus in-diagram text search & highlight (`Cmd/Ctrl+F` or `/`).
+- Code Links across Draw.io and Diagram Previews: jump from `#SymbolName` or `path/to/file.ts:line` diagram labels directly to workspace definitions (`DrawGraph: Navigate Draw.io Code Links…`, status bar `Code Links` button, or `Cmd/Ctrl+Click` in preview), and insert workspace symbols onto the Draw.io canvas (`DrawGraph: Insert Workspace Code Symbol into Draw.io…`).
+- Context-aware IntelliSense (`CompletionItemProvider` for keywords, `!theme` names, `skinparam` properties, directives, and declared node/participant IDs) and document formatting (`Shift+Alt+F`) for Mermaid and PlantUML.
+- Interactive hover zoom/pan toolbar (`−` / `100%` / `+` and `Ctrl/Cmd/Alt+Wheel`) on rendered Mermaid and PlantUML diagrams inside VS Code's built-in Markdown preview.
+- PlantUML ecosystem workflows: `Alt+D` preview shortcut, HTTP `POST` fallback for large server diagrams, `DrawGraph: Generate Shareable PlantUML URL…`, `DrawGraph: Export All Diagrams in Document…` (multi-block `.puml` and `.md`), and `DrawGraph: Extract Embedded Diagram Source` (recovers embedded `<mxfile>` XML or PlantUML `<!--SRC=[...]-->` source from `.svg`/`.png` files).
+- Support `*.dio.svg`, `*.dio.png`, and `*.dio.xml` file extensions in the Draw.io custom editor.
 - Extension logo (`icon.png`) and colorful top-right toolbar quick-menu icon (`DrawGraph: Diagram Menu`, `drawGraph.toolbar.showQuickMenu`), plus direct top-right toolbar icons for diagram export, PNG copy, and Mermaid-to-Draw.io conversion.
 - Edit `*.drawio.svg` and `*.drawio.png` files directly in the draw.io editor: edits rewrite valid SVG/PNG images with the diagram embedded inside.
 - Markdown support for PlantUML: syntax highlighting and built-in Markdown preview rendering for ```` ```plantuml ```` / ```` ```puml ```` blocks (`drawGraph.markdown.plantuml`).

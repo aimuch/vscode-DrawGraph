@@ -12,10 +12,70 @@
   white-space: normal;
 }
 
+.drawgraph-md-interactive {
+  position: relative;
+}
+
+.drawgraph-md-viewport {
+  overflow: hidden;
+  border-radius: 4px;
+}
+
+.drawgraph-md-viewport.is-transformed {
+  cursor: grab;
+}
+
+.drawgraph-md-viewport.is-dragging {
+  cursor: grabbing;
+}
+
+.drawgraph-md-inner {
+  display: inline-block;
+  max-width: 100%;
+  transform-origin: center center;
+}
+
+.drawgraph-md-controls {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 4px;
+  background: var(--vscode-editorWidget-background, rgba(30, 30, 30, 0.85));
+  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.35));
+  opacity: 0;
+  transition: opacity 0.15s ease;
+  user-select: none;
+}
+
+.drawgraph-md-interactive:hover .drawgraph-md-controls {
+  opacity: 1;
+}
+
+.drawgraph-md-controls button {
+  min-width: 24px;
+  height: 20px;
+  padding: 0 5px;
+  border: none;
+  border-radius: 3px;
+  font-size: 11px;
+  color: var(--vscode-foreground);
+  background: transparent;
+  cursor: pointer;
+}
+
+.drawgraph-md-controls button:hover {
+  background: var(--vscode-toolbar-hoverBackground, rgba(128, 128, 128, 0.25));
+}
+
 .drawgraph-mermaid svg,
 .drawgraph-plantuml img {
   max-width: 100%;
   height: auto;
+  user-select: none;
+  -webkit-user-drag: none;
 }
 
 .drawgraph-plantuml img {

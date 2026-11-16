@@ -2,6 +2,13 @@ import * as vscode from 'vscode';
 import { splitDiagrams } from '../plantuml/encoder';
 import { config } from '../util';
 import {
+  collectMermaidCompletions,
+  collectPlantUmlCompletions,
+  formatMermaidSource,
+  formatPlantUmlSource,
+  type CompletionCandidate,
+} from './completionsAndFormat';
+import {
   findMarkdownDiagramFences,
   parseMermaidOutline,
   parsePlantUmlOutline,
@@ -179,6 +186,8 @@ export function registerLanguageFeatures(context: vscode.ExtensionContext): Diag
   const diagnostics = new DiagramDiagnostics();
   const symbolProvider = new DiagramSymbolProvider();
   const codeLensProvider = new DiagramCodeLensProvider();
+  const completionProvider = new DiagramCompletionProvider();
+  const formattingProvider = new DiagramFormattingProvider();
 
   context.subscriptions.push(
     diagnostics,
@@ -188,6 +197,18 @@ export function registerLanguageFeatures(context: vscode.ExtensionContext): Diag
       [{ language: 'mermaid' }, { language: 'plantuml' }, { language: 'markdown' }],
       codeLensProvider,
     ),
+    vscode.languages.registerCompletionItemProvider(
+      [{ language: 'mermaid' }, { language: 'plantuml' }],
+      completionProvider,
+      '!',
+      '@',
+      '{',
+      ' ',
+    ),
+    vscode.languages.registerDocumentFormattingEditProvider(
+      [{ language: 'mermaid' }, { language: 'plantuml' }],
+      formattingProvider,
+    ),
     vscode.workspace.onDidChangeConfiguration((e) => {
       if (e.affectsConfiguration('drawGraph.editor.codeLens')) {
         codeLensProvider.refresh();
@@ -196,4 +217,63 @@ export function registerLanguageFeatures(context: vscode.ExtensionContext): Diag
   );
 
   return diagnostics;
+}
+
+function toCompletionKind(kind: CompletionCandidate['kind']): vscode.CompletionItemKind {
+  switch (kind) {
+    case 'keyword':
+      return vscode.CompletionItemKind.Keyword;
+    case 'theme':
+      return vscode.CompletionItemKind.Color;
+    case 'directive':
+      return vscode.CompletionItemKind.Module;
+    case 'property':
+      return vscode.CompletionItemKind.Property;
+    case 'identifier':
+      return vscode.CompletionItemKind.Variable;
+  }
+}
+
+class DiagramCompletionProvider implements vscode.CompletionItemProvider {
+  provideCompletionItems(document: vscode.TextDocument, position: vscode.Position): vscode.CompletionItem[] {
+    const linePrefix = document.lineAt(position.line).text.slice(0, position.character);
+    const fullText = document.getText();
+    const candidates =
+      document.languageId === 'plantuml'
+        ? collectPlantUmlCompletions(fullText, linePrefix)
+        : collectMermaidCompletions(fullText, linePrefix);
+
+    return candidates.map((c) => {
+      const item = new vscode.CompletionItem(c.label, toCompletionKind(c.kind));
+      if (c.insertText) {
+        item.insertText = c.insertText;
+      }
+      if (c.detail) {
+        item.detail = c.detail;
+      }
+      return item;
+    });
+  }
+}
+
+class DiagramFormattingProvider implements vscode.DocumentFormattingEditProvider {
+  provideDocumentFormattingEdits(
+    document: vscode.TextDocument,
+    options: vscode.FormattingOptions,
+  ): vscode.TextEdit[] {
+    const original = document.getText();
+    if (!original.trim()) {
+      return [];
+    }
+    const indent = options.insertSpaces ? ' '.repeat(Math.max(1, options.tabSize)) : '\t';
+    const formatted =
+      document.languageId === 'plantuml'
+        ? formatPlantUmlSource(original, indent)
+        : formatMermaidSource(original, indent);
+    if (formatted === original) {
+      return [];
+    }
+    const fullRange = document.validateRange(new vscode.Range(0, 0, document.lineCount, 0));
+    return [vscode.TextEdit.replace(fullRange, formatted)];
+  }
 }

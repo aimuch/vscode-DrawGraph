@@ -9,6 +9,7 @@ import {
   type TransitionTable,
 } from '../stateMachine';
 import { config, decodeDataUri, getNonce, isDarkTheme, resolveAutoExportUri, saveBytes, withExtension } from '../util';
+import { buildCodeSymbolMergeXml } from './codeLinksXml';
 import { extractDiagramFromPng, pngBytesToDataUri } from './drawioPng';
 import { extractDiagramFromSvg, isSvgDiagramPath, replaceEmbeddedDiagram } from './drawioSvg';
 
@@ -152,6 +153,7 @@ export class DrawioEditorProvider implements vscode.CustomTextEditorProvider {
   private readonly pngSyncMachines = new Map<string, CoalescedTaskMachine<Uint8Array>>();
   private readonly pngReloaders = new Map<string, () => void>();
   private readonly onDidChangePngDocEmitter = new vscode.EventEmitter<vscode.CustomDocumentEditEvent<DrawioPngDocument>>();
+  private readonly codeLinksStatusBar: vscode.StatusBarItem;
 
   static register(
     context: vscode.ExtensionContext,
@@ -169,6 +171,7 @@ export class DrawioEditorProvider implements vscode.CustomTextEditorProvider {
     };
 
     context.subscriptions.push(
+      provider.codeLinksStatusBar,
       provider.onDidChangePngDocEmitter,
       vscode.window.registerCustomEditorProvider(DrawioEditorProvider.viewType, provider, {
         webviewOptions: { retainContextWhenHidden: true },
@@ -197,7 +200,21 @@ export class DrawioEditorProvider implements vscode.CustomTextEditorProvider {
   private constructor(
     private readonly context: vscode.ExtensionContext,
     private readonly onTransition?: (record: TransitionRecord<string, string>, machineId: string) => void,
-  ) {}
+  ) {
+    this.codeLinksStatusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
+    this.codeLinksStatusBar.command = 'drawGraph.drawio.navigateCodeLinks';
+    this.codeLinksStatusBar.text = `$(link) ${vscode.l10n.t('Code Links')}`;
+    this.codeLinksStatusBar.tooltip = vscode.l10n.t('Navigate #Symbol or file:line Code Links in this Draw.io diagram');
+  }
+
+  private setActiveSession(session: EditorSession | undefined): void {
+    this.activeSession = session;
+    if (this.activeSession) {
+      this.codeLinksStatusBar.show();
+    } else {
+      this.codeLinksStatusBar.hide();
+    }
+  }
 
   /** Queues converted `<mxfile>` XML to be loaded and persisted as SVG/PNG when `uri` opens. */
   queueInitialXml(uri: vscode.Uri, mxfileXml: string): void {
@@ -293,7 +310,7 @@ export class DrawioEditorProvider implements vscode.CustomTextEditorProvider {
     };
     this.sessions.add(session);
     if (panel.active) {
-      this.activeSession = session;
+      this.setActiveSession(session);
     }
 
     const mediaRoot = vscode.Uri.joinPath(this.context.extensionUri, 'media');
@@ -497,9 +514,9 @@ export class DrawioEditorProvider implements vscode.CustomTextEditorProvider {
       }),
       panel.onDidChangeViewState(() => {
         if (panel.active) {
-          this.activeSession = session;
+          this.setActiveSession(session);
         } else if (this.activeSession === session) {
-          this.activeSession = undefined;
+          this.setActiveSession(undefined);
         }
       }),
     );
@@ -509,7 +526,7 @@ export class DrawioEditorProvider implements vscode.CustomTextEditorProvider {
       lifecycle.send('DISPOSE');
       this.sessions.delete(session);
       if (this.activeSession === session) {
-        this.activeSession = undefined;
+        this.setActiveSession(undefined);
       }
       for (const resolve of session.pendingExports.values()) {
         resolve({ error: 'Editor closed' });
@@ -556,7 +573,7 @@ export class DrawioEditorProvider implements vscode.CustomTextEditorProvider {
     };
     this.sessions.add(session);
     if (panel.active) {
-      this.activeSession = session;
+      this.setActiveSession(session);
     }
 
     const mediaRoot = vscode.Uri.joinPath(this.context.extensionUri, 'media');
@@ -741,9 +758,9 @@ export class DrawioEditorProvider implements vscode.CustomTextEditorProvider {
       }),
       panel.onDidChangeViewState(() => {
         if (panel.active) {
-          this.activeSession = session;
+          this.setActiveSession(session);
         } else if (this.activeSession === session) {
-          this.activeSession = undefined;
+          this.setActiveSession(undefined);
         }
       }),
     );
@@ -755,7 +772,7 @@ export class DrawioEditorProvider implements vscode.CustomTextEditorProvider {
       this.pngReloaders.delete(key);
       this.sessions.delete(session);
       if (this.activeSession === session) {
-        this.activeSession = undefined;
+        this.setActiveSession(undefined);
       }
       for (const resolve of session.pendingExports.values()) {
         resolve({ error: 'Editor closed' });
@@ -960,6 +977,49 @@ export class DrawioEditorProvider implements vscode.CustomTextEditorProvider {
   get activeDocumentUri(): vscode.Uri | undefined {
     const session = this.currentSession;
     return session && !session.isBinaryPng ? session.uri : undefined;
+  }
+
+  /** Returns the `<mxfile>` XML of the active or visible draw.io editor. */
+  async getActiveDiagramXml(): Promise<{ uri: vscode.Uri; xml: string } | undefined> {
+    const session = this.currentSession;
+    if (!session) {
+      return undefined;
+    }
+    if (!session.isBinaryPng) {
+      const openDoc = vscode.workspace.textDocuments.find((d) => d.uri.toString() === session.uri.toString());
+      if (openDoc) {
+        const raw = openDoc.getText();
+        if (isSvgDiagramPath(session.uri.path)) {
+          const embedded = extractDiagramFromSvg(raw);
+          if (embedded) {
+            return { uri: session.uri, xml: embedded };
+          }
+        } else if (raw.trim()) {
+          return { uri: session.uri, xml: raw };
+        }
+      }
+    }
+    const exported = await this.requestExport(session, 'xmlsvg', {});
+    if (exported.data) {
+      const svg = Buffer.from(decodeDataUri(exported.data)).toString('utf8');
+      const embedded = extractDiagramFromSvg(svg);
+      if (embedded) {
+        return { uri: session.uri, xml: embedded };
+      }
+    }
+    return undefined;
+  }
+
+  /** Merges a code-linked `#Symbol` or `file:line` node into the active draw.io editor. */
+  insertCodeSymbolNode(label: string, linkTarget: string): boolean {
+    const session = this.currentSession;
+    if (!session) {
+      void vscode.window.showWarningMessage(vscode.l10n.t('No active draw.io editor.'));
+      return false;
+    }
+    const xml = buildCodeSymbolMergeXml(label, linkTarget);
+    void session.panel.webview.postMessage({ type: 'action', action: { action: 'merge', xml } });
+    return true;
   }
 
   private getHtml(webview: vscode.Webview): string {

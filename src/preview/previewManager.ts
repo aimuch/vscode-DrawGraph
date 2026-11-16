@@ -1,5 +1,6 @@
 import * as path from 'node:path';
 import * as vscode from 'vscode';
+import { navigateToCodeTarget } from '../codeLinks';
 import type { DiagramDiagnostics } from '../language/diagramFeatures';
 import { extractMermaidErrorLine } from '../language/symbols';
 import { countPages, pickBlock, splitDiagrams } from '../plantuml/encoder';
@@ -434,6 +435,8 @@ class DiagramPreview {
     data?: string;
     message?: string;
     label?: string;
+    target?: string;
+    fallbackLabel?: string;
     delta?: number;
     line?: number;
     state?: RenderStatus['state'];
@@ -505,6 +508,13 @@ class DiagramPreview {
       case 'openSource':
         await this.jumpToSource(msg.label);
         break;
+      case 'codeLink': {
+        const jumped = msg.target ? await navigateToCodeTarget(msg.target, this.uri) : false;
+        if (!jumped) {
+          await this.jumpToSource(msg.fallbackLabel ?? msg.target);
+        }
+        break;
+      }
     }
   }
 
@@ -552,6 +562,8 @@ class DiagramPreview {
     <button id="zoomIn" title="${t('Zoom in')}">+</button>
     <button id="fit" title="${t('Fit to window')}">${t('Fit')}</button>
     <button id="bgToggle" title="${t('Cycle preview background')}">${t('Bg: Auto')}</button>
+    <button id="mapToggle" title="${t('Toggle minimap (m)')}">${t('Map')}</button>
+    <button id="findToggle" title="${t('Find text in diagram (Cmd/Ctrl+F or /)')}">${t('Find')}</button>
     <button id="lockToggle" title="${t('Lock or unlock preview to current file')}">${t('Pin')}</button>
     <span class="sep"></span>
     <button id="exportSvg" title="${t('Export as SVG')}">SVG</button>
@@ -564,7 +576,20 @@ class DiagramPreview {
     <button id="nextItem" class="nav-btn" title="${t('Next diagram or page (])')}" hidden>▶</button>
     <span id="spinner" hidden>${t('Rendering…')}</span>
   </div>
-  <div id="stage"><div id="canvas"></div></div>
+  <div id="stage">
+    <div id="canvas"></div>
+    <div id="findBar" hidden>
+      <input id="findInput" type="text" placeholder="${t('Find in diagram…')}">
+      <span id="findCount">0/0</span>
+      <button id="findPrev" type="button" title="${t('Previous match')}">▲</button>
+      <button id="findNext" type="button" title="${t('Next match')}">▼</button>
+      <button id="findClose" type="button" title="${t('Close')}">✕</button>
+    </div>
+    <div id="minimap" hidden>
+      <div id="minimapSvg"></div>
+      <div id="minimapViewport"></div>
+    </div>
+  </div>
   <pre id="error" hidden></pre>
   <div id="empty" hidden>${t('Nothing to preview yet.')}</div>
   ${mermaidScript}
@@ -717,6 +742,27 @@ export class PreviewManager implements vscode.WebviewPanelSerializer {
     if (line !== undefined) {
       preview.setCursorLine(line);
     }
+  }
+
+  async renderPlantUmlBytes(source: string, format: 'svg' | 'png', baseDir?: string): Promise<Uint8Array> {
+    const cfg = config();
+    const opts = {
+      mode: cfg.get<'auto' | 'local' | 'server'>('plantuml.render', 'auto'),
+      server: cfg.get('plantuml.server', 'https://www.plantuml.com/plantuml'),
+      jar: cfg.get('plantuml.jar', ''),
+      java: cfg.get('plantuml.java', 'java'),
+      dot: cfg.get('plantuml.dot', ''),
+      baseDir,
+    };
+    if (format === 'svg') {
+      let svg = await this.sharedExporter.render(source, opts);
+      if (!/<!--\s*SRC=\[/.test(svg)) {
+        const { encodePlantUml } = await import('../plantuml/encoder');
+        svg = svg.replace(/<\/svg>\s*$/i, `<!--SRC=[${encodePlantUml(source)}]-->\n</svg>`);
+      }
+      return Buffer.from(svg, 'utf8');
+    }
+    return this.sharedExporter.renderPng(source, opts);
   }
 
   async exportPlantUmlBlock(uri: vscode.Uri, blockIndex: number, format: 'svg' | 'png'): Promise<void> {

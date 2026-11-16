@@ -55,7 +55,8 @@
     "onLanguage:plantuml",
     "onLanguage:markdown",
     "onWebviewPanel:drawGraph.preview",
-    "onCommand:drawGraph.quickMenu"
+    "onCommand:drawGraph.quickMenu",
+    "onCommand:drawGraph.extractSource"
   ],
   "contributes": {
     "languages": [
@@ -144,7 +145,13 @@
             "filenamePattern": "*.drawio.xml"
           },
           {
+            "filenamePattern": "*.dio.xml"
+          },
+          {
             "filenamePattern": "*.drawio.svg"
+          },
+          {
+            "filenamePattern": "*.dio.svg"
           }
         ],
         "priority": "default"
@@ -155,6 +162,9 @@
         "selector": [
           {
             "filenamePattern": "*.drawio.png"
+          },
+          {
+            "filenamePattern": "*.dio.png"
           }
         ],
         "priority": "default"
@@ -251,6 +261,36 @@
         "title": "%command.drawio.openAsText%",
         "category": "DrawGraph",
         "icon": "$(code)"
+      },
+      {
+        "command": "drawGraph.plantuml.generateUrl",
+        "title": "%command.plantuml.generateUrl%",
+        "category": "DrawGraph",
+        "icon": "$(link-external)"
+      },
+      {
+        "command": "drawGraph.exportDocumentDiagrams",
+        "title": "%command.exportDocumentDiagrams%",
+        "category": "DrawGraph",
+        "icon": "$(export)"
+      },
+      {
+        "command": "drawGraph.extractSource",
+        "title": "%command.extractSource%",
+        "category": "DrawGraph",
+        "icon": "$(file-code)"
+      },
+      {
+        "command": "drawGraph.drawio.navigateCodeLinks",
+        "title": "%command.drawio.navigateCodeLinks%",
+        "category": "DrawGraph",
+        "icon": "$(link)"
+      },
+      {
+        "command": "drawGraph.drawio.insertCodeSymbol",
+        "title": "%command.drawio.insertCodeSymbol%",
+        "category": "DrawGraph",
+        "icon": "$(symbol-class)"
       }
     ],
     "menus": {
@@ -294,6 +334,26 @@
           "command": "drawGraph.drawio.copySvg",
           "when": "activeCustomEditorId == drawGraph.drawio || activeCustomEditorId == drawGraph.drawioPng",
           "group": "1_drawgraph@1"
+        },
+        {
+          "command": "drawGraph.drawio.navigateCodeLinks",
+          "when": "activeCustomEditorId == drawGraph.drawio || activeCustomEditorId == drawGraph.drawioPng",
+          "group": "1_drawgraph@2"
+        },
+        {
+          "command": "drawGraph.drawio.insertCodeSymbol",
+          "when": "activeCustomEditorId == drawGraph.drawio || activeCustomEditorId == drawGraph.drawioPng",
+          "group": "1_drawgraph@3"
+        },
+        {
+          "command": "drawGraph.plantuml.generateUrl",
+          "when": "editorLangId == plantuml",
+          "group": "1_drawgraph@1"
+        },
+        {
+          "command": "drawGraph.exportDocumentDiagrams",
+          "when": "editorLangId == plantuml || editorLangId == markdown",
+          "group": "1_drawgraph@2"
         }
       ],
       "explorer/context": [
@@ -305,6 +365,16 @@
         {
           "command": "drawGraph.mermaid.openInDrawio",
           "when": "resourceLangId == mermaid",
+          "group": "navigation"
+        },
+        {
+          "command": "drawGraph.exportDocumentDiagrams",
+          "when": "resourceLangId == plantuml || resourceLangId == markdown",
+          "group": "navigation"
+        },
+        {
+          "command": "drawGraph.extractSource",
+          "when": "resourceExtname == .svg || resourceExtname == .png",
           "group": "navigation"
         }
       ],
@@ -334,6 +404,14 @@
           "when": "editorLangId == mermaid"
         },
         {
+          "command": "drawGraph.plantuml.generateUrl",
+          "when": "editorLangId == plantuml"
+        },
+        {
+          "command": "drawGraph.exportDocumentDiagrams",
+          "when": "editorLangId == plantuml || editorLangId == markdown"
+        },
+        {
           "command": "drawGraph.drawio.exportSvg",
           "when": "activeCustomEditorId == drawGraph.drawio || activeCustomEditorId == drawGraph.drawioPng"
         },
@@ -352,6 +430,14 @@
         {
           "command": "drawGraph.drawio.openAsText",
           "when": "activeCustomEditorId == drawGraph.drawio"
+        },
+        {
+          "command": "drawGraph.drawio.navigateCodeLinks",
+          "when": "activeCustomEditorId == drawGraph.drawio || activeCustomEditorId == drawGraph.drawioPng"
+        },
+        {
+          "command": "drawGraph.drawio.insertCodeSymbol",
+          "when": "activeCustomEditorId == drawGraph.drawio || activeCustomEditorId == drawGraph.drawioPng"
         }
       ]
     },
@@ -360,6 +446,11 @@
         "command": "drawGraph.preview.openToSide",
         "key": "ctrl+k v",
         "mac": "cmd+k v",
+        "when": "editorLangId == mermaid || editorLangId == plantuml"
+      },
+      {
+        "command": "drawGraph.preview.openToSide",
+        "key": "alt+d",
         "when": "editorLangId == mermaid || editorLangId == plantuml"
       },
       {

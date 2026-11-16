@@ -455,6 +455,70 @@ test('VS Code shortcuts work while the draw.io editor has focus', async () => {
   }
 });
 
+test('IntelliSense, formatting, URL generation, batch export, source extraction & Code Links work', async () => {
+  // 1. CompletionItemProvider & DocumentFormattingEditProvider
+  const fmtUri = file('unformatted.mmd');
+  fs.writeFileSync(fmtUri.fsPath, 'flowchart LR\nsubgraph Backend\nAPI[API] --> DB[(DB)]\nend\n');
+  const fmtDoc = await vscode.workspace.openTextDocument(fmtUri);
+  const completions = await vscode.commands.executeCommand(
+    'vscode.executeCompletionItemProvider',
+    fmtUri,
+    new vscode.Position(2, 3),
+  );
+  assert.ok(completions && completions.items.some((i) => i.label === 'API' || (i.label && i.label.label === 'API')), 'completes declared Mermaid node IDs');
+
+  const edits = await vscode.commands.executeCommand('vscode.executeFormatDocumentProvider', fmtUri, {
+    tabSize: 2,
+    insertSpaces: true,
+  });
+  assert.ok(Array.isArray(edits) && edits.length >= 1, 'returns formatting edits');
+  const wsEdit = new vscode.WorkspaceEdit();
+  wsEdit.set(fmtUri, edits);
+  await vscode.workspace.applyEdit(wsEdit);
+  assert.match(fmtDoc.getText(), /\n  subgraph Backend\n    API\[API\] --> DB\[\(DB\)\]\n  end/);
+  await fmtDoc.save();
+
+  // 2. Shareable PlantUML URL generation
+  const pumlUri = file('sequence.puml');
+  const mdSnippet = await vscode.commands.executeCommand('drawGraph.plantuml.generateUrl', pumlUri, 'markdown');
+  assert.match(String(mdSnippet), /^!\[diagram\]\(https:\/\/www\.plantuml\.com\/plantuml\/svg\/[0-9A-Za-z\-_]+\)$/);
+
+  // 3. Batch export all diagrams in multi-block PlantUML + extract embedded PlantUML source from SVG
+  const batchOutDir = vscode.Uri.file(fs.mkdtempSync(path.join(workspace, 'batch-out-')));
+  try {
+    const exportedUris = await vscode.commands.executeCommand('drawGraph.exportDocumentDiagrams', pumlUri, 'svg', batchOutDir);
+    assert.ok(Array.isArray(exportedUris) && exportedUris.length >= 2, `batch exported ${exportedUris?.length} SVGs`);
+    assert.ok(fs.existsSync(exportedUris[0].fsPath));
+
+    const extractedPumlDoc = await vscode.commands.executeCommand('drawGraph.extractSource', exportedUris[0]);
+    assert.ok(extractedPumlDoc, 'extracted embedded PlantUML source from server-rendered SVG');
+    assert.equal(extractedPumlDoc.languageId, 'plantuml');
+    assert.match(extractedPumlDoc.getText(), /@startuml/);
+  } finally {
+    fs.rmSync(batchOutDir.fsPath, { recursive: true, force: true });
+    if (fs.existsSync(fmtUri.fsPath)) {
+      fs.unlinkSync(fmtUri.fsPath);
+    }
+  }
+
+  // 4. .dio.svg custom editor + Code Links file:line navigation
+  const dioSvgUri = file('linked.dio.svg');
+  fs.writeFileSync(dioSvgUri.fsPath, '');
+  const dioDoc = await openDrawio(dioSvgUri);
+  assert.ok(await vscode.commands.executeCommand('drawGraph.drawio.insertCodeSymbol', 'PreviewManager'));
+  await waitFor('.dio.svg updated with code symbol node', () => dioDoc.getText().includes('#PreviewManager'), 30000);
+  await dioDoc.save();
+
+  const extractedXmlDoc = await vscode.commands.executeCommand('drawGraph.extractSource', dioSvgUri);
+  assert.ok(extractedXmlDoc && extractedXmlDoc.getText().includes('#PreviewManager'), 'extracted mxfile XML from .dio.svg');
+
+  const jumped = await vscode.commands.executeCommand('drawGraph.drawio.navigateCodeLinks', 'flowchart.mmd:2');
+  assert.equal(jumped, true, 'Code Link jumped to workspace file:line');
+  assert.ok(vscode.window.activeTextEditor?.document.uri.fsPath.endsWith('flowchart.mmd'));
+  await vscode.commands.executeCommand('workbench.action.closeAllEditors');
+  fs.unlinkSync(dioSvgUri.fsPath);
+});
+
 exports.run = async function run() {
   const failures = [];
   for (const { name, fn } of tests) {

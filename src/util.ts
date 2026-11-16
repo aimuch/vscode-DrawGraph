@@ -29,10 +29,10 @@ export function decodeDataUri(uri: string): Uint8Array {
   return Buffer.from(decodeURIComponent(payload), 'utf8');
 }
 
-/** Replaces the extension of `uri` (handling compound ones such as `.drawio.xml`). */
+/** Replaces the extension of `uri` (handling compound ones such as `.drawio.xml` or `.dio.svg`). */
 export function withExtension(uri: vscode.Uri, ext: string): vscode.Uri {
-  const path = uri.path.replace(/(\.drawio\.(xml|svg|png)|\.[^./]+)$/i, '') + ext;
-  return uri.with({ path });
+  const filePath = uri.path.replace(/(\.(?:drawio|dio)\.(xml|svg|png)|\.[^./]+)$/i, '') + ext;
+  return uri.with({ path: filePath });
 }
 
 export async function saveBytes(defaultUri: vscode.Uri, data: Uint8Array, filters: Record<string, string[]>): Promise<void> {

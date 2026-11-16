@@ -541,11 +541,50 @@ export class PlantUmlRenderer {
         throw new CancelledError();
       }
       const pageSegment = page > 0 ? `${page}/` : '';
-      const response = await fetch(`${base}/svg/${pageSegment}${encoded}`, { signal: controller.signal });
-      const body = await response.text();
+      let response: Response | undefined;
+      let body = '';
+
+      // Large diagrams can exceed HTTP GET URL limits on proxies/servers; try HTTP POST first when large.
+      if (encoded.length > 3500) {
+        try {
+          const postRes = await fetch(`${base}/svg/${pageSegment}`.replace(/\/$/, ''), {
+            method: 'POST',
+            headers: { 'Content-Type': 'text/plain; charset=utf-8' },
+            body: source,
+            signal: controller.signal,
+          });
+          const postBody = await postRes.text();
+          if (postBody.includes('<svg')) {
+            return extractSvg(postBody);
+          }
+        } catch (postErr) {
+          if (controller.signal.aborted) {
+            throw postErr;
+          }
+          // Fall back to standard GET below if the server does not accept POST.
+        }
+      }
+
+      response = await fetch(`${base}/svg/${pageSegment}${encoded}`, { signal: controller.signal });
+      body = await response.text();
       if (body.includes('<svg')) {
         return extractSvg(body);
       }
+
+      // If GET failed with URI-too-long/payload-too-large and we haven't tried POST yet, try POST as fallback.
+      if (encoded.length <= 3500 && [413, 414].includes(response.status)) {
+        const postRes = await fetch(`${base}/svg/${pageSegment}`.replace(/\/$/, ''), {
+          method: 'POST',
+          headers: { 'Content-Type': 'text/plain; charset=utf-8' },
+          body: source,
+          signal: controller.signal,
+        });
+        const postBody = await postRes.text();
+        if (postBody.includes('<svg')) {
+          return extractSvg(postBody);
+        }
+      }
+
       const tooLong = encoded.length > 4000 && [400, 413, 414].includes(response.status);
       throw new ServerError(
         `PlantUML server ${base} responded ${response.status} ${response.statusText}` +

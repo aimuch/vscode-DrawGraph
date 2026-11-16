@@ -6,7 +6,7 @@ DrawGraph 是一个 VS Code 插件，把三种常用的图表格式放进同一�
 
 | 格式 | 文件扩展名 | 编辑方式 |
 | --- | --- | --- |
-| **draw.io** | `.drawio` `.dio` `.drawio.xml` `.drawio.svg` `.drawio.png` | 可视化编辑器（内嵌 draw.io），直接拖拽编辑 |
+| **draw.io** | `.drawio` `.dio` `.drawio.xml` `.dio.xml` `.drawio.svg` `.dio.svg` `.drawio.png` `.dio.png` | 可视化编辑器（内嵌 draw.io），直接拖拽编辑 |
 | **Mermaid** | `.mmd` `.mermaid`，以及 Markdown 中的 ```` ```mermaid ```` 代码块 | 文本编辑 + 实时预览 + 一键转 draw.io |
 | **PlantUML** | `.puml` `.plantuml` `.pu` `.iuml` `.wsd`，以及 Markdown 中的 ```` ```plantuml ```` / ```` ```puml ```` 代码块 | 文本编辑 + 实时预览 |
 
@@ -37,21 +37,25 @@ code --install-extension drawgraph-0.1.0.vsix
 - **`.drawio.svg` 与 `.drawio.png` 文件**：既是普通的 SVG / PNG 图片（可以直接放进 README、网页、文档里显示），又能在 VS Code 里双击直接用 draw.io 打开编辑。每次编辑保存后都会更新图像并保留内嵌图表数据。
   - SVG 配色：draw.io 默认写出“自适应”的 SVG，查看者（GitHub、浏览器、系统）处于深色模式时，图片会显示成深色。想让图片颜色固定，可以把 `drawGraph.drawio.svgColorScheme` 设为 `light`（或 `dark`），在下次编辑或导出时生效。
 - **自定义图形库**：通过 `drawGraph.drawio.customLibraries` 配置工作区内的 `<mxlibrary>` `.xml` 文件或 HTTPS 地址，打开编辑器时自动挂载到左侧元件栏。
+- **架构与代码双向链接（Code Links）**：在 draw.io 节点标签或链接中写入 `#类名`、`#函数名` 或 `src/path/file.ts:42`，即可通过状态栏 `$(link) 代码链接` 或 `DrawGraph: 跳转 Draw.io 代码链接…` 直接跳转到工作区源码定义；也可使用 `DrawGraph: 向 Draw.io 插入工作区代码符号…` 搜索并将工作区符号一键插入画布。
 
 ### Mermaid 与 PlantUML 实时预览与编辑智能
-- 用 `Cmd/Ctrl+K V`（在侧边打开）或 `Cmd/Ctrl+Shift+V` 打开预览，也可以点击编辑器右上角按钮或图表上方的 **CodeLens 快捷操作**。
+- 用 `Cmd/Ctrl+K V`、`Alt+D`（在侧边打开）或 `Cmd/Ctrl+Shift+V` 打开预览，也可以点击编辑器右上角按钮或图表上方的 **CodeLens 快捷操作**。
 - **单面板动态跟随与固定（Pin）**：预览窗口默认自动跟随当前切换到的 Mermaid / PlantUML 文件；点击工具栏「固定（Pin）」按钮可将其锁定到当前文件以便并排对比。
 - 边输入边刷新。语法错误时保留上一次成功渲染的图，并在编辑器对应行标出**红色波浪线诊断**（同步到「问题」面板）。
 - 支持缩放（工具栏、`Ctrl/Cmd+滚轮`、触控板双指缩放、`+` / `-` / `0` 键）、拖拽平移、适应窗口（`f` 键），以及**背景切换**（自动 / 浅色 / 深色 / 透明棋盘格）。
-- **双击预览反向跳转源码**：双击预览中的节点文字或画布，自动定位并聚焦源码对应行。
+- **交互式缩略图导航（Minimap）与图内文本搜索**：点击工具栏「缩略图」（或按 `m` 键）开启鹰眼缩略图拖拽定位大图；按 `Cmd/Ctrl+F` 或 `/` 在预览图内实时搜索高亮节点文字并自动居中定位匹配项。
+- **双击反向跳转源码 & 代码链接跳转**：双击预览中的节点自动定位源码行；按住 `Cmd/Ctrl+单击` 节点（或双击 `#Symbol` / `path/file.ts:10` 标签）可直接跳转到工作区对应的类/函数定义或文件行。
 - 可导出 **SVG / PNG**（支持配置缩放倍率与透明背景），或一键**复制 PNG 图片 / 复制 SVG** 到剪贴板，也可开启 `drawGraph.exportOnSave` 在保存时自动同步导出旁路图片。
+- **批量导出与可分享链接**：支持一键批量导出多图 `.puml` 或 `.md` 文档中的所有图表（`DrawGraph: 批量导出文档中的所有图表…`），以及为 PlantUML 生成可分享的服务器 SVG/PNG URL 或 Markdown 图片代码（`DrawGraph: 生成可分享的 PlantUML 链接…`）；超长 PlantUML 图表在服务器模式下自动回退为 HTTP `POST` 避免 URL 长度限制。
+- **从图片逆向提取源码**：在资源管理器右键 `.svg` / `.png` 图片（或通过右上角菜单）执行 `DrawGraph: 提取图片中内嵌的图表源码`，即可解码还原内嵌的 Draw.io XML 或 PlantUML 源码（`<!--SRC=[...]-->`）。
 - 一个 PlantUML 文件包含多个 `@startuml … @enduml` 块或 `newpage` 多页时，预览自动跟随光标所在块，也可通过工具栏 `◀` / `▶`（或 `[` / `]` 键）翻页切换。
-- 提供语法高亮、**代码片段补全（Snippets）**、**文档大纲（Outline / Breadcrumbs）**、注释切换、括号匹配和代码折叠。
+- 提供语法高亮、**上下文智能补全（IntelliSense：关键字、`!theme` 主题、`skinparam` 属性及当前已声明的节点/参与者 ID）**、**一键代码格式化（`Shift+Alt+F`）**、**代码片段补全（Snippets）**、**文档大纲（Outline / Breadcrumbs）**、注释切换、括号匹配和代码折叠。
 - **Mermaid 转 Draw.io**：点击编辑器标题栏或 CodeLens 的「在 Draw.io 中打开」，可将 Mermaid 代码直接转换为可拖拽编辑的 draw.io 图表。
 - 重新打开 VS Code 后，预览窗口会自动恢复。
 
 ### Markdown 中的 Mermaid 与 PlantUML
-内置 Markdown 预览支持直接渲染 ```` ```mermaid ```` 以及 ```` ```plantuml ```` / ```` ```puml ```` 代码块，编辑器里也有对应的语法高亮与 CodeLens 入口。可分别用 `drawGraph.markdown.mermaid` 和 `drawGraph.markdown.plantuml` 开关。
+内置 Markdown 预览支持直接渲染 ```` ```mermaid ```` 以及 ```` ```plantuml ```` / ```` ```puml ```` 代码块，鼠标悬停图表右上角会浮现交互式缩放工具条（支持 `−` / `100%` / `+`、`Ctrl/Cmd/Alt+滚轮` 缩放与拖拽平移），编辑器里也有对应的语法高亮与 CodeLens 入口。可分别用 `drawGraph.markdown.mermaid` 和 `drawGraph.markdown.plantuml` 开关。
 
 ### 新建图表与右上角快捷菜单
 编辑器右上角标题栏默认常驻一个彩色的 **DrawGraph 图标**（可通过 `drawGraph.toolbar.showQuickMenu` 关闭），在任何页面点击都可快速新建图表、选择模板，或将当前 `.svg` / `.png` / `.xml` 文件用 Draw.io 打开；打开图表页时右上角还会直接显示专属操作图标（预览、导出 SVG/PNG、复制 PNG、转 Draw.io、以文本打开）。

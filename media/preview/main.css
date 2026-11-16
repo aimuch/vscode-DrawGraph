@@ -138,6 +138,120 @@ body.vscode-dark[data-bg='grid'] #stage {
   opacity: 0.35;
 }
 
+.drawgraph-search-match {
+  filter: drop-shadow(0 0 4px #f59e0b) drop-shadow(0 0 2px #f59e0b);
+}
+
+.drawgraph-search-active {
+  filter: drop-shadow(0 0 6px #ef4444) drop-shadow(0 0 3px #ef4444);
+}
+
+foreignObject.drawgraph-search-match > * {
+  outline: 2px solid #f59e0b;
+  background: rgba(245, 158, 11, 0.22);
+  border-radius: 2px;
+}
+
+foreignObject.drawgraph-search-active > * {
+  outline: 2px solid #ef4444;
+  background: rgba(239, 68, 68, 0.28);
+}
+
+#findBar {
+  position: absolute;
+  top: 8px;
+  right: 12px;
+  z-index: 12;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 6px;
+  border-radius: 4px;
+  background: var(--vscode-editorWidget-background, var(--vscode-editor-background));
+  border: 1px solid var(--vscode-widget-border, var(--vscode-panel-border, rgba(128, 128, 128, 0.45)));
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.22);
+  user-select: none;
+}
+
+#findInput {
+  width: 150px;
+  height: 22px;
+  padding: 0 6px;
+  border: 1px solid var(--vscode-input-border, rgba(128, 128, 128, 0.4));
+  border-radius: 2px;
+  color: var(--vscode-input-foreground, var(--vscode-foreground));
+  background: var(--vscode-input-background, var(--vscode-editor-background));
+  font: inherit;
+  outline: none;
+}
+
+#findInput:focus {
+  border-color: var(--vscode-focusBorder, #007acc);
+}
+
+#findCount {
+  min-width: 36px;
+  text-align: center;
+  font-size: 11px;
+  color: var(--vscode-descriptionForeground);
+}
+
+#findBar button {
+  min-width: 22px;
+  height: 22px;
+  padding: 0 4px;
+  border: 1px solid transparent;
+  border-radius: 2px;
+  color: var(--vscode-foreground);
+  background: transparent;
+  font: inherit;
+  cursor: pointer;
+}
+
+#findBar button:hover {
+  background: var(--vscode-toolbar-hoverBackground, rgba(128, 128, 128, 0.2));
+}
+
+#minimap {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  width: 176px;
+  height: 118px;
+  z-index: 10;
+  border-radius: 4px;
+  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.45));
+  background: var(--vscode-editorWidget-background, rgba(30, 30, 30, 0.88));
+  box-shadow: 0 3px 10px rgba(0, 0, 0, 0.2);
+  overflow: hidden;
+  cursor: crosshair;
+  user-select: none;
+}
+
+body:not(.vscode-dark) #minimap {
+  background: rgba(255, 255, 255, 0.92);
+}
+
+#minimapSvg {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+#minimapSvg svg {
+  width: 100% !important;
+  height: 100% !important;
+  display: block;
+}
+
+#minimapViewport {
+  position: absolute;
+  border: 1.5px solid var(--vscode-focusBorder, #007acc);
+  background: rgba(0, 122, 204, 0.14);
+  box-sizing: border-box;
+  pointer-events: none;
+}
+
 #error {
   position: absolute;
   left: 12px;

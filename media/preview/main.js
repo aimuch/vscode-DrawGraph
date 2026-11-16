@@ -19,6 +19,14 @@
   const nextItem = $('nextItem');
   const bgToggle = $('bgToggle');
   const lockToggle = $('lockToggle');
+  const findToggle = $('findToggle');
+  const mapToggle = $('mapToggle');
+  const findBar = $('findBar');
+  const findInput = /** @type {HTMLInputElement} */ ($('findInput'));
+  const findCount = $('findCount');
+  const minimap = $('minimap');
+  const minimapSvg = $('minimapSvg');
+  const minimapViewport = $('minimapViewport');
 
   const ds = document.body.dataset;
   const MSG_INVALID_SVG = ds.errInvalidSvg || 'Invalid SVG received from renderer.';
@@ -40,10 +48,14 @@
     /** @type {'auto_fit' | 'manual'} */
     mode: saved.autoFit === false ? 'manual' : 'auto_fit',
     bg: BG_MODES.includes(saved.bg) ? saved.bg : 'auto',
+    showMap: saved.showMap === true,
   };
   let natural = { width: 0, height: 0 };
   /** @type {SVGSVGElement | null} */
   let currentSvg = null;
+  /** @type {Element[]} */
+  let searchMatches = [];
+  let activeMatchIdx = -1;
   let rafId = 0;
   /** @type {ReturnType<typeof setTimeout> | undefined} */
   let persistTimer;
@@ -55,7 +67,7 @@
   let uiPhase = 'booting';
 
   /**
-   * @param {typeof uiPhase} nextPhase
+   * @param {'booting' | 'loading' | 'rendered' | 'error' | 'empty'} nextPhase
    * @param {string} [errorMessageText]
    */
   function transitionUiPhase(nextPhase, errorMessageText) {
@@ -109,6 +121,53 @@
     bgToggle.textContent = labels[/** @type {keyof typeof labels} */ (view.bg)] || labels.auto;
   }
 
+  function syncMapUi() {
+    mapToggle.setAttribute('aria-pressed', view.showMap ? 'true' : 'false');
+    minimap.hidden = !view.showMap || !currentSvg;
+    if (view.showMap && currentSvg) {
+      rebuildMinimapSvg();
+      updateMinimapViewport();
+    }
+  }
+
+  function rebuildMinimapSvg() {
+    if (!currentSvg || !natural.width || !natural.height) {
+      minimapSvg.replaceChildren();
+      return;
+    }
+    const clone = /** @type {SVGSVGElement} */ (currentSvg.cloneNode(true));
+    clone.removeAttribute('style');
+    clone.removeAttribute('id');
+    clone.querySelectorAll('[id]').forEach((el) => el.removeAttribute('id'));
+    clone.querySelectorAll('.drawgraph-search-match, .drawgraph-search-active').forEach((el) => {
+      el.classList.remove('drawgraph-search-match', 'drawgraph-search-active');
+    });
+    if (!clone.getAttribute('viewBox')) {
+      clone.setAttribute('viewBox', `0 0 ${natural.width} ${natural.height}`);
+    }
+    clone.setAttribute('preserveAspectRatio', 'xMidYMid meet');
+    minimapSvg.replaceChildren(clone);
+  }
+
+  function updateMinimapViewport() {
+    if (minimap.hidden || !natural.width || !natural.height || !view.zoom) {
+      return;
+    }
+    const mw = minimap.clientWidth || 176;
+    const mh = minimap.clientHeight || 118;
+    const scale = Math.min(mw / natural.width, mh / natural.height);
+    const ox = (mw - natural.width * scale) / 2;
+    const oy = (mh - natural.height * scale) / 2;
+    const rx = ox + (-view.x / view.zoom) * scale;
+    const ry = oy + (-view.y / view.zoom) * scale;
+    const rw = (stage.clientWidth / view.zoom) * scale;
+    const rh = (stage.clientHeight / view.zoom) * scale;
+    minimapViewport.style.left = `${rx}px`;
+    minimapViewport.style.top = `${ry}px`;
+    minimapViewport.style.width = `${Math.max(8, rw)}px`;
+    minimapViewport.style.height = `${Math.max(8, rh)}px`;
+  }
+
   function persistNow() {
     if (persistTimer !== undefined) {
       clearTimeout(persistTimer);
@@ -122,6 +181,7 @@
       y: view.y,
       autoFit: view.mode === 'auto_fit',
       bg: view.bg,
+      showMap: view.showMap,
     });
   }
 
@@ -139,6 +199,7 @@
     }
     canvas.style.transform = `translate(${view.x}px, ${view.y}px) scale(${view.zoom})`;
     zoomLabel.textContent = `${Math.round(view.zoom * 100)}%`;
+    updateMinimapViewport();
   }
 
   function applyView(immediate = true) {
@@ -149,6 +210,7 @@
         rafId = 0;
         canvas.style.transform = `translate(${view.x}px, ${view.y}px) scale(${view.zoom})`;
         zoomLabel.textContent = `${Math.round(view.zoom * 100)}%`;
+        updateMinimapViewport();
       });
     }
     schedulePersist();
@@ -237,6 +299,15 @@
     node.style.width = `${natural.width}px`;
     node.style.height = `${natural.height}px`;
     transitionUiPhase('rendered');
+    if (view.showMap) {
+      minimap.hidden = false;
+      rebuildMinimapSvg();
+    } else {
+      minimap.hidden = true;
+    }
+    if (!findBar.hidden && findInput.value.trim()) {
+      runSearch(findInput.value, false);
+    }
     if (view.mode === 'auto_fit') {
       fit(false);
     } else {
@@ -275,10 +346,107 @@
 
   function showEmpty() {
     canvas.replaceChildren();
+    minimapSvg.replaceChildren();
+    minimap.hidden = true;
     currentSvg = null;
+    searchMatches = [];
+    activeMatchIdx = -1;
     natural = { width: 0, height: 0 };
     transitionUiPhase('empty');
     vscode.postMessage({ type: 'status', state: 'empty' });
+  }
+
+  // ---- Search & Highlight --------------------------------------------------------------
+
+  function clearSearchHighlights() {
+    if (currentSvg) {
+      currentSvg.querySelectorAll('.drawgraph-search-match, .drawgraph-search-active').forEach((el) => {
+        el.classList.remove('drawgraph-search-match', 'drawgraph-search-active');
+      });
+    }
+    searchMatches = [];
+    activeMatchIdx = -1;
+  }
+
+  /** @param {Element} el */
+  function centerViewportOnElement(el) {
+    if (!view.zoom) {
+      return;
+    }
+    const elRect = el.getBoundingClientRect();
+    const canvasRect = canvas.getBoundingClientRect();
+    if (!elRect.width && !elRect.height) {
+      return;
+    }
+    const nx = (elRect.left + elRect.width / 2 - canvasRect.left) / view.zoom;
+    const ny = (elRect.top + elRect.height / 2 - canvasRect.top) / view.zoom;
+    view.x = stage.clientWidth / 2 - nx * view.zoom;
+    view.y = stage.clientHeight / 2 - ny * view.zoom;
+    view.mode = 'manual';
+    applyView(true);
+  }
+
+  /**
+   * @param {string} rawQuery
+   * @param {boolean} [centerActive]
+   */
+  function runSearch(rawQuery, centerActive = true) {
+    clearSearchHighlights();
+    const q = rawQuery.trim().toLowerCase();
+    if (!q || !currentSvg) {
+      findCount.textContent = '0/0';
+      return;
+    }
+    const candidates = currentSvg.querySelectorAll('text, foreignObject');
+    for (const el of candidates) {
+      const txt = (el.textContent || '').trim().toLowerCase();
+      if (txt && txt.includes(q)) {
+        el.classList.add('drawgraph-search-match');
+        searchMatches.push(el);
+      }
+    }
+    if (searchMatches.length === 0) {
+      findCount.textContent = '0/0';
+      return;
+    }
+    activeMatchIdx = 0;
+    searchMatches[0].classList.add('drawgraph-search-active');
+    findCount.textContent = `1/${searchMatches.length}`;
+    if (centerActive) {
+      centerViewportOnElement(searchMatches[0]);
+    }
+  }
+
+  /** @param {number} delta */
+  function stepSearchMatch(delta) {
+    if (searchMatches.length === 0) {
+      runSearch(findInput.value, true);
+      return;
+    }
+    if (activeMatchIdx >= 0 && searchMatches[activeMatchIdx]) {
+      searchMatches[activeMatchIdx].classList.remove('drawgraph-search-active');
+    }
+    activeMatchIdx = (activeMatchIdx + delta + searchMatches.length) % searchMatches.length;
+    const active = searchMatches[activeMatchIdx];
+    active.classList.add('drawgraph-search-active');
+    findCount.textContent = `${activeMatchIdx + 1}/${searchMatches.length}`;
+    centerViewportOnElement(active);
+  }
+
+  function openFindBar() {
+    findBar.hidden = false;
+    findToggle.setAttribute('aria-pressed', 'true');
+    findInput.focus();
+    findInput.select();
+    if (findInput.value.trim()) {
+      runSearch(findInput.value, true);
+    }
+  }
+
+  function closeFindBar() {
+    findBar.hidden = true;
+    findToggle.setAttribute('aria-pressed', 'false');
+    clearSearchHighlights();
   }
 
   // Explicit single-flight coalescing state machine for Mermaid renders:
@@ -379,6 +547,12 @@
     }
     const clone = /** @type {SVGSVGElement} */ (currentSvg.cloneNode(true));
     clone.removeAttribute('style');
+    clone.querySelectorAll('.drawgraph-search-match, .drawgraph-search-active').forEach((el) => {
+      el.classList.remove('drawgraph-search-match', 'drawgraph-search-active');
+      if (el.className && typeof el.getAttribute('class') === 'string' && !el.getAttribute('class')?.trim()) {
+        el.removeAttribute('class');
+      }
+    });
     clone.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
     clone.setAttribute('width', String(natural.width));
     clone.setAttribute('height', String(natural.height));
@@ -476,6 +650,76 @@
   lockToggle.addEventListener('click', () => {
     vscode.postMessage({ type: 'toggleLock' });
   });
+  findToggle.addEventListener('click', () => {
+    if (findBar.hidden) {
+      openFindBar();
+    } else {
+      closeFindBar();
+    }
+  });
+  mapToggle.addEventListener('click', () => {
+    view.showMap = !view.showMap;
+    syncMapUi();
+    persistNow();
+  });
+  findInput.addEventListener('input', () => runSearch(findInput.value, true));
+  findInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      stepSearchMatch(e.shiftKey ? -1 : 1);
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      closeFindBar();
+    }
+  });
+  $('findPrev').addEventListener('click', () => stepSearchMatch(-1));
+  $('findNext').addEventListener('click', () => stepSearchMatch(1));
+  $('findClose').addEventListener('click', () => closeFindBar());
+
+  // Minimap click & drag navigation
+  let minimapDragging = false;
+  /** @param {PointerEvent} e */
+  function panFromMinimapEvent(e) {
+    if (!natural.width || !natural.height || !view.zoom) {
+      return;
+    }
+    const rect = minimap.getBoundingClientRect();
+    const mw = rect.width || 176;
+    const mh = rect.height || 118;
+    const scale = Math.min(mw / natural.width, mh / natural.height);
+    const ox = (mw - natural.width * scale) / 2;
+    const oy = (mh - natural.height * scale) / 2;
+    const nx = (e.clientX - rect.left - ox) / scale;
+    const ny = (e.clientY - rect.top - oy) / scale;
+    view.x = stage.clientWidth / 2 - nx * view.zoom;
+    view.y = stage.clientHeight / 2 - ny * view.zoom;
+    view.mode = 'manual';
+    applyView(false);
+  }
+  minimap.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0) {
+      return;
+    }
+    e.stopPropagation();
+    minimapDragging = true;
+    minimap.setPointerCapture(e.pointerId);
+    panFromMinimapEvent(e);
+  });
+  minimap.addEventListener('pointermove', (e) => {
+    if (minimapDragging) {
+      e.stopPropagation();
+      panFromMinimapEvent(e);
+    }
+  });
+  const endMinimapDrag = () => {
+    if (minimapDragging) {
+      minimapDragging = false;
+      persistNow();
+    }
+  };
+  minimap.addEventListener('pointerup', endMinimapDrag);
+  minimap.addEventListener('pointercancel', endMinimapDrag);
+
   prevItem.addEventListener('click', () => vscode.postMessage({ type: 'navigate', delta: -1 }));
   nextItem.addEventListener('click', () => vscode.postMessage({ type: 'navigate', delta: 1 }));
   $('exportSvg').addEventListener('click', () => exportSvg(false));
@@ -488,12 +732,37 @@
   });
   $('copyPng').addEventListener('click', () => void copyPng());
 
-  stage.addEventListener('dblclick', (e) => {
-    let label = '';
+  stage.addEventListener('click', (e) => {
+    if (!(e.ctrlKey || e.metaKey)) {
+      return;
+    }
     const target = /** @type {Element | null} */ (e.target instanceof Element ? e.target : null);
+    if (!target || target.closest('#findBar, #minimap')) {
+      return;
+    }
+    const anchor = target.closest('a');
+    const href = anchor && (anchor.getAttribute('href') || anchor.getAttribute('xlink:href') || '').trim();
+    const textEl = target.closest('text, foreignObject');
+    const label = (href || (textEl && textEl.textContent) || '').trim();
+    if (label) {
+      e.preventDefault();
+      vscode.postMessage({ type: 'codeLink', target: label, fallbackLabel: label });
+    }
+  });
+
+  stage.addEventListener('dblclick', (e) => {
+    const target = /** @type {Element | null} */ (e.target instanceof Element ? e.target : null);
+    if (target && target.closest('#findBar, #minimap')) {
+      return;
+    }
+    let label = '';
     const textEl = target && target.closest('text, foreignObject');
     if (textEl) {
       label = (textEl.textContent || '').trim();
+    }
+    if (/^#[A-Za-z_$]/.test(label) || /^[A-Za-z0-9_./-]+\.[A-Za-z]{1,8}(?::\d+|#L\d+)?$/.test(label)) {
+      vscode.postMessage({ type: 'codeLink', target: label, fallbackLabel: label });
+      return;
     }
     vscode.postMessage({ type: 'openSource', label });
   });
@@ -501,6 +770,10 @@
   stage.addEventListener(
     'wheel',
     (e) => {
+      const target = /** @type {Element | null} */ (e.target instanceof Element ? e.target : null);
+      if (target && target.closest('#findBar')) {
+        return;
+      }
       e.preventDefault();
       const rect = stage.getBoundingClientRect();
       if (e.ctrlKey || e.metaKey) {
@@ -523,6 +796,13 @@
 
   stage.addEventListener('pointerdown', (e) => {
     if (e.button !== 0) {
+      return;
+    }
+    const target = /** @type {Element | null} */ (e.target instanceof Element ? e.target : null);
+    if (target && target.closest('#findBar, #minimap')) {
+      return;
+    }
+    if ((e.ctrlKey || e.metaKey) && target && target.closest('text, foreignObject, a')) {
       return;
     }
     pointerGesture = { phase: 'panning', anchorX: e.clientX - view.x, anchorY: e.clientY - view.y };
@@ -549,10 +829,27 @@
   stage.addEventListener('pointercancel', endDrag);
 
   window.addEventListener('keydown', (e) => {
+    if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === 'f') {
+      e.preventDefault();
+      openFindBar();
+      return;
+    }
+    if (e.key === 'Escape' && !findBar.hidden) {
+      e.preventDefault();
+      closeFindBar();
+      return;
+    }
     if (e.ctrlKey || e.metaKey || e.altKey || e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
       return;
     }
-    if (e.key === '+' || e.key === '=') {
+    if (e.key === '/') {
+      e.preventDefault();
+      openFindBar();
+    } else if (e.key === 'm') {
+      view.showMap = !view.showMap;
+      syncMapUi();
+      persistNow();
+    } else if (e.key === '+' || e.key === '=') {
       zoomTo(view.zoom * 1.25);
     } else if (e.key === '-') {
       zoomTo(view.zoom / 1.25);
@@ -571,6 +868,8 @@
   window.addEventListener('resize', () => {
     if (view.mode === 'auto_fit') {
       fit(false);
+    } else {
+      updateMinimapViewport();
     }
   });
   window.addEventListener('pagehide', persistNow);
@@ -637,6 +936,7 @@
   transitionUiPhase('booting');
   syncBgUi();
   syncLockUi();
+  syncMapUi();
   renderTransform();
   persistNow();
   vscode.postMessage({ type: 'ready' });

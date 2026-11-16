@@ -1,6 +1,7 @@
 // @ts-check
-// Renders ```mermaid blocks in VS Code's built-in Markdown preview, loading mermaid.min.js
-// lazily only when a document actually contains a Mermaid fence.
+// Renders ```mermaid blocks in VS Code's built-in Markdown preview (loading mermaid.min.js
+// lazily only when needed) and equips both Mermaid and PlantUML blocks with interactive
+// hover zoom/pan controls.
 (function () {
   const ownScript = /** @type {HTMLScriptElement | null} */ (document.currentScript);
   const mermaidUrl = ownScript && ownScript.src ? new URL('../vendor/mermaid.min.js', ownScript.src).toString() : '';
@@ -37,7 +38,8 @@
     loaderPhase = 'loading';
     loader = new Promise((resolve, reject) => {
       const script = document.createElement('script');
-      const nonce = initialNonce || document.querySelector('script[nonce]')?.nonce || '';
+      const scriptEl = /** @type {HTMLScriptElement | null} */ (document.querySelector('script[nonce]'));
+      const nonce = initialNonce || scriptEl?.nonce || '';
       if (nonce) {
         script.nonce = nonce;
       }
@@ -95,8 +97,132 @@
     return document.importNode(svg, true);
   }
 
+  /**
+   * Equips a rendered diagram container with hover zoom/pan controls (`Ctrl/Cmd/Alt + Wheel`
+   * to zoom, drag to pan when zoomed, `−` / `100%` / `+` buttons).
+   * @param {HTMLElement} container
+   * @param {Node[]} contentNodes
+   */
+  function mountInteractiveStage(container, contentNodes) {
+    const viewport = document.createElement('div');
+    viewport.className = 'drawgraph-md-viewport';
+    const inner = document.createElement('div');
+    inner.className = 'drawgraph-md-inner';
+    for (const n of contentNodes) {
+      inner.appendChild(n);
+    }
+    viewport.appendChild(inner);
+
+    const controls = document.createElement('div');
+    controls.className = 'drawgraph-md-controls';
+    const btnOut = document.createElement('button');
+    btnOut.type = 'button';
+    btnOut.textContent = '−';
+    btnOut.title = 'Zoom out';
+    const btnReset = document.createElement('button');
+    btnReset.type = 'button';
+    btnReset.textContent = '100%';
+    btnReset.title = 'Reset zoom & pan';
+    const btnIn = document.createElement('button');
+    btnIn.type = 'button';
+    btnIn.textContent = '+';
+    btnIn.title = 'Zoom in';
+    controls.append(btnOut, btnReset, btnIn);
+
+    let zoom = 1;
+    let tx = 0;
+    let ty = 0;
+    let dragging = false;
+    let startX = 0;
+    let startY = 0;
+
+    const apply = () => {
+      const active = Math.abs(zoom - 1) > 0.001 || tx !== 0 || ty !== 0;
+      inner.style.transform = active ? `translate(${tx}px, ${ty}px) scale(${zoom})` : '';
+      viewport.classList.toggle('is-transformed', active);
+      btnReset.textContent = `${Math.round(zoom * 100)}%`;
+    };
+
+    const zoomBy = (/** @type {number} */ factor) => {
+      zoom = Math.min(8, Math.max(0.25, zoom * factor));
+      apply();
+    };
+
+    btnOut.addEventListener('click', (e) => {
+      e.stopPropagation();
+      zoomBy(0.8);
+    });
+    btnIn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      zoomBy(1.25);
+    });
+    btnReset.addEventListener('click', (e) => {
+      e.stopPropagation();
+      zoom = 1;
+      tx = 0;
+      ty = 0;
+      apply();
+    });
+
+    viewport.addEventListener(
+      'wheel',
+      (e) => {
+        if (!(e.ctrlKey || e.metaKey || e.altKey)) {
+          return;
+        }
+        e.preventDefault();
+        zoom = Math.min(8, Math.max(0.25, zoom * Math.exp(-e.deltaY * 0.008)));
+        apply();
+      },
+      { passive: false },
+    );
+
+    viewport.addEventListener('pointerdown', (e) => {
+      if (e.button !== 0 || (Math.abs(zoom - 1) <= 0.001 && tx === 0 && ty === 0)) {
+        return;
+      }
+      dragging = true;
+      startX = e.clientX - tx;
+      startY = e.clientY - ty;
+      viewport.setPointerCapture(e.pointerId);
+      viewport.classList.add('is-dragging');
+    });
+    viewport.addEventListener('pointermove', (e) => {
+      if (!dragging) {
+        return;
+      }
+      tx = e.clientX - startX;
+      ty = e.clientY - startY;
+      apply();
+    });
+    const stopDrag = () => {
+      dragging = false;
+      viewport.classList.remove('is-dragging');
+    };
+    viewport.addEventListener('pointerup', stopDrag);
+    viewport.addEventListener('pointercancel', stopDrag);
+
+    container.classList.add('drawgraph-md-interactive');
+    container.replaceChildren(viewport, controls);
+  }
+
+  function enhancePlantUmlBlocks() {
+    const blocks = /** @type {NodeListOf<HTMLElement>} */ (
+      document.querySelectorAll('div.drawgraph-plantuml:not([data-zoom-bound])')
+    );
+    for (const block of blocks) {
+      if (!block.querySelector('img')) {
+        continue;
+      }
+      block.dataset.zoomBound = '1';
+      mountInteractiveStage(block, [...block.childNodes]);
+    }
+  }
+
   /** @param {boolean} forceThemeRefresh */
   async function render(forceThemeRefresh = false) {
+    enhancePlantUmlBlocks();
+
     const selector = forceThemeRefresh
       ? 'div.drawgraph-mermaid[data-rendered]'
       : 'div.drawgraph-mermaid:not([data-rendered])';
@@ -151,7 +277,7 @@
         const { svg } = await mermaid.render(id, source);
         const node = parseCleanSvg(svg);
         if (node) {
-          block.replaceChildren(node);
+          mountInteractiveStage(block, [node]);
         } else {
           throw new Error('Invalid SVG output.');
         }

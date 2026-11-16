@@ -32,7 +32,7 @@
   /** @type {Set<number>} */
   const clipboardPngRequests = new Set();
 
-  /** @param {typeof bridgePhase} next */
+  /** @param {'booting' | 'configured' | 'initialized' | 'ready' | 'failed'} next */
   function setBridgePhase(next) {
     if (bridgePhase === next) {
       return;
