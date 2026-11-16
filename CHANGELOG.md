@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Slide-in Settings Drawer (`DrawGraph: Open DrawGraph Settings Drawer`, `⚙` toolbar button in Draw.io and Diagram Preview) with one-click `中 | EN` display language toggle (`drawGraph.language`: `Auto` / `Simplified Chinese` / `English`) that switches DrawGraph UI, CodeLens, preview toolbars, and the embedded Draw.io editor language live without restarting VS Code.
+- Hide the bottom-right GitHub badge/icon inside the embedded Draw.io editor by default (`drawGraph.drawio.hideGithubIcon`).
 - Diagram preview minimap (`m` or `Map` toolbar button) with viewport indicator and click/drag panning, plus in-diagram text search & highlight (`Cmd/Ctrl+F` or `/`).
 - Code Links across Draw.io and Diagram Previews: jump from `#SymbolName` or `path/to/file.ts:line` diagram labels directly to workspace definitions (`DrawGraph: Navigate Draw.io Code Links…`, status bar `Code Links` button, or `Cmd/Ctrl+Click` in preview), and insert workspace symbols onto the Draw.io canvas (`DrawGraph: Insert Workspace Code Symbol into Draw.io…`).
 - Context-aware IntelliSense (`CompletionItemProvider` for keywords, `!theme` names, `skinparam` properties, directives, and declared node/participant IDs) and document formatting (`Shift+Alt+F`) for Mermaid and PlantUML.

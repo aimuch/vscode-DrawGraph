@@ -1,10 +1,12 @@
 import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { navigateToCodeTarget } from '../codeLinks';
+import { t } from '../l10n';
 import type { DiagramDiagnostics } from '../language/diagramFeatures';
 import { extractMermaidErrorLine } from '../language/symbols';
 import { countPages, pickBlock, splitDiagrams } from '../plantuml/encoder';
 import { CancelledError, extractPlantUmlError, PlantUmlRenderer, type WorkerPhase } from '../plantuml/renderer';
+import { applySettingUpdate, getSettingsSnapshot, openExtensionSettingsInVscode } from '../settingsSnapshot';
 import { StateMachine, type MachineSnapshot, type TransitionRecord, type TransitionTable } from '../stateMachine';
 import { config, decodeDataUri, getNonce, isDarkTheme, resolveAutoExportUri, saveBytes, withExtension } from '../util';
 
@@ -184,7 +186,7 @@ class DiagramPreview {
   }
 
   private updateTitle() {
-    const base = vscode.l10n.t('Preview {0}', path.basename(this.uri.path));
+    const base = t('Preview {0}', path.basename(this.uri.path));
     this.panel.title = this.locked ? `[${base}]` : base;
   }
 
@@ -194,7 +196,49 @@ class DiagramPreview {
     this.pushConfig();
   }
 
+  toggleSettingsDrawer(): void {
+    this.post({ type: 'toggleSettings', settings: getSettingsSnapshot() });
+  }
+
+  private buildLocalizedLabels(): Record<string, string> {
+    return {
+      locked: t('Locked'),
+      pin: t('Pin'),
+      bgAuto: t('Bg: Auto'),
+      bgLight: t('Bg: Light'),
+      bgDark: t('Bg: Dark'),
+      bgGrid: t('Bg: Grid'),
+      zoomOut: t('Zoom out'),
+      resetZoom: t('Reset zoom (100%)'),
+      zoomIn: t('Zoom in'),
+      fit: t('Fit'),
+      fitTitle: t('Fit to window'),
+      bgTitle: t('Cycle preview background'),
+      map: t('Map'),
+      mapTitle: t('Toggle minimap (m)'),
+      find: t('Find'),
+      findTitle: t('Find text in diagram (Cmd/Ctrl+F or /)'),
+      lockTitle: t('Lock or unlock preview to current file'),
+      exportSvgTitle: t('Export as SVG'),
+      exportPngTitle: t('Export as PNG'),
+      copySvg: t('Copy SVG'),
+      copySvgTitle: t('Copy SVG to clipboard'),
+      copyPng: t('Copy PNG'),
+      copyPngTitle: t('Copy PNG image to clipboard'),
+      prevTitle: t('Previous diagram or page ([)'),
+      nextTitle: t('Next diagram or page (])'),
+      rendering: t('Rendering…'),
+      settingsTitle: t('Settings'),
+      findPlaceholder: t('Find in diagram…'),
+      findPrev: t('Previous match'),
+      findNext: t('Next match'),
+      findClose: t('Close'),
+      empty: t('Nothing to preview yet.'),
+    };
+  }
+
   pushConfig(): void {
+    this.updateTitle();
     const cfg = config();
     this.post({
       type: 'config',
@@ -202,6 +246,8 @@ class DiagramPreview {
       pngTransparent: cfg.get<boolean>('preview.pngTransparent', false),
       locked: this.locked,
       uri: this.uri.toString(),
+      labels: this.buildLocalizedLabels(),
+      settings: getSettingsSnapshot(),
     });
   }
 
@@ -333,7 +379,7 @@ class DiagramPreview {
       }
 
       const blockLabel = blocks.length > 1 ? `${blockIdx + 1} / ${blocks.length}` : '';
-      const pageLabel = totalPages > 1 ? vscode.l10n.t('Page {0}/{1}', this.pageIndex + 1, totalPages) : '';
+      const pageLabel = totalPages > 1 ? t('Page {0}/{1}', this.pageIndex + 1, totalPages) : '';
       const info = [blockLabel, pageLabel].filter(Boolean).join(' · ');
       this.post({ type: 'svg', svg, info, canNav: blocks.length > 1 || totalPages > 1 });
     } catch (err) {
@@ -437,6 +483,8 @@ class DiagramPreview {
     label?: string;
     target?: string;
     fallbackLabel?: string;
+    key?: string;
+    value?: unknown;
     delta?: number;
     line?: number;
     state?: RenderStatus['state'];
@@ -490,17 +538,17 @@ class DiagramPreview {
         const target = resolveAutoExportUri(this.uri, isSvg ? '.svg' : '.png');
         const bytes = isSvg ? Buffer.from(msg.data, 'utf8') : decodeDataUri(msg.data);
         await vscode.workspace.fs.writeFile(target, bytes);
-        void vscode.window.setStatusBarMessage(vscode.l10n.t('Exported to {0}', vscode.workspace.asRelativePath(target)), 2500);
+        void vscode.window.setStatusBarMessage(t('Exported to {0}', vscode.workspace.asRelativePath(target)), 2500);
         break;
       }
       case 'copy':
         if (msg.data) {
           await vscode.env.clipboard.writeText(msg.data);
-          void vscode.window.setStatusBarMessage(vscode.l10n.t('SVG copied to clipboard'), 2000);
+          void vscode.window.setStatusBarMessage(t('SVG copied to clipboard'), 2000);
         }
         break;
       case 'copiedPng':
-        void vscode.window.setStatusBarMessage(vscode.l10n.t('PNG copied to clipboard'), 2000);
+        void vscode.window.setStatusBarMessage(t('PNG copied to clipboard'), 2000);
         break;
       case 'error':
         void vscode.window.showErrorMessage(msg.message ?? 'Unknown error');
@@ -515,6 +563,17 @@ class DiagramPreview {
         }
         break;
       }
+      case 'requestSettings':
+        this.post({ type: 'settingsState', settings: getSettingsSnapshot() });
+        break;
+      case 'updateSetting':
+        if (typeof msg.key === 'string') {
+          await applySettingUpdate(msg.key, msg.value);
+        }
+        break;
+      case 'openExtensionSettings':
+        await openExtensionSettingsInVscode();
+        break;
     }
   }
 
@@ -530,7 +589,7 @@ class DiagramPreview {
       `font-src ${webview.cspSource} data:`,
       `script-src 'nonce-${nonce}'`,
     ].join('; ');
-    const t = (s: string) => escapeAttr(vscode.l10n.t(s));
+    const tr = (s: string) => escapeAttr(t(s));
     const mermaidScript = this.kind === 'mermaid' ? `<script nonce="${nonce}" src="${media('vendor', 'mermaid.min.js')}"></script>` : '';
     return /* html */ `<!DOCTYPE html>
 <html lang="en">
@@ -539,6 +598,7 @@ class DiagramPreview {
   <meta http-equiv="Content-Security-Policy" content="${csp}">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <link href="${media('preview', 'main.css')}" rel="stylesheet">
+  <link href="${media('shared', 'settingsDrawer.css')}" rel="stylesheet">
 </head>
 <body
   data-kind="${this.kind}"
@@ -546,44 +606,46 @@ class DiagramPreview {
   data-locked="${this.locked}"
   data-png-scale="${cfg.get<number>('preview.pngScale', 2)}"
   data-png-transparent="${cfg.get<boolean>('preview.pngTransparent', false)}"
-  data-label-locked="${t('Locked')}"
-  data-label-unlocked="${t('Pin')}"
-  data-bg-auto="${t('Bg: Auto')}"
-  data-bg-light="${t('Bg: Light')}"
-  data-bg-dark="${t('Bg: Dark')}"
-  data-bg-grid="${t('Bg: Grid')}"
-  data-err-invalid-svg="${t('Invalid SVG received from renderer.')}"
-  data-err-mermaid-load="${t('Mermaid library failed to load.')}"
-  data-err-png-raster="${t('PNG export failed: the SVG could not be rasterized. Try exporting as SVG.')}"
+  data-label-locked="${tr('Locked')}"
+  data-label-unlocked="${tr('Pin')}"
+  data-bg-auto="${tr('Bg: Auto')}"
+  data-bg-light="${tr('Bg: Light')}"
+  data-bg-dark="${tr('Bg: Dark')}"
+  data-bg-grid="${tr('Bg: Grid')}"
+  data-err-invalid-svg="${tr('Invalid SVG received from renderer.')}"
+  data-err-mermaid-load="${tr('Mermaid library failed to load.')}"
+  data-err-png-raster="${tr('PNG export failed: the SVG could not be rasterized. Try exporting as SVG.')}"
 >
   <div id="toolbar">
-    <button id="zoomOut" title="${t('Zoom out')}">−</button>
-    <button id="zoomLabel" title="${t('Reset zoom (100%)')}">100%</button>
-    <button id="zoomIn" title="${t('Zoom in')}">+</button>
-    <button id="fit" title="${t('Fit to window')}">${t('Fit')}</button>
-    <button id="bgToggle" title="${t('Cycle preview background')}">${t('Bg: Auto')}</button>
-    <button id="mapToggle" title="${t('Toggle minimap (m)')}">${t('Map')}</button>
-    <button id="findToggle" title="${t('Find text in diagram (Cmd/Ctrl+F or /)')}">${t('Find')}</button>
-    <button id="lockToggle" title="${t('Lock or unlock preview to current file')}">${t('Pin')}</button>
+    <button id="zoomOut" title="${tr('Zoom out')}">−</button>
+    <button id="zoomLabel" title="${tr('Reset zoom (100%)')}">100%</button>
+    <button id="zoomIn" title="${tr('Zoom in')}">+</button>
+    <button id="fit" title="${tr('Fit to window')}">${tr('Fit')}</button>
+    <button id="bgToggle" title="${tr('Cycle preview background')}">${tr('Bg: Auto')}</button>
+    <button id="mapToggle" title="${tr('Toggle minimap (m)')}">${tr('Map')}</button>
+    <button id="findToggle" title="${tr('Find text in diagram (Cmd/Ctrl+F or /)')}">${tr('Find')}</button>
+    <button id="lockToggle" title="${tr('Lock or unlock preview to current file')}">${tr('Pin')}</button>
     <span class="sep"></span>
-    <button id="exportSvg" title="${t('Export as SVG')}">SVG</button>
-    <button id="exportPng" title="${t('Export as PNG')}">PNG</button>
-    <button id="copySvg" title="${t('Copy SVG to clipboard')}">${t('Copy SVG')}</button>
-    <button id="copyPng" title="${t('Copy PNG image to clipboard')}">${t('Copy PNG')}</button>
+    <button id="exportSvg" title="${tr('Export as SVG')}">SVG</button>
+    <button id="exportPng" title="${tr('Export as PNG')}">PNG</button>
+    <button id="copySvg" title="${tr('Copy SVG to clipboard')}">${tr('Copy SVG')}</button>
+    <button id="copyPng" title="${tr('Copy PNG image to clipboard')}">${tr('Copy PNG')}</button>
     <span class="sep"></span>
-    <button id="prevItem" class="nav-btn" title="${t('Previous diagram or page ([)')}" hidden>◀</button>
+    <button id="prevItem" class="nav-btn" title="${tr('Previous diagram or page ([)')}" hidden>◀</button>
     <span id="info"></span>
-    <button id="nextItem" class="nav-btn" title="${t('Next diagram or page (])')}" hidden>▶</button>
-    <span id="spinner" hidden>${t('Rendering…')}</span>
+    <button id="nextItem" class="nav-btn" title="${tr('Next diagram or page (])')}" hidden>▶</button>
+    <span class="toolbar-spacer"></span>
+    <span id="spinner" hidden>${tr('Rendering…')}</span>
+    <button id="settingsToggle" title="${tr('Settings')}">⚙</button>
   </div>
   <div id="stage">
     <div id="canvas"></div>
     <div id="findBar" hidden>
-      <input id="findInput" type="text" placeholder="${t('Find in diagram…')}">
+      <input id="findInput" type="text" placeholder="${tr('Find in diagram…')}">
       <span id="findCount">0/0</span>
-      <button id="findPrev" type="button" title="${t('Previous match')}">▲</button>
-      <button id="findNext" type="button" title="${t('Next match')}">▼</button>
-      <button id="findClose" type="button" title="${t('Close')}">✕</button>
+      <button id="findPrev" type="button" title="${tr('Previous match')}">▲</button>
+      <button id="findNext" type="button" title="${tr('Next match')}">▼</button>
+      <button id="findClose" type="button" title="${tr('Close')}">✕</button>
     </div>
     <div id="minimap" hidden>
       <div id="minimapSvg"></div>
@@ -591,8 +653,9 @@ class DiagramPreview {
     </div>
   </div>
   <pre id="error" hidden></pre>
-  <div id="empty" hidden>${t('Nothing to preview yet.')}</div>
+  <div id="empty" hidden>${tr('Nothing to preview yet.')}</div>
   ${mermaidScript}
+  <script nonce="${nonce}" src="${media('shared', 'settingsDrawer.js')}"></script>
   <script nonce="${nonce}" src="${media('preview', 'main.js')}"></script>
 </body>
 </html>`;
@@ -698,17 +761,28 @@ export class PreviewManager implements vscode.WebviewPanelSerializer {
     active?.toggleLock();
   }
 
+  toggleSettingsDrawer(): boolean {
+    const active =
+      [...this.previews.values()].find((p) => p.panel.active) ??
+      [...this.previews.values()].find((p) => p.panel.visible);
+    if (!active) {
+      return false;
+    }
+    active.toggleSettingsDrawer();
+    return true;
+  }
+
   async open(uri: vscode.Uri | undefined, toSide: boolean, atLine?: number): Promise<void> {
     const editor = vscode.window.activeTextEditor;
     const target = uri ?? editor?.document.uri;
     if (!target) {
-      void vscode.window.showWarningMessage(vscode.l10n.t('Open a Mermaid or PlantUML file first.'));
+      void vscode.window.showWarningMessage(t('Open a Mermaid or PlantUML file first.'));
       return;
     }
     const document = await vscode.workspace.openTextDocument(target);
     const kind = diagramKind(document);
     if (!kind) {
-      void vscode.window.showWarningMessage(vscode.l10n.t('This file is not a Mermaid or PlantUML diagram.'));
+      void vscode.window.showWarningMessage(t('This file is not a Mermaid or PlantUML diagram.'));
       return;
     }
     const line = atLine ?? (editor && editor.document.uri.toString() === target.toString() ? editor.selection.active.line : undefined);
@@ -790,7 +864,7 @@ export class PreviewManager implements vscode.WebviewPanelSerializer {
         await saveBytes(withExtension(uri, '.png'), png, { PNG: ['png'] });
       }
     } catch (err) {
-      void vscode.window.showErrorMessage(vscode.l10n.t('Export failed: {0}', (err as Error).message));
+      void vscode.window.showErrorMessage(t('Export failed: {0}', (err as Error).message));
     }
   }
 
@@ -833,9 +907,9 @@ export class PreviewManager implements vscode.WebviewPanelSerializer {
           ? Buffer.from(await this.sharedExporter.render(blocks[0].source, opts), 'utf8')
           : await this.sharedExporter.renderPng(blocks[0].source, opts);
       await vscode.workspace.fs.writeFile(target, data);
-      void vscode.window.setStatusBarMessage(vscode.l10n.t('Exported to {0}', vscode.workspace.asRelativePath(target)), 2500);
+      void vscode.window.setStatusBarMessage(t('Exported to {0}', vscode.workspace.asRelativePath(target)), 2500);
     } catch (err) {
-      void vscode.window.showErrorMessage(vscode.l10n.t('Export failed: {0}', (err as Error).message));
+      void vscode.window.showErrorMessage(t('Export failed: {0}', (err as Error).message));
     }
   }
 

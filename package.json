@@ -56,6 +56,7 @@
     "onLanguage:markdown",
     "onWebviewPanel:drawGraph.preview",
     "onCommand:drawGraph.quickMenu",
+    "onCommand:drawGraph.openSettings",
     "onCommand:drawGraph.extractSource"
   ],
   "contributes": {
@@ -176,6 +177,12 @@
         "title": "%command.quickMenu%",
         "category": "DrawGraph",
         "icon": "./media/icons/drawgraph.svg"
+      },
+      {
+        "command": "drawGraph.openSettings",
+        "title": "%command.openSettings%",
+        "category": "DrawGraph",
+        "icon": "$(settings-gear)"
       },
       {
         "command": "drawGraph.preview.open",
@@ -331,6 +338,11 @@
           "group": "navigation@14"
         },
         {
+          "command": "drawGraph.openSettings",
+          "when": "activeCustomEditorId == drawGraph.drawio || activeCustomEditorId == drawGraph.drawioPng || activeWebviewPanelId == drawGraph.preview",
+          "group": "navigation@15"
+        },
+        {
           "command": "drawGraph.drawio.copySvg",
           "when": "activeCustomEditorId == drawGraph.drawio || activeCustomEditorId == drawGraph.drawioPng",
           "group": "1_drawgraph@1"
@@ -463,6 +475,21 @@
     "configuration": {
       "title": "DrawGraph",
       "properties": {
+        "drawGraph.language": {
+          "type": "string",
+          "enum": [
+            "Auto",
+            "Simplified Chinese",
+            "English"
+          ],
+          "enumDescriptions": [
+            "%config.language.auto%",
+            "%config.language.zhCn%",
+            "%config.language.en%"
+          ],
+          "default": "Auto",
+          "markdownDescription": "%config.language%"
+        },
         "drawGraph.drawio.url": {
           "type": "string",
           "default": "https://embed.diagrams.net/",
@@ -517,6 +544,11 @@
           ],
           "default": "auto",
           "markdownDescription": "%config.drawio.svgColorScheme%"
+        },
+        "drawGraph.drawio.hideGithubIcon": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "%config.drawio.hideGithubIcon%"
         },
         "drawGraph.drawio.vscodeShortcuts": {
           "type": "boolean",

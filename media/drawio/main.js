@@ -8,10 +8,16 @@
   const status = /** @type {HTMLElement} */ (document.getElementById('status'));
   const statusText = /** @type {HTMLElement} */ (document.getElementById('statusText'));
   const retryBtn = /** @type {HTMLButtonElement} */ (document.getElementById('retryBtn'));
-  const frameUrl = frame.dataset.src || '';
-  const frameOrigin = new URL(frameUrl).origin;
-  const loadingMessage = status.dataset.loading || statusText.textContent || 'Loading draw.io…';
-  const failMessage = status.dataset.fail || 'draw.io failed to load.';
+  let frameUrl = frame.dataset.src || '';
+  let frameOrigin = new URL(frameUrl).origin;
+  let loadingMessage = status.dataset.loading || statusText.textContent || 'Loading draw.io…';
+  let failMessage = status.dataset.fail || 'draw.io failed to load.';
+
+  // @ts-ignore injected by media/shared/settingsDrawer.js
+  const settingsDrawer = window.createDrawGraphSettingsDrawer
+    ? // @ts-ignore
+      window.createDrawGraphSettingsDrawer({ postMessage: (m) => vscode.postMessage(m) })
+    : null;
 
   /**
    * Explicit bridge lifecycle phase:
@@ -217,6 +223,43 @@
           clipboardPngRequests.add(msg.requestId);
         }
         postToDrawio(Object.assign({ action: 'export', format: msg.format, drawGraphRequestId: msg.requestId }, msg.options || {}));
+        break;
+      case 'settingsState':
+        settingsDrawer?.setState(msg.settings);
+        break;
+      case 'toggleSettings':
+        if (msg.settings) {
+          settingsDrawer?.setState(msg.settings);
+        }
+        if (msg.open === true) {
+          settingsDrawer?.open();
+        } else if (msg.open === false) {
+          settingsDrawer?.close();
+        } else {
+          settingsDrawer?.toggle();
+        }
+        break;
+      case 'reloadFrame':
+        if (typeof msg.frameUrl === 'string' && msg.frameUrl) {
+          frameUrl = msg.frameUrl;
+          frameOrigin = new URL(frameUrl).origin;
+        }
+        if (typeof msg.loadingText === 'string') {
+          loadingMessage = msg.loadingText;
+        }
+        if (typeof msg.failText === 'string') {
+          failMessage = msg.failText;
+        }
+        if (typeof msg.retryText === 'string') {
+          retryBtn.textContent = msg.retryText;
+        }
+        iframeRequestedConfigure = false;
+        setBridgePhase('booting');
+        startFailTimer();
+        frame.src = 'about:blank';
+        setTimeout(() => {
+          frame.src = frameUrl;
+        }, 20);
         break;
     }
   });

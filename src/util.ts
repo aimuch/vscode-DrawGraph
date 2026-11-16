@@ -1,6 +1,7 @@
 import * as path from 'node:path';
 import { randomBytes } from 'node:crypto';
 import * as vscode from 'vscode';
+import { t } from './l10n';
 
 export function getNonce(): string {
   return randomBytes(24).toString('base64');
@@ -41,8 +42,8 @@ export async function saveBytes(defaultUri: vscode.Uri, data: Uint8Array, filter
     return;
   }
   await vscode.workspace.fs.writeFile(target, data);
-  const open = vscode.l10n.t('Open');
-  const choice = await vscode.window.showInformationMessage(vscode.l10n.t('Exported to {0}', vscode.workspace.asRelativePath(target)), open);
+  const open = t('Open');
+  const choice = await vscode.window.showInformationMessage(t('Exported to {0}', vscode.workspace.asRelativePath(target)), open);
   if (choice === open) {
     await vscode.commands.executeCommand('vscode.open', target);
   }

@@ -519,6 +519,112 @@ test('IntelliSense, formatting, URL generation, batch export, source extraction 
   fs.unlinkSync(dioSvgUri.fsPath);
 });
 
+async function evalInTarget(predicate, expression) {
+  const targets = await (await fetch('http://127.0.0.1:9339/json')).json();
+  const target = targets.find((t) => predicate(t) && t.webSocketDebuggerUrl);
+  if (!target) {
+    return undefined;
+  }
+  const ws = new WebSocket(target.webSocketDebuggerUrl);
+  await new Promise((resolve, reject) => {
+    ws.onopen = resolve;
+    ws.onerror = reject;
+  });
+  try {
+    const res = await new Promise((resolve, reject) => {
+      ws.onmessage = (ev) => {
+        const m = JSON.parse(ev.data);
+        if (m.id === 1) {
+          m.error ? reject(new Error(JSON.stringify(m.error))) : resolve(m.result);
+        }
+      };
+      ws.send(JSON.stringify({ id: 1, method: 'Runtime.evaluate', params: { expression, returnByValue: true } }));
+    });
+    return res.result.value;
+  } finally {
+    ws.close();
+  }
+}
+
+test('Settings Drawer, runtime Chinese/English switching, and Draw.io GitHub badge hiding work', async () => {
+  const cfg = () => vscode.workspace.getConfiguration('drawGraph');
+  try {
+    // 1. Open Draw.io, verify bottom-right GitHub icon is hidden via configure CSS, and open Settings Drawer
+    const uri = file('architecture.drawio');
+    await openDrawio(uri);
+    const ghState = await evalInTarget(
+      (t) => /embed\.diagrams\.net/.test(t.url || ''),
+      `(() => {
+        const els = [...document.querySelectorAll('a[href*="github"], img[src*="github"], [title*="GitHub"]')];
+        const corner = [...document.querySelectorAll('a, img, div')].filter((e) => {
+          const r = e.getBoundingClientRect();
+          return r.width > 0 && r.width <= 48 && r.height > 0 && r.height <= 48 && r.right >= window.innerWidth - 40 && r.bottom >= window.innerHeight - 36;
+        }).map((e) => ({ tag: e.tagName, cls: e.className, title: e.getAttribute('title'), href: e.getAttribute('href'), src: e.getAttribute('src') }));
+        return {
+          totalGithubNodes: els.length,
+          visibleGithubNodes: els.filter((e) => getComputedStyle(e).display !== 'none' && getComputedStyle(e).visibility !== 'hidden' && e.getBoundingClientRect().width > 0).map((e) => e.outerHTML.slice(0, 160)),
+          corner,
+        };
+      })()`,
+    );
+    console.log('      draw.io corner inspection:', JSON.stringify(ghState));
+    if (ghState) {
+      assert.equal(ghState.visibleGithubNodes.length, 0, 'no visible GitHub badge inside draw.io');
+    }
+
+    // Open slide-in Settings Drawer over active Draw.io editor
+    await vscode.commands.executeCommand('drawGraph.openSettings');
+    await waitFor(
+      'Settings Drawer active in Draw.io webview',
+      async () => {
+        const targets = await (await fetch('http://127.0.0.1:9339/json')).json();
+        for (const t of targets.filter((x) => /vscode-webview/.test(x.url || '') && x.webSocketDebuggerUrl)) {
+          const val = await evalInTarget(
+            (cand) => cand.id === t.id,
+            `!!((document.querySelector('#active-frame') && document.querySelector('#active-frame').contentDocument) || document).querySelector('#settingsWidget.active')`,
+          );
+          if (val === true) {
+            return true;
+          }
+        }
+        return false;
+      },
+      10000,
+    );
+
+    // 2. Live Chinese <-> English runtime switching updates CodeLens & Draw.io language without restart
+    const beforeZhLoads = drawioOf(uri).loads;
+    await cfg().update('language', 'Simplified Chinese', vscode.ConfigurationTarget.Global);
+    await waitFor(
+      'Draw.io reloaded in Simplified Chinese',
+      () => drawioOf(uri)?.loads > beforeZhLoads && drawioOf(uri)?.phase === 'ready',
+      45000,
+    );
+    const zhDrawioTarget = (await (await fetch('http://127.0.0.1:9339/json')).json()).find((t) => /embed\.diagrams\.net/.test(t.url || ''));
+    if (zhDrawioTarget) {
+      assert.match(zhDrawioTarget.url, /lang=zh\b/, 'draw.io iframe switched to lang=zh');
+    }
+
+    const mmdUri = file('flowchart.mmd');
+    await vscode.workspace.openTextDocument(mmdUri);
+    const zhLenses = await vscode.commands.executeCommand('vscode.executeCodeLensProvider', mmdUri);
+    assert.ok(zhLenses.some((l) => l.command && l.command.title.includes('预览')), 'CodeLens switched to Chinese');
+
+    const beforeEnLoads = drawioOf(uri).loads;
+    await cfg().update('language', 'English', vscode.ConfigurationTarget.Global);
+    await waitFor(
+      'Draw.io reloaded in English',
+      () => drawioOf(uri)?.loads > beforeEnLoads && drawioOf(uri)?.phase === 'ready',
+      45000,
+    );
+    const enLenses = await vscode.commands.executeCommand('vscode.executeCodeLensProvider', mmdUri);
+    assert.ok(enLenses.some((l) => l.command && l.command.title.includes('Preview')), 'CodeLens switched back to English');
+  } finally {
+    await cfg().update('language', undefined, vscode.ConfigurationTarget.Global);
+    await vscode.commands.executeCommand('workbench.action.closeAllEditors');
+  }
+});
+
 exports.run = async function run() {
   const failures = [];
   for (const { name, fn } of tests) {

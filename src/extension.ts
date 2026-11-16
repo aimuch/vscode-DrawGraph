@@ -5,11 +5,13 @@ import { DrawioEditorProvider } from './drawio/drawioEditorProvider';
 import { extractDiagramFromPng, isPngDiagramPath } from './drawio/drawioPng';
 import { extractDiagramFromSvg, isSvgDiagramPath } from './drawio/drawioSvg';
 import { convertMermaidToDrawioXml } from './drawio/mermaidToDrawio';
+import { initL10n, t } from './l10n';
 import { registerLanguageFeatures } from './language/diagramFeatures';
 import { findMarkdownDiagramFences } from './language/symbols';
 import { disposeMarkdownPlantUml, mermaidMarkdownPlugin } from './markdown/markdownIt';
 import { encodePlantUml, extractPlantUmlSourceFromSvg, pickBlock, splitDiagrams } from './plantuml/encoder';
 import { diagramKind, PreviewManager } from './preview/previewManager';
+import { SettingsPanelManager } from './settingsPanel';
 import type { TransitionRecord } from './stateMachine';
 import { DIAGRAM_TEMPLATES, DRAWIO_TEMPLATE, MERMAID_TEMPLATE, PLANTUML_TEMPLATE } from './templates';
 import { config, withExtension } from './util';
@@ -30,8 +32,8 @@ async function promptNewDrawioUri(defaultUri?: vscode.Uri): Promise<vscode.Uri |
     defaultUri: defaultUri ?? (folder ? vscode.Uri.joinPath(folder, 'diagram.drawio') : undefined),
     filters: {
       'draw.io': ['drawio', 'dio'],
-      [vscode.l10n.t('draw.io SVG (editable image)')]: ['drawio.svg', 'dio.svg', 'svg'],
-      [vscode.l10n.t('draw.io PNG (editable image)')]: ['drawio.png', 'dio.png', 'png'],
+      [t('draw.io SVG (editable image)')]: ['drawio.svg', 'dio.svg', 'svg'],
+      [t('draw.io PNG (editable image)')]: ['drawio.png', 'dio.png', 'png'],
     },
   });
   return picked ? normalizeDrawioTarget(picked) : undefined;
@@ -78,6 +80,8 @@ function sanitizedPlantUmlServer(): string {
 }
 
 export function activate(context: vscode.ExtensionContext) {
+  initL10n(context.extensionPath);
+
   const log = vscode.window.createOutputChannel('DrawGraph', { log: true });
   const traceTransition = (rec: TransitionRecord, machineId: string) => {
     log.debug(`[${machineId}] ${rec.from} --(${rec.event})--> ${rec.to}${rec.note ? ` (${rec.note})` : ''}`);
@@ -87,11 +91,28 @@ export function activate(context: vscode.ExtensionContext) {
   const diagnostics = registerLanguageFeatures(context);
   const drawio = DrawioEditorProvider.register(context, traceTransition);
   const previews = new PreviewManager(context, diagnostics, traceTransition);
+  const settingsPanel = new SettingsPanelManager(context);
   context.subscriptions.push({ dispose: () => disposeMarkdownPlantUml() });
 
   const register = (id: string, fn: (...args: any[]) => unknown) =>
     context.subscriptions.push(vscode.commands.registerCommand(id, fn));
   const asUri = (arg: unknown) => (arg instanceof vscode.Uri ? arg : undefined);
+
+  register('drawGraph.openSettings', () => {
+    const tabCtx = activeTabContext();
+    const isDrawioTab =
+      tabCtx.viewType === DrawioEditorProvider.viewType || tabCtx.viewType === DrawioEditorProvider.pngViewType;
+    if (isDrawioTab && drawio.toggleSettingsDrawer()) {
+      return;
+    }
+    if (previews.toggleSettingsDrawer()) {
+      return;
+    }
+    if (drawio.toggleSettingsDrawer()) {
+      return;
+    }
+    settingsPanel.open();
+  });
 
   register('drawGraph.preview.open', (uri?: unknown) => previews.open(asUri(uri), false));
   register('drawGraph.preview.openToSide', (uri?: unknown) => previews.open(asUri(uri), true));
@@ -121,14 +142,14 @@ export function activate(context: vscode.ExtensionContext) {
     const editor = vscode.window.activeTextEditor;
     const targetUri = asUri(uriArg) ?? editor?.document.uri;
     if (!targetUri) {
-      void vscode.window.showWarningMessage(vscode.l10n.t('Open a Mermaid or PlantUML file first.'));
+      void vscode.window.showWarningMessage(t('Open a Mermaid or PlantUML file first.'));
       return undefined;
     }
     const doc = await vscode.workspace.openTextDocument(targetUri);
     const cursorLine = editor && editor.document.uri.toString() === targetUri.toString() ? editor.selection.active.line : undefined;
     const block = pickBlock(splitDiagrams(doc.getText()), cursorLine);
     if (!block) {
-      void vscode.window.showWarningMessage(vscode.l10n.t('Nothing to preview yet.'));
+      void vscode.window.showWarningMessage(t('Nothing to preview yet.'));
       return undefined;
     }
     const server = sanitizedPlantUmlServer();
@@ -151,7 +172,7 @@ export function activate(context: vscode.ExtensionContext) {
           { label: '$(file-media) PNG URL', detail: pngUrl, value: pngUrl },
           { label: '$(markdown) Markdown Image', detail: markdownImg, value: markdownImg },
         ],
-        { placeHolder: vscode.l10n.t('Copy shareable PlantUML URL or Markdown image snippet') },
+        { placeHolder: t('Copy shareable PlantUML URL or Markdown image snippet') },
       );
       chosenValue = picked?.value;
     }
@@ -159,7 +180,7 @@ export function activate(context: vscode.ExtensionContext) {
       return undefined;
     }
     await vscode.env.clipboard.writeText(chosenValue);
-    void vscode.window.setStatusBarMessage(vscode.l10n.t('PlantUML URL copied to clipboard'), 2500);
+    void vscode.window.setStatusBarMessage(t('PlantUML URL copied to clipboard'), 2500);
     return chosenValue;
   });
 
@@ -175,7 +196,7 @@ export function activate(context: vscode.ExtensionContext) {
       const kind = diagramKind(doc);
       const isMarkdown = doc.languageId === 'markdown' || /\.md$/i.test(targetUri.path);
       if (kind !== 'plantuml' && !isMarkdown) {
-        void vscode.window.showWarningMessage(vscode.l10n.t('Open a PlantUML or Markdown file with diagrams first.'));
+        void vscode.window.showWarningMessage(t('Open a PlantUML or Markdown file with diagrams first.'));
         return [];
       }
 
@@ -185,10 +206,10 @@ export function activate(context: vscode.ExtensionContext) {
       } else {
         const pickedFmt = await vscode.window.showQuickPick(
           [
-            { label: 'SVG', detail: vscode.l10n.t('Vector image (.svg)'), fmt: 'svg' as const },
-            { label: 'PNG', detail: vscode.l10n.t('Raster image (.png)'), fmt: 'png' as const },
+            { label: 'SVG', detail: t('Vector image (.svg)'), fmt: 'svg' as const },
+            { label: 'PNG', detail: t('Raster image (.png)'), fmt: 'png' as const },
           ],
-          { placeHolder: vscode.l10n.t('Select export format for all diagrams in document') },
+          { placeHolder: t('Select export format for all diagrams in document') },
         );
         if (!pickedFmt) {
           return [];
@@ -244,7 +265,7 @@ export function activate(context: vscode.ExtensionContext) {
       }
 
       if (tasks.length === 0) {
-        void vscode.window.showWarningMessage(vscode.l10n.t('Nothing to preview yet.'));
+        void vscode.window.showWarningMessage(t('Nothing to preview yet.'));
         return [];
       }
 
@@ -252,7 +273,7 @@ export function activate(context: vscode.ExtensionContext) {
       await vscode.window.withProgress(
         {
           location: vscode.ProgressLocation.Notification,
-          title: vscode.l10n.t('Exporting {0} diagrams…', tasks.length),
+          title: t('Exporting {0} diagrams…', tasks.length),
         },
         async () => {
           for (const task of tasks) {
@@ -263,7 +284,7 @@ export function activate(context: vscode.ExtensionContext) {
           }
         },
       );
-      void vscode.window.setStatusBarMessage(vscode.l10n.t('Exported {0} diagrams', written.length), 3000);
+      void vscode.window.setStatusBarMessage(t('Exported {0} diagrams', written.length), 3000);
       return written;
     },
   );
@@ -300,7 +321,7 @@ export function activate(context: vscode.ExtensionContext) {
 
     if (!extracted || !language) {
       void vscode.window.showWarningMessage(
-        vscode.l10n.t('No embedded Draw.io or PlantUML diagram source was found in {0}.', path.basename(targetUri.path)),
+        t('No embedded Draw.io or PlantUML diagram source was found in {0}.', path.basename(targetUri.path)),
       );
       return undefined;
     }
@@ -317,13 +338,13 @@ export function activate(context: vscode.ExtensionContext) {
     }
     const active = await drawio.getActiveDiagramXml();
     if (!active) {
-      void vscode.window.showWarningMessage(vscode.l10n.t('No active draw.io editor.'));
+      void vscode.window.showWarningMessage(t('No active draw.io editor.'));
       return false;
     }
     const links = extractCodeLinksFromDrawioXml(active.xml);
     if (links.length === 0) {
       const manual = await vscode.window.showInputBox({
-        prompt: vscode.l10n.t('No #Symbol or file:line labels found in diagram. Enter a #Symbol or path:line to jump to:'),
+        prompt: t('No #Symbol or file:line labels found in diagram. Enter a #Symbol or path:line to jump to:'),
         placeHolder: '#PreviewManager or src/extension.ts:80',
       });
       return manual ? navigateToCodeTarget(manual, active.uri) : false;
@@ -334,10 +355,10 @@ export function activate(context: vscode.ExtensionContext) {
     const picked = await vscode.window.showQuickPick(
       links.map((l) => ({
         label: `${l.kind === 'symbol' ? '$(symbol-class)' : '$(file-code)'} ${l.label}`,
-        description: l.kind === 'symbol' ? vscode.l10n.t('Workspace symbol') : vscode.l10n.t('Workspace file'),
+        description: l.kind === 'symbol' ? t('Workspace symbol') : t('Workspace file'),
         link: l,
       })),
-      { placeHolder: vscode.l10n.t('Select a Code Link from the diagram to open in editor') },
+      { placeHolder: t('Select a Code Link from the diagram to open in editor') },
     );
     return picked ? navigateToCodeTarget(picked.link.label, active.uri) : false;
   });
@@ -348,7 +369,7 @@ export function activate(context: vscode.ExtensionContext) {
       return drawio.insertCodeSymbolNode(`#${clean}`, `#${clean}`);
     }
     const query = await vscode.window.showInputBox({
-      prompt: vscode.l10n.t('Enter a class, function, or symbol name to insert as a linked node'),
+      prompt: t('Enter a class, function, or symbol name to insert as a linked node'),
       placeHolder: 'PreviewManager',
     });
     if (!query || !query.trim()) {
@@ -366,7 +387,7 @@ export function activate(context: vscode.ExtensionContext) {
           description: vscode.workspace.asRelativePath(s.location.uri),
           symName: s.name,
         })),
-        { placeHolder: vscode.l10n.t('Select workspace symbol to link') },
+        { placeHolder: t('Select workspace symbol to link') },
       );
       if (!picked) {
         return false;
@@ -406,11 +427,11 @@ export function activate(context: vscode.ExtensionContext) {
   register('drawGraph.diagram.newFromTemplate', async (templateId?: unknown) => {
     const chosen =
       typeof templateId === 'string'
-        ? DIAGRAM_TEMPLATES.find((t) => t.id === templateId)
+        ? DIAGRAM_TEMPLATES.find((tpl) => tpl.id === templateId)
         : (
             await vscode.window.showQuickPick(
-              DIAGRAM_TEMPLATES.map((t) => ({ label: t.label, detail: t.detail, template: t })),
-              { placeHolder: vscode.l10n.t('Select a diagram template') },
+              DIAGRAM_TEMPLATES.map((tpl) => ({ label: t(tpl.label), detail: t(tpl.detail), template: tpl })),
+              { placeHolder: t('Select a diagram template') },
             )
           )?.template;
     if (!chosen) {
@@ -434,7 +455,7 @@ export function activate(context: vscode.ExtensionContext) {
       mermaidSource = doc.getText();
     }
     if (!mermaidSource || !mermaidSource.trim()) {
-      void vscode.window.showWarningMessage(vscode.l10n.t('Open a Mermaid diagram first.'));
+      void vscode.window.showWarningMessage(t('Open a Mermaid diagram first.'));
       return;
     }
     const defaultDest =
@@ -472,40 +493,45 @@ export function activate(context: vscode.ExtensionContext) {
     if (isDrawioTab) {
       contextual.push(
         {
+          id: 'openSettings',
+          label: `$(settings-gear) ${t('DrawGraph Settings…')}`,
+          run: () => vscode.commands.executeCommand('drawGraph.openSettings'),
+        },
+        {
           id: 'navigateCodeLinks',
-          label: `$(link) ${vscode.l10n.t('Navigate Code Links…')}`,
+          label: `$(link) ${t('Navigate Code Links…')}`,
           run: () => vscode.commands.executeCommand('drawGraph.drawio.navigateCodeLinks'),
         },
         {
           id: 'insertCodeSymbol',
-          label: `$(symbol-class) ${vscode.l10n.t('Insert Workspace Code Symbol…')}`,
+          label: `$(symbol-class) ${t('Insert Workspace Code Symbol…')}`,
           run: () => vscode.commands.executeCommand('drawGraph.drawio.insertCodeSymbol'),
         },
         {
           id: 'exportSvg',
-          label: `$(export) ${vscode.l10n.t('Export as SVG')}`,
+          label: `$(export) ${t('Export as SVG')}`,
           run: () => drawio.exportActive('xmlsvg'),
         },
         {
           id: 'exportPng',
-          label: `$(file-media) ${vscode.l10n.t('Export as PNG')}`,
+          label: `$(file-media) ${t('Export as PNG')}`,
           run: () => drawio.exportActive('xmlpng'),
         },
         {
           id: 'copyPng',
-          label: `$(clippy) ${vscode.l10n.t('Copy PNG')}`,
+          label: `$(clippy) ${t('Copy PNG')}`,
           run: () => drawio.copyActive('png'),
         },
         {
           id: 'copySvg',
-          label: `$(copy) ${vscode.l10n.t('Copy SVG')}`,
+          label: `$(copy) ${t('Copy SVG')}`,
           run: () => drawio.copyActive('svg'),
         },
       );
       if (tabCtx.viewType === DrawioEditorProvider.viewType && targetUri) {
         contextual.push({
           id: 'openAsText',
-          label: `$(code) ${vscode.l10n.t('Open as Text')}`,
+          label: `$(code) ${t('Open as Text')}`,
           run: () => vscode.commands.executeCommand('vscode.openWith', targetUri, 'default'),
         });
       }
@@ -515,25 +541,25 @@ export function activate(context: vscode.ExtensionContext) {
       if (kind === 'mermaid' || kind === 'plantuml') {
         contextual.push({
           id: 'previewSide',
-          label: `$(open-preview) ${vscode.l10n.t('Open Diagram Preview to the Side')}`,
+          label: `$(open-preview) ${t('Open Diagram Preview to the Side')}`,
           run: () => previews.open(targetUri, true),
         });
         if (kind === 'mermaid') {
           contextual.push({
             id: 'mermaidToDrawio',
-            label: `$(type-hierarchy) ${vscode.l10n.t('Open in Draw.io')}`,
+            label: `$(type-hierarchy) ${t('Open in Draw.io')}`,
             run: () => vscode.commands.executeCommand('drawGraph.mermaid.openInDrawio', targetUri),
           });
         } else if (kind === 'plantuml') {
           contextual.push(
             {
               id: 'plantumlUrl',
-              label: `$(link-external) ${vscode.l10n.t('Generate Shareable PlantUML URL…')}`,
+              label: `$(link-external) ${t('Generate Shareable PlantUML URL…')}`,
               run: () => vscode.commands.executeCommand('drawGraph.plantuml.generateUrl', targetUri),
             },
             {
               id: 'batchExport',
-              label: `$(export) ${vscode.l10n.t('Export All Diagrams in File…')}`,
+              label: `$(export) ${t('Export All Diagrams in File…')}`,
               run: () => vscode.commands.executeCommand('drawGraph.exportDocumentDiagrams', targetUri),
             },
           );
@@ -542,12 +568,12 @@ export function activate(context: vscode.ExtensionContext) {
         contextual.push(
           {
             id: 'markdownPreview',
-            label: `$(open-preview) ${vscode.l10n.t('Open Markdown Preview to the Side')}`,
+            label: `$(open-preview) ${t('Open Markdown Preview to the Side')}`,
             run: () => vscode.commands.executeCommand('markdown.showPreviewToSide', targetUri),
           },
           {
             id: 'batchExport',
-            label: `$(export) ${vscode.l10n.t('Export All Diagrams in File…')}`,
+            label: `$(export) ${t('Export All Diagrams in File…')}`,
             run: () => vscode.commands.executeCommand('drawGraph.exportDocumentDiagrams', targetUri),
           },
         );
@@ -557,14 +583,14 @@ export function activate(context: vscode.ExtensionContext) {
           : DrawioEditorProvider.viewType;
         contextual.push({
           id: 'openInDrawio',
-          label: `$(edit) ${vscode.l10n.t('Open Current File in Draw.io Editor')}`,
+          label: `$(edit) ${t('Open Current File in Draw.io Editor')}`,
           description: vscode.workspace.asRelativePath(targetUri),
           run: () => vscode.commands.executeCommand('vscode.openWith', targetUri, viewType),
         });
         if (/\.(?:svg|png)$/i.test(targetUri.path)) {
           contextual.push({
             id: 'extractSource',
-            label: `$(file-code) ${vscode.l10n.t('Extract Embedded Diagram Source')}`,
+            label: `$(file-code) ${t('Extract Embedded Diagram Source')}`,
             run: () => vscode.commands.executeCommand('drawGraph.extractSource', targetUri),
           });
         }
@@ -574,27 +600,34 @@ export function activate(context: vscode.ExtensionContext) {
     const creation: QuickActionItem[] = [
       {
         id: 'newDrawio',
-        label: `$(edit) ${vscode.l10n.t('New Draw.io Diagram')}`,
+        label: `$(edit) ${t('New Draw.io Diagram')}`,
         detail: '.drawio / .drawio.svg / .drawio.png',
         run: () => vscode.commands.executeCommand('drawGraph.drawio.new'),
       },
       {
         id: 'newMermaid',
-        label: `$(git-merge) ${vscode.l10n.t('New Mermaid Diagram')}`,
-        detail: vscode.l10n.t('Live text-to-diagram preview'),
+        label: `$(git-merge) ${t('New Mermaid Diagram')}`,
+        detail: t('Live text-to-diagram preview'),
         run: () => newTextDiagram('mermaid', MERMAID_TEMPLATE),
       },
       {
         id: 'newPlantuml',
-        label: `$(type-hierarchy-sub) ${vscode.l10n.t('New PlantUML Diagram')}`,
-        detail: vscode.l10n.t('UML sequence, class, component, mindmap…'),
+        label: `$(type-hierarchy-sub) ${t('New PlantUML Diagram')}`,
+        detail: t('UML sequence, class, component, mindmap…'),
         run: () => newTextDiagram('plantuml', PLANTUML_TEMPLATE),
       },
       {
         id: 'newFromTemplate',
-        label: `$(symbol-misc) ${vscode.l10n.t('New Diagram from Template…')}`,
-        detail: vscode.l10n.t('Choose from 13 built-in diagram templates'),
+        label: `$(symbol-misc) ${t('New Diagram from Template…')}`,
+        detail: t('Choose from 13 built-in diagram templates'),
         run: () => vscode.commands.executeCommand('drawGraph.diagram.newFromTemplate'),
+      },
+      { label: '', kind: vscode.QuickPickItemKind.Separator },
+      {
+        id: 'settings',
+        label: `$(settings-gear) ${t('DrawGraph Settings…')}`,
+        detail: t('Language (中 / EN), Draw.io, Mermaid & PlantUML preferences'),
+        run: () => vscode.commands.executeCommand('drawGraph.openSettings'),
       },
     ];
 
@@ -611,7 +644,7 @@ export function activate(context: vscode.ExtensionContext) {
 
     const picked = await vscode.window.showQuickPick(items, {
       title: 'DrawGraph',
-      placeHolder: vscode.l10n.t('Create, preview, or convert diagrams'),
+      placeHolder: t('Create, preview, or convert diagrams'),
     });
     await picked?.run?.();
   });

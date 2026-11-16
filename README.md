@@ -37,6 +37,7 @@ code --install-extension drawgraph-0.1.0.vsix
 - **`.drawio.svg` 与 `.drawio.png` 文件**：既是普通的 SVG / PNG 图片（可以直接放进 README、网页、文档里显示），又能在 VS Code 里双击直接用 draw.io 打开编辑。每次编辑保存后都会更新图像并保留内嵌图表数据。
   - SVG 配色：draw.io 默认写出“自适应”的 SVG，查看者（GitHub、浏览器、系统）处于深色模式时，图片会显示成深色。想让图片颜色固定，可以把 `drawGraph.drawio.svgColorScheme` 设为 `light`（或 `dark`），在下次编辑或导出时生效。
 - **自定义图形库**：通过 `drawGraph.drawio.customLibraries` 配置工作区内的 `<mxlibrary>` `.xml` 文件或 HTTPS 地址，打开编辑器时自动挂载到左侧元件栏。
+- **纯净界面（默认隐藏右下角 GitHub 图标）**：默认隐藏 draw.io 界面右下角的 GitHub 徽标小图标，需要时可在设置抽屉或 `drawGraph.drawio.hideGithubIcon` 中随时开关。
 - **架构与代码双向链接（Code Links）**：在 draw.io 节点标签或链接中写入 `#类名`、`#函数名` 或 `src/path/file.ts:42`，即可通过状态栏 `$(link) 代码链接` 或 `DrawGraph: 跳转 Draw.io 代码链接…` 直接跳转到工作区源码定义；也可使用 `DrawGraph: 向 Draw.io 插入工作区代码符号…` 搜索并将工作区符号一键插入画布。
 
 ### Mermaid 与 PlantUML 实时预览与编辑智能
@@ -57,8 +58,10 @@ code --install-extension drawgraph-0.1.0.vsix
 ### Markdown 中的 Mermaid 与 PlantUML
 内置 Markdown 预览支持直接渲染 ```` ```mermaid ```` 以及 ```` ```plantuml ```` / ```` ```puml ```` 代码块，鼠标悬停图表右上角会浮现交互式缩放工具条（支持 `−` / `100%` / `+`、`Ctrl/Cmd/Alt+滚轮` 缩放与拖拽平移），编辑器里也有对应的语法高亮与 CodeLens 入口。可分别用 `drawGraph.markdown.mermaid` 和 `drawGraph.markdown.plantuml` 开关。
 
-### 新建图表与右上角快捷菜单
-编辑器右上角标题栏默认常驻一个彩色的 **DrawGraph 图标**（可通过 `drawGraph.toolbar.showQuickMenu` 关闭），在任何页面点击都可快速新建图表、选择模板，或将当前 `.svg` / `.png` / `.xml` 文件用 Draw.io 打开；打开图表页时右上角还会直接显示专属操作图标（预览、导出 SVG/PNG、复制 PNG、转 Draw.io、以文本打开）。
+### 新建图表、设置抽屉与实时中英文切换
+- **侧滑设置抽屉（`DrawGraph: 打开 DrawGraph 设置抽屉`）**：在 Draw.io 编辑器标题栏右上角点击齿轮图标 `⚙`、在图表预览工具栏最右侧点击 `⚙`，或在彩色 DrawGraph 快捷菜单中选择「DrawGraph 设置…」，即可从右侧滑出可视化设置抽屉，一站式调整 Draw.io 主题/布局/配色、Mermaid 主题、PNG 倍率、PlantUML 渲染方式与保存自动导出。
+- **独立中英文实时切换（`中 / EN`）**：无需修改 VS Code 全局语言或重启编辑器，直接在设置抽屉顶部点击 `中 | EN`（或修改 `drawGraph.language` 为 `Auto` / `Simplified Chinese` / `English`），插件界面、CodeLens、预览工具栏以及内嵌 Draw.io 编辑器会立即同步切换中英文。
+- 编辑器右上角标题栏默认常驻一个彩色的 **DrawGraph 图标**（可通过 `drawGraph.toolbar.showQuickMenu` 关闭），在任何页面点击都可快速新建图表、选择模板、打开设置抽屉，或将当前 `.svg` / `.png` / `.xml` 文件用 Draw.io 打开；打开图表页时右上角还会直接显示专属操作图标（预览、导出 SVG/PNG、复制 PNG、转 Draw.io、以文本打开、设置抽屉）。
 
 命令面板（`Cmd/Ctrl+Shift+P`）里也有以下命令：
 - `DrawGraph: 从模板新建图表…`（涵盖流程图、时序图、类图、状态图、ER 图、甘特图、思维导图、组件图等）
@@ -85,9 +88,11 @@ code --install-extension drawgraph-0.1.0.vsix
 
 | 设置 | 默认值 | 说明 |
 | --- | --- | --- |
+| `drawGraph.language` | `"Auto"` | 插件界面、设置抽屉与内嵌 draw.io 的显示语言：`"Auto"`（跟随 VS Code）/ `"Simplified Chinese"` / `"English"` |
 | `drawGraph.drawio.url` | `https://embed.diagrams.net/` | draw.io 嵌入应用地址 |
 | `drawGraph.drawio.ui` | `kennedy` | draw.io 界面主题：`kennedy` / `min` / `atlas` / `sketch` / `simple` |
 | `drawGraph.drawio.theme` | `auto` | `auto` / `light` / `dark` |
+| `drawGraph.drawio.hideGithubIcon` | `true` | 隐藏内嵌 draw.io 界面右下角的 GitHub 小图标 |
 | `drawGraph.drawio.config` | `{}` | 额外的 [draw.io 配置](https://www.drawio.com/doc/faq/configure-diagram-editor) |
 | `drawGraph.drawio.customLibraries` | `[]` | 自动挂载到 draw.io 左侧面板的 `<mxlibrary>` 文件路径或 HTTPS 地址 |
 | `drawGraph.drawio.svgColorScheme` | `auto` | `.drawio.svg` 和「导出为 SVG」的配色：`auto` 自适应查看者的深浅色模式（draw.io 默认），`light` / `dark` 固定配色 |

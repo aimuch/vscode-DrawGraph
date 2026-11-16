@@ -15,6 +15,7 @@ await esbuild.build({
     renderer: 'src/plantuml/renderer.ts',
     lang: 'src/language/completionsAndFormat.ts',
     codeLinksXml: 'src/drawio/codeLinksXml.ts',
+    l10nCore: 'src/l10nCore.ts',
   },
   bundle: true,
   platform: 'node',
@@ -33,6 +34,7 @@ const {
   formatPlantUmlSource,
 } = await import(join(outdir, 'lang.mjs'));
 const { extractCodeLinksFromDrawioXml, buildCodeSymbolMergeXml } = await import(join(outdir, 'codeLinksXml.mjs'));
+const { resolveLanguage, resolveDrawioLanguage, translateMessage } = await import(join(outdir, 'l10nCore.mjs'));
 
 test('decodePlantUml and extractPlantUmlSourceFromSvg round-trip PlantUML SVG metadata', () => {
   const original = '@startuml\nactor 用户 as User\nUser -> API : 请求订单\n@enduml';
@@ -214,4 +216,19 @@ test('extractCodeLinksFromDrawioXml parses uncompressed & compressed diagrams an
   const mergeXml = buildCodeSymbolMergeXml('#DrawioEditorProvider', '#DrawioEditorProvider', 42);
   assert.match(mergeXml, /label="#DrawioEditorProvider"/);
   assert.match(mergeXml, /link="#DrawioEditorProvider"/);
+});
+
+test('l10nCore resolves Auto / Simplified Chinese / English independently of VS Code OS locale', () => {
+  assert.equal(resolveLanguage('Auto', 'zh-cn'), 'zh-cn');
+  assert.equal(resolveLanguage('Auto', 'en-US'), 'en');
+  assert.equal(resolveLanguage('Simplified Chinese', 'en-US'), 'zh-cn');
+  assert.equal(resolveLanguage('English', 'zh-cn'), 'en');
+
+  assert.equal(resolveDrawioLanguage('Simplified Chinese', 'en'), 'zh');
+  assert.equal(resolveDrawioLanguage('English', 'zh-cn'), 'en');
+  assert.equal(resolveDrawioLanguage('Auto', 'zh-tw'), 'zh-tw');
+
+  const bundle = { 'Preview {0}': '预览 {0}' };
+  assert.equal(translateMessage(bundle, 'zh-cn', 'Preview {0}', ['flow.mmd']), '预览 flow.mmd');
+  assert.equal(translateMessage(bundle, 'en', 'Preview {0}', ['flow.mmd']), 'Preview flow.mmd');
 });

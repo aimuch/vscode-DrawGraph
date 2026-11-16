@@ -1,0 +1,343 @@
+#settingsBackdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  background: rgba(0, 0, 0, 0.25);
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.2s ease, visibility 0.2s;
+}
+
+#settingsBackdrop.active {
+  opacity: 1;
+  visibility: visible;
+}
+
+#settingsWidget {
+  display: flex;
+  flex-direction: column;
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: min(560px, calc(100vw - 32px));
+  z-index: 31;
+  box-sizing: border-box;
+  background-color: var(--vscode-sideBar-background, var(--vscode-editorWidget-background, var(--vscode-editor-background)));
+  border-left: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.35));
+  box-shadow: -8px 0 24px var(--vscode-widget-shadow, rgba(0, 0, 0, 0.36));
+  color: var(--vscode-foreground);
+  fill: var(--vscode-icon-foreground, var(--vscode-foreground));
+  font-family: var(--vscode-font-family);
+  font-size: 13px;
+  line-height: 1.4;
+  transform: translateX(calc(100% + 32px));
+  visibility: hidden;
+  user-select: none;
+}
+
+#settingsWidget.transition {
+  transition: transform 0.2s ease, visibility 0.2s;
+}
+
+#settingsWidget.active {
+  transform: none;
+  visibility: visible;
+}
+
+#settingsWidget.standalone {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  border-left: 0;
+  box-shadow: none;
+  transform: none;
+  visibility: visible;
+}
+
+#settingsHeader {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px 12px 20px;
+  border-bottom: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.35));
+}
+
+#settingsHeader h2 {
+  flex: 1 1 auto;
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 28px;
+}
+
+#settingsLangQuick {
+  display: inline-flex;
+  padding: 2px;
+  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.35));
+  border-radius: 6px;
+  background-color: var(--vscode-editor-background);
+}
+
+#settingsLangQuick button {
+  min-width: 34px;
+  height: 24px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--vscode-descriptionForeground);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+#settingsLangQuick button:hover {
+  color: var(--vscode-foreground);
+}
+
+#settingsLangQuick button.selected {
+  background-color: var(--vscode-button-background, #007acc);
+  color: var(--vscode-button-foreground, #ffffff);
+}
+
+#settingsClose {
+  position: relative;
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--vscode-foreground);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+#settingsClose:hover {
+  background-color: var(--vscode-toolbar-hoverBackground, rgba(128, 128, 128, 0.2));
+}
+
+#settingsClose svg {
+  width: 16px;
+  height: 16px;
+  opacity: 0.85;
+}
+
+#settingsContent {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  gap: 20px;
+  min-height: 0;
+  padding: 18px 20px 22px;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+#settingsWidget.standalone #settingsContent,
+#settingsWidget.standalone #settingsHeader,
+#settingsWidget.standalone #settingsFooter {
+  max-width: 720px;
+  width: 100%;
+  margin-left: auto;
+  margin-right: auto;
+  box-sizing: border-box;
+}
+
+#settingsFooter {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 12px 20px;
+  border-top: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.35));
+}
+
+.settingsSection {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.settingsSection h3 {
+  margin: 0;
+  color: var(--vscode-descriptionForeground);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.settingsRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  padding-top: 2px;
+}
+
+.settingsRow .settingsLabel {
+  width: 112px;
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
+.settingsSegmented {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.35));
+  border-radius: 7px;
+  background-color: var(--vscode-editor-background);
+}
+
+.settingsSegment {
+  height: 26px;
+  padding: 0 11px;
+  border: 0;
+  border-radius: 5px;
+  background-color: transparent;
+  color: var(--vscode-descriptionForeground);
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.settingsSegment:hover {
+  color: var(--vscode-foreground);
+}
+
+.settingsSegment.selected {
+  background-color: var(--vscode-button-secondaryBackground, rgba(128, 128, 128, 0.25));
+  color: var(--vscode-button-secondaryForeground, var(--vscode-foreground));
+  font-weight: 600;
+}
+
+.settingsChoices {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.settingsChoice {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 32px;
+  padding: 0 12px;
+  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.35));
+  border-radius: 8px;
+  background-color: var(--vscode-editor-background);
+  cursor: pointer;
+}
+
+.settingsChoice:hover {
+  border-color: var(--vscode-focusBorder, #007acc);
+}
+
+.settingsChoice.selected {
+  border-color: var(--vscode-focusBorder, #007acc);
+  background-color: color-mix(in srgb, var(--vscode-focusBorder, #007acc) 16%, var(--vscode-editor-background));
+}
+
+.settingsChoice input[type='radio'] {
+  margin: 0;
+  accent-color: var(--vscode-button-background, #007acc);
+}
+
+.settingsCheckboxes {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 8px 14px;
+  padding-top: 2px;
+}
+
+.settingsCheckboxLabel {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  font-size: 12.5px;
+}
+
+.settingsCheckboxLabel input[type='checkbox'] {
+  margin: 0;
+  width: 15px;
+  height: 15px;
+  accent-color: var(--vscode-button-background, #007acc);
+  cursor: pointer;
+}
+
+.settingsCard {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.35));
+  border-radius: 8px;
+  background-color: var(--vscode-editor-background);
+}
+
+.settingsGrid {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  align-items: center;
+  gap: 8px 12px;
+  font-size: 12.5px;
+}
+
+.settingsKey {
+  color: var(--vscode-descriptionForeground);
+  white-space: nowrap;
+}
+
+.settingsInput {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  height: 28px;
+  padding: 0 8px;
+  border: 1px solid var(--vscode-input-border, var(--vscode-panel-border, rgba(128, 128, 128, 0.35)));
+  border-radius: 6px;
+  background-color: var(--vscode-input-background, var(--vscode-editor-background));
+  color: var(--vscode-input-foreground, var(--vscode-foreground));
+  font-family: var(--vscode-editor-font-family);
+  font-size: 12px;
+  outline: none;
+  user-select: text;
+}
+
+.settingsInput:focus {
+  border-color: var(--vscode-focusBorder, #007acc);
+}
+
+.settingsInput:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.settingsNote {
+  margin: 0;
+  font-size: 12px;
+  color: var(--vscode-descriptionForeground);
+}
+
+.settingsLink {
+  color: var(--vscode-textLink-foreground, #3794ff);
+  font-size: 12.5px;
+  text-decoration: underline;
+  cursor: pointer;
+  background: none;
+  border: 0;
+  padding: 0;
+  font: inherit;
+}
+
+.settingsLink:hover {
+  color: var(--vscode-textLink-activeForeground, #4daafc);
+}

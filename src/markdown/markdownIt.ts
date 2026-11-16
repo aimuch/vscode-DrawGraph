@@ -1,5 +1,6 @@
 import type MarkdownIt from 'markdown-it';
 import * as vscode from 'vscode';
+import { t } from '../l10n';
 import { encodePlantUml, splitDiagrams } from '../plantuml/encoder';
 import { PlantUmlRenderer } from '../plantuml/renderer';
 import { config } from '../util';
@@ -72,7 +73,7 @@ function renderPlantUmlFence(md: MarkdownIt, rawContent: string, lineAttr: strin
               pendingLocalKeys.delete(key);
             });
         }
-        parts.push(`<span class="drawgraph-plantuml-loading">${md.utils.escapeHtml(vscode.l10n.t('Rendering…'))}</span>`);
+        parts.push(`<span class="drawgraph-plantuml-loading">${md.utils.escapeHtml(t('Rendering…'))}</span>`);
       }
     } else {
       const rawServer = (cfg.get<string>('plantuml.server', 'https://www.plantuml.com/plantuml') || 'https://www.plantuml.com/plantuml')

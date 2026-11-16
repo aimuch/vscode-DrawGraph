@@ -1,5 +1,6 @@
 import * as path from 'node:path';
 import * as vscode from 'vscode';
+import { t } from './l10n';
 export { buildCodeSymbolMergeXml, extractCodeLinksFromDrawioXml, type DiagramCodeLink } from './drawio/codeLinksXml';
 
 function parseFileTarget(raw: string): { filePath: string; line?: number } {
@@ -95,7 +96,7 @@ export async function navigateToCodeTarget(rawTarget: string, contextUri?: vscod
           detail: `${vscode.workspace.asRelativePath(s.location.uri)}:${s.location.range.start.line + 1}`,
           sym: s,
         })),
-        { placeHolder: vscode.l10n.t('Select symbol definition for "{0}"', symbolQuery) },
+        { placeHolder: t('Select symbol definition for "{0}"', symbolQuery) },
       );
       if (!picked) {
         return true;

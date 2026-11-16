@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { t } from '../l10n';
 import { splitDiagrams } from '../plantuml/encoder';
 import { config } from '../util';
 import {
@@ -114,17 +115,17 @@ class DiagramCodeLensProvider implements vscode.CodeLensProvider {
         const range = new vscode.Range(block.startLine, 0, block.startLine, 0);
         lenses.push(
           new vscode.CodeLens(range, {
-            title: `$(open-preview) ${vscode.l10n.t('Preview')}`,
+            title: `$(open-preview) ${t('Preview')}`,
             command: 'drawGraph.preview.openAtLine',
             arguments: [document.uri, block.startLine],
           }),
           new vscode.CodeLens(range, {
-            title: vscode.l10n.t('Export as SVG'),
+            title: t('Export as SVG'),
             command: 'drawGraph.plantuml.exportBlock',
             arguments: [document.uri, index, 'svg'],
           }),
           new vscode.CodeLens(range, {
-            title: vscode.l10n.t('Export as PNG'),
+            title: t('Export as PNG'),
             command: 'drawGraph.plantuml.exportBlock',
             arguments: [document.uri, index, 'png'],
           }),
@@ -135,19 +136,19 @@ class DiagramCodeLensProvider implements vscode.CodeLensProvider {
 
     if (document.languageId === 'mermaid') {
       const firstLine = text.split(/\r?\n/).findIndex((l) => {
-        const t = l.trim();
-        return t.length > 0 && !t.startsWith('%%');
+        const lineText = l.trim();
+        return lineText.length > 0 && !lineText.startsWith('%%');
       });
       if (firstLine >= 0) {
         const range = new vscode.Range(firstLine, 0, firstLine, 0);
         lenses.push(
           new vscode.CodeLens(range, {
-            title: `$(open-preview) ${vscode.l10n.t('Preview')}`,
+            title: `$(open-preview) ${t('Preview')}`,
             command: 'drawGraph.preview.openToSide',
             arguments: [document.uri],
           }),
           new vscode.CodeLens(range, {
-            title: vscode.l10n.t('Open in Draw.io'),
+            title: t('Open in Draw.io'),
             command: 'drawGraph.mermaid.openInDrawio',
             arguments: [document.uri],
           }),
@@ -161,7 +162,7 @@ class DiagramCodeLensProvider implements vscode.CodeLensProvider {
         const range = new vscode.Range(fence.startLine, 0, fence.startLine, 0);
         lenses.push(
           new vscode.CodeLens(range, {
-            title: `$(open-preview) ${vscode.l10n.t('Preview')}`,
+            title: `$(open-preview) ${t('Preview')}`,
             command: 'markdown.showPreviewToSide',
             arguments: [document.uri],
           }),
@@ -169,7 +170,7 @@ class DiagramCodeLensProvider implements vscode.CodeLensProvider {
         if (fence.kind === 'mermaid' && fence.content.trim().length > 0) {
           lenses.push(
             new vscode.CodeLens(range, {
-              title: vscode.l10n.t('Open in Draw.io'),
+              title: t('Open in Draw.io'),
               command: 'drawGraph.mermaid.openInDrawio',
               arguments: [document.uri, fence.content],
             }),
@@ -210,7 +211,7 @@ export function registerLanguageFeatures(context: vscode.ExtensionContext): Diag
       formattingProvider,
     ),
     vscode.workspace.onDidChangeConfiguration((e) => {
-      if (e.affectsConfiguration('drawGraph.editor.codeLens')) {
+      if (e.affectsConfiguration('drawGraph.editor.codeLens') || e.affectsConfiguration('drawGraph.language')) {
         codeLensProvider.refresh();
       }
     }),

@@ -1,5 +1,7 @@
 import * as path from 'node:path';
 import * as vscode from 'vscode';
+import { getDrawioLanguage, t } from '../l10n';
+import { applySettingUpdate, getSettingsSnapshot, openExtensionSettingsInVscode } from '../settingsSnapshot';
 import {
   CoalescedTaskMachine,
   StateMachine,
@@ -34,6 +36,7 @@ const SESSION_TRANSITIONS: TransitionTable<DrawioSessionPhase, DrawioSessionEven
     BRIDGE_CONFIGURED: 'configured',
     INIT_RECEIVED: 'loading_diagram',
     LOAD_FAILED: 'failed',
+    RETRY_BOOT: 'booting',
     DISPOSE: 'disposed',
   },
   configured: {
@@ -56,6 +59,7 @@ const SESSION_TRANSITIONS: TransitionTable<DrawioSessionPhase, DrawioSessionEven
     LOAD_SENT: 'loading_diagram',
     RELOAD_EXTERNAL: 'loading_diagram',
     DIAGRAM_LOADED: 'ready',
+    RETRY_BOOT: 'booting',
     DISPOSE: 'disposed',
   },
   failed: {
@@ -77,12 +81,16 @@ type WebviewMessage =
   | { type: 'change'; xml: string }
   | { type: 'save'; xml: string }
   | { type: 'export'; requestId: number; data?: string; error?: string }
-  | { type: 'error'; message: string };
+  | { type: 'error'; message: string }
+  | { type: 'requestSettings' }
+  | { type: 'updateSetting'; key: string; value: unknown }
+  | { type: 'openExtensionSettings' };
 
 interface EditorSession {
   panel: vscode.WebviewPanel;
   uri: vscode.Uri;
   isBinaryPng: boolean;
+  frameOrigin: string;
   lifecycle: StateMachine<DrawioSessionPhase, DrawioSessionEvent>;
   syncMachine?: CoalescedTaskMachine<unknown>;
   pendingExports: Map<number, (result: ExportResult) => void>;
@@ -136,6 +144,17 @@ class DrawioPngDocument implements vscode.CustomDocument {
 
 const IMAGE_SYNC_DEBOUNCE_MS = 200;
 const DEFAULT_BUILTIN_LIBRARIES = 'general;uml;er;bpmn;flowchart;basic;arrows2';
+const DRAWIO_GITHUB_SELECTORS = [
+  'a[href*="github.com/jgraph"]',
+  'a[href*="github.com/drawio"]',
+  '.geTabContainer a[href*="github.com"]',
+  '.geFooterContainer a[href*="github.com"]',
+  'a[title*="GitHub"]:not(.geDiagramContainer a)',
+  'img[src*="github-logo"]:not(.geDiagramContainer img)',
+  'img[src*="flows/github"]:not(.geDiagramContainer img)',
+].join(', ');
+const HIDE_DRAWIO_GITHUB_CSS = `${DRAWIO_GITHUB_SELECTORS} { display: none !important; visibility: hidden !important; pointer-events: none !important; }`;
+const SHOW_DRAWIO_GITHUB_CSS = `${DRAWIO_GITHUB_SELECTORS} { display: inline-block !important; visibility: visible !important; pointer-events: auto !important; }`;
 
 /**
  * Manages embedded draw.io editors for both text-based formats (`.drawio`, `.dio`,
@@ -182,12 +201,30 @@ export class DrawioEditorProvider implements vscode.CustomTextEditorProvider {
         supportsMultipleEditorsPerDocument: false,
       }),
       vscode.workspace.onDidChangeConfiguration((e) => {
+        if (!e.affectsConfiguration('drawGraph')) {
+          return;
+        }
+        provider.refreshStatusBarText();
+        provider.broadcastSettingsState();
         if (
+          e.affectsConfiguration('drawGraph.language') ||
+          e.affectsConfiguration('drawGraph.drawio.theme') ||
+          e.affectsConfiguration('drawGraph.drawio.ui') ||
+          e.affectsConfiguration('drawGraph.drawio.url')
+        ) {
+          void provider.reloadAllFrames();
+        } else if (
           e.affectsConfiguration('drawGraph.drawio.config') ||
           e.affectsConfiguration('drawGraph.drawio.vscodeShortcuts') ||
-          e.affectsConfiguration('drawGraph.drawio.customLibraries')
+          e.affectsConfiguration('drawGraph.drawio.customLibraries') ||
+          e.affectsConfiguration('drawGraph.drawio.hideGithubIcon')
         ) {
           void provider.broadcastSetup();
+        }
+      }),
+      vscode.window.onDidChangeActiveColorTheme(() => {
+        if (config().get<string>('drawio.theme', 'auto') === 'auto') {
+          void provider.reloadAllFrames();
         }
       }),
       vscode.workspace.onDidSaveTextDocument((doc) => {
@@ -203,8 +240,60 @@ export class DrawioEditorProvider implements vscode.CustomTextEditorProvider {
   ) {
     this.codeLinksStatusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
     this.codeLinksStatusBar.command = 'drawGraph.drawio.navigateCodeLinks';
-    this.codeLinksStatusBar.text = `$(link) ${vscode.l10n.t('Code Links')}`;
-    this.codeLinksStatusBar.tooltip = vscode.l10n.t('Navigate #Symbol or file:line Code Links in this Draw.io diagram');
+    this.refreshStatusBarText();
+  }
+
+  private refreshStatusBarText(): void {
+    this.codeLinksStatusBar.text = `$(link) ${t('Code Links')}`;
+    this.codeLinksStatusBar.tooltip = t('Navigate #Symbol or file:line Code Links in this Draw.io diagram');
+  }
+
+  private broadcastSettingsState(): void {
+    const settings = getSettingsSnapshot();
+    for (const s of this.sessions) {
+      void s.panel.webview.postMessage({ type: 'settingsState', settings });
+    }
+  }
+
+  private async reloadAllFrames(): Promise<void> {
+    const setup = await this.buildSetupPayloadSyncOrAsync();
+    const nextUrl = buildDrawioUrl();
+    const loadingText = t('Loading draw.io…');
+    const failText = t(
+      'draw.io did not load from {0}. Check your network connection or the "drawGraph.drawio.url" setting.',
+      nextUrl.origin,
+    );
+    const retryText = t('Retry');
+
+    for (const s of this.sessions) {
+      if (s.syncMachine && !s.syncMachine.isSettled) {
+        await s.syncMachine.flush();
+      }
+      if (s.frameOrigin !== nextUrl.origin) {
+        s.frameOrigin = nextUrl.origin;
+        s.lifecycle.send('RETRY_BOOT');
+        s.panel.webview.html = this.getHtml(s.panel.webview, nextUrl);
+      } else {
+        s.lifecycle.send('SETUP_SENT');
+        void s.panel.webview.postMessage(setup);
+        void s.panel.webview.postMessage({
+          type: 'reloadFrame',
+          frameUrl: nextUrl.toString(),
+          loadingText,
+          failText,
+          retryText,
+        });
+      }
+    }
+  }
+
+  toggleSettingsDrawer(): boolean {
+    const session = this.currentSession;
+    if (!session) {
+      return false;
+    }
+    void session.panel.webview.postMessage({ type: 'toggleSettings', settings: getSettingsSnapshot() });
+    return true;
   }
 
   private setActiveSession(session: EditorSession | undefined): void {
@@ -234,6 +323,11 @@ export class DrawioEditorProvider implements vscode.CustomTextEditorProvider {
   private buildSetupPayloadSyncOrAsync(): Record<string, unknown> | Promise<Record<string, unknown>> {
     const cfg = config();
     const baseConfig = { ...(cfg.get<Record<string, unknown>>('drawio.config') ?? {}) };
+    const hideGithub = cfg.get<boolean>('drawio.hideGithubIcon', true);
+    const userCss = typeof baseConfig.css === 'string' ? baseConfig.css : '';
+    const githubCss = hideGithub ? HIDE_DRAWIO_GITHUB_CSS : SHOW_DRAWIO_GITHUB_CSS;
+    baseConfig.css = userCss ? `${githubCss}\n${userCss}` : githubCss;
+
     const forwardShortcuts = cfg.get<boolean>('drawio.vscodeShortcuts', true);
     const configuredLibs = cfg.get<string[]>('drawio.customLibraries', []);
     if (!vscode.workspace.isTrusted || !Array.isArray(configuredLibs) || configuredLibs.length === 0) {
@@ -245,7 +339,7 @@ export class DrawioEditorProvider implements vscode.CustomTextEditorProvider {
         baseConfig.libraries = [
           ...existingLibs,
           {
-            title: { main: vscode.l10n.t('Workspace Libraries') },
+            title: { main: t('Workspace Libraries') },
             entries: customLibs.entries,
           },
         ];
@@ -290,7 +384,7 @@ export class DrawioEditorProvider implements vscode.CustomTextEditorProvider {
     }
     const target = resolveAutoExportUri(savedUri, isSvg ? '.svg' : '.png');
     await vscode.workspace.fs.writeFile(target, decodeDataUri(result.data));
-    void vscode.window.setStatusBarMessage(vscode.l10n.t('Exported to {0}', vscode.workspace.asRelativePath(target)), 2500);
+    void vscode.window.setStatusBarMessage(t('Exported to {0}', vscode.workspace.asRelativePath(target)), 2500);
   }
 
   // ---- Text-backed custom editor (.drawio, .dio, .drawio.xml, .drawio.svg) --------------
@@ -298,11 +392,13 @@ export class DrawioEditorProvider implements vscode.CustomTextEditorProvider {
   async resolveCustomTextEditor(document: vscode.TextDocument, panel: vscode.WebviewPanel): Promise<void> {
     const lifecycle = this.createLifecycleMachine(document.uri);
     let pendingEdits = 0;
+    const initialUrl = buildDrawioUrl();
 
     const session: EditorSession = {
       panel,
       uri: document.uri,
       isBinaryPng: false,
+      frameOrigin: initialUrl.origin,
       lifecycle,
       pendingExports: new Map(),
       status: { initialized: false, loads: 0, changes: 0 },
@@ -315,7 +411,7 @@ export class DrawioEditorProvider implements vscode.CustomTextEditorProvider {
 
     const mediaRoot = vscode.Uri.joinPath(this.context.extensionUri, 'media');
     panel.webview.options = { enableScripts: true, localResourceRoots: [mediaRoot] };
-    panel.webview.html = this.getHtml(panel.webview);
+    panel.webview.html = this.getHtml(panel.webview, initialUrl);
 
     let webviewXml: string | undefined;
     let lastAppliedVersion = -1;
@@ -350,7 +446,7 @@ export class DrawioEditorProvider implements vscode.CustomTextEditorProvider {
         const embedded = extractDiagramFromSvg(xml);
         if (embedded === undefined) {
           void vscode.window.showWarningMessage(
-            vscode.l10n.t('{0} has no embedded draw.io diagram. Editing it will replace the image with a new diagram.', displayName(document.uri)),
+            t('{0} has no embedded draw.io diagram. Editing it will replace the image with a new diagram.', displayName(document.uri)),
           );
         }
         xml = embedded ?? '';
@@ -406,7 +502,7 @@ export class DrawioEditorProvider implements vscode.CustomTextEditorProvider {
               return undefined;
             }
             if (!result.data) {
-              void vscode.window.showErrorMessage(vscode.l10n.t('Could not update {0}: {1}', displayName(document.uri), result.error ?? 'no data'));
+              void vscode.window.showErrorMessage(t('Could not update {0}: {1}', displayName(document.uri), result.error ?? 'no data'));
               return undefined;
             }
             const svg = Buffer.from(decodeDataUri(result.data)).toString('utf8');
@@ -489,6 +585,15 @@ export class DrawioEditorProvider implements vscode.CustomTextEditorProvider {
               case 'error':
                 void vscode.window.showErrorMessage(message.message);
                 break;
+              case 'requestSettings':
+                post({ type: 'settingsState', settings: getSettingsSnapshot() });
+                break;
+              case 'updateSetting':
+                await applySettingUpdate(message.key, message.value);
+                break;
+              case 'openExtensionSettings':
+                await openExtensionSettingsInVscode();
+                break;
             }
           })
           .catch(() => undefined);
@@ -562,10 +667,12 @@ export class DrawioEditorProvider implements vscode.CustomTextEditorProvider {
   private async resolvePngEditor(document: DrawioPngDocument, panel: vscode.WebviewPanel): Promise<void> {
     const key = document.uri.toString();
     const lifecycle = this.createLifecycleMachine(document.uri);
+    const initialUrl = buildDrawioUrl();
     const session: EditorSession = {
       panel,
       uri: document.uri,
       isBinaryPng: true,
+      frameOrigin: initialUrl.origin,
       lifecycle,
       pendingExports: new Map(),
       status: { initialized: false, loads: 0, changes: 0 },
@@ -578,7 +685,7 @@ export class DrawioEditorProvider implements vscode.CustomTextEditorProvider {
 
     const mediaRoot = vscode.Uri.joinPath(this.context.extensionUri, 'media');
     panel.webview.options = { enableScripts: true, localResourceRoots: [mediaRoot] };
-    panel.webview.html = this.getHtml(panel.webview);
+    panel.webview.html = this.getHtml(panel.webview, initialUrl);
 
     let initialLoadPersist: 'none' | 'persist_on_first_load' = 'none';
     let writingDisk = false;
@@ -607,7 +714,7 @@ export class DrawioEditorProvider implements vscode.CustomTextEditorProvider {
       const embedded = extractDiagramFromPng(document.bytes);
       if (embedded === undefined) {
         void vscode.window.showWarningMessage(
-          vscode.l10n.t('{0} has no embedded draw.io diagram. Editing it will replace the image with a new diagram.', displayName(document.uri)),
+          t('{0} has no embedded draw.io diagram. Editing it will replace the image with a new diagram.', displayName(document.uri)),
         );
         post({ type: 'load', xml: EMPTY_DIAGRAM, title: displayName(document.uri) });
         return;
@@ -625,7 +732,7 @@ export class DrawioEditorProvider implements vscode.CustomTextEditorProvider {
           return undefined;
         }
         if (!result.data) {
-          void vscode.window.showErrorMessage(vscode.l10n.t('Could not update {0}: {1}', displayName(document.uri), result.error ?? 'no data'));
+          void vscode.window.showErrorMessage(t('Could not update {0}: {1}', displayName(document.uri), result.error ?? 'no data'));
           return undefined;
         }
         return decodeDataUri(result.data);
@@ -752,6 +859,15 @@ export class DrawioEditorProvider implements vscode.CustomTextEditorProvider {
               case 'error':
                 void vscode.window.showErrorMessage(message.message);
                 break;
+              case 'requestSettings':
+                post({ type: 'settingsState', settings: getSettingsSnapshot() });
+                break;
+              case 'updateSetting':
+                await applySettingUpdate(message.key, message.value);
+                break;
+              case 'openExtensionSettings':
+                await openExtensionSettingsInVscode();
+                break;
             }
           })
           .catch(() => undefined);
@@ -841,7 +957,7 @@ export class DrawioEditorProvider implements vscode.CustomTextEditorProvider {
   async exportActive(format: 'xmlsvg' | 'xmlpng', target?: vscode.Uri): Promise<void> {
     const session = this.currentSession;
     if (!session) {
-      void vscode.window.showWarningMessage(vscode.l10n.t('No active draw.io editor.'));
+      void vscode.window.showWarningMessage(t('No active draw.io editor.'));
       return;
     }
     const isSvg = format === 'xmlsvg';
@@ -851,7 +967,7 @@ export class DrawioEditorProvider implements vscode.CustomTextEditorProvider {
       ...(isSvg ? svgColorOptions() : { background: '#ffffff' }),
     });
     if (result.error || !result.data) {
-      void vscode.window.showErrorMessage(vscode.l10n.t('Export failed: {0}', result.error ?? 'no data'));
+      void vscode.window.showErrorMessage(t('Export failed: {0}', result.error ?? 'no data'));
       return;
     }
     if (target) {
@@ -868,18 +984,18 @@ export class DrawioEditorProvider implements vscode.CustomTextEditorProvider {
   async copyActive(format: 'svg' | 'png'): Promise<void> {
     const session = this.currentSession;
     if (!session) {
-      void vscode.window.showWarningMessage(vscode.l10n.t('No active draw.io editor.'));
+      void vscode.window.showWarningMessage(t('No active draw.io editor.'));
       return;
     }
     if (format === 'svg') {
       const result = await this.requestExport(session, 'xmlsvg', { border: 10, ...svgColorOptions() });
       if (result.error || !result.data) {
-        void vscode.window.showErrorMessage(vscode.l10n.t('Export failed: {0}', result.error ?? 'no data'));
+        void vscode.window.showErrorMessage(t('Export failed: {0}', result.error ?? 'no data'));
         return;
       }
       const svg = Buffer.from(decodeDataUri(result.data)).toString('utf8');
       await vscode.env.clipboard.writeText(svg);
-      void vscode.window.setStatusBarMessage(vscode.l10n.t('SVG copied to clipboard'), 2000);
+      void vscode.window.setStatusBarMessage(t('SVG copied to clipboard'), 2000);
       return;
     }
 
@@ -896,10 +1012,10 @@ export class DrawioEditorProvider implements vscode.CustomTextEditorProvider {
       true,
     );
     if (result.error) {
-      void vscode.window.showErrorMessage(vscode.l10n.t('Export failed: {0}', result.error));
+      void vscode.window.showErrorMessage(t('Export failed: {0}', result.error));
       return;
     }
-    void vscode.window.setStatusBarMessage(vscode.l10n.t('PNG copied to clipboard'), 2000);
+    void vscode.window.setStatusBarMessage(t('PNG copied to clipboard'), 2000);
   }
 
   private requestExport(
@@ -912,7 +1028,7 @@ export class DrawioEditorProvider implements vscode.CustomTextEditorProvider {
     return new Promise<ExportResult>((resolve) => {
       const timer = setTimeout(() => {
         if (session.pendingExports.delete(requestId)) {
-          resolve({ error: vscode.l10n.t('Timed out waiting for draw.io to export.') });
+          resolve({ error: t('Timed out waiting for draw.io to export.') });
         }
       }, 30000);
       session.pendingExports.set(requestId, (result) => {
@@ -1014,7 +1130,7 @@ export class DrawioEditorProvider implements vscode.CustomTextEditorProvider {
   insertCodeSymbolNode(label: string, linkTarget: string): boolean {
     const session = this.currentSession;
     if (!session) {
-      void vscode.window.showWarningMessage(vscode.l10n.t('No active draw.io editor.'));
+      void vscode.window.showWarningMessage(t('No active draw.io editor.'));
       return false;
     }
     const xml = buildCodeSymbolMergeXml(label, linkTarget);
@@ -1022,11 +1138,10 @@ export class DrawioEditorProvider implements vscode.CustomTextEditorProvider {
     return true;
   }
 
-  private getHtml(webview: vscode.Webview): string {
+  private getHtml(webview: vscode.Webview, drawioUrl = buildDrawioUrl()): string {
     const nonce = getNonce();
-    const drawioUrl = buildDrawioUrl();
     const frameOrigin = drawioUrl.origin;
-    const mediaUri = (file: string) => webview.asWebviewUri(vscode.Uri.joinPath(this.context.extensionUri, 'media', 'drawio', file));
+    const mediaUri = (...parts: string[]) => webview.asWebviewUri(vscode.Uri.joinPath(this.context.extensionUri, 'media', ...parts));
     const csp = [
       `default-src 'none'`,
       `frame-src ${frameOrigin}`,
@@ -1036,11 +1151,11 @@ export class DrawioEditorProvider implements vscode.CustomTextEditorProvider {
       `script-src 'nonce-${nonce}'`,
     ].join('; ');
 
-    const loadingText = escapeHtml(vscode.l10n.t('Loading draw.io…'));
+    const loadingText = escapeHtml(t('Loading draw.io…'));
     const failText = escapeHtml(
-      vscode.l10n.t('draw.io did not load from {0}. Check your network connection or the "drawGraph.drawio.url" setting.', drawioUrl.origin),
+      t('draw.io did not load from {0}. Check your network connection or the "drawGraph.drawio.url" setting.', drawioUrl.origin),
     );
-    const retryText = escapeHtml(vscode.l10n.t('Retry'));
+    const retryText = escapeHtml(t('Retry'));
 
     return /* html */ `<!DOCTYPE html>
 <html lang="en">
@@ -1048,7 +1163,8 @@ export class DrawioEditorProvider implements vscode.CustomTextEditorProvider {
   <meta charset="UTF-8">
   <meta http-equiv="Content-Security-Policy" content="${csp}">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <link href="${mediaUri('main.css')}" rel="stylesheet">
+  <link href="${mediaUri('drawio', 'main.css')}" rel="stylesheet">
+  <link href="${mediaUri('shared', 'settingsDrawer.css')}" rel="stylesheet">
 </head>
 <body>
   <div id="status" data-loading="${loadingText}" data-fail="${failText}">
@@ -1058,7 +1174,8 @@ export class DrawioEditorProvider implements vscode.CustomTextEditorProvider {
   <!-- main.js sets src only after its message listener is in place: a cached draw.io can
        otherwise send its first handshake message before anyone is listening. -->
   <iframe id="drawio" data-src="${escapeHtml(drawioUrl.toString())}" frameborder="0"></iframe>
-  <script nonce="${nonce}" src="${mediaUri('main.js')}"></script>
+  <script nonce="${nonce}" src="${mediaUri('shared', 'settingsDrawer.js')}"></script>
+  <script nonce="${nonce}" src="${mediaUri('drawio', 'main.js')}"></script>
 </body>
 </html>`;
   }
@@ -1166,7 +1283,7 @@ function buildDrawioUrl(): URL {
     saveAndExit: '0',
     ui: cfg.get<string>('drawio.ui', 'kennedy'),
     dark: dark ? '1' : '0',
-    lang: drawioLanguage(vscode.env.language),
+    lang: getDrawioLanguage(),
   };
   for (const [key, value] of Object.entries(params)) {
     if (!url.searchParams.has(key)) {
@@ -1174,14 +1291,6 @@ function buildDrawioUrl(): URL {
     }
   }
   return url;
-}
-
-function drawioLanguage(vscodeLang: string): string {
-  const lang = vscodeLang.toLowerCase();
-  if (lang === 'zh-tw' || lang === 'zh-hk') {
-    return 'zh-tw';
-  }
-  return lang.split('-')[0];
 }
 
 function displayName(uri: vscode.Uri): string {

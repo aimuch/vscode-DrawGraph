@@ -69,8 +69,12 @@ body {
   color: var(--vscode-descriptionForeground);
 }
 
+.toolbar-spacer {
+  flex: 1 1 auto;
+}
+
 #spinner {
-  margin-left: auto;
+  margin-right: 4px;
   color: var(--vscode-descriptionForeground);
 }
 

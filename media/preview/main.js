@@ -21,12 +21,22 @@
   const lockToggle = $('lockToggle');
   const findToggle = $('findToggle');
   const mapToggle = $('mapToggle');
+  const settingsToggle = $('settingsToggle');
   const findBar = $('findBar');
   const findInput = /** @type {HTMLInputElement} */ ($('findInput'));
   const findCount = $('findCount');
   const minimap = $('minimap');
   const minimapSvg = $('minimapSvg');
   const minimapViewport = $('minimapViewport');
+
+  // @ts-ignore injected by media/shared/settingsDrawer.js
+  const settingsDrawer = window.createDrawGraphSettingsDrawer
+    ? // @ts-ignore
+      window.createDrawGraphSettingsDrawer({
+        postMessage: (m) => vscode.postMessage(m),
+        onVisibilityChange: (isOpen) => settingsToggle.setAttribute('aria-pressed', isOpen ? 'true' : 'false'),
+      })
+    : null;
 
   const ds = document.body.dataset;
   const MSG_INVALID_SVG = ds.errInvalidSvg || 'Invalid SVG received from renderer.';
@@ -662,6 +672,9 @@
     syncMapUi();
     persistNow();
   });
+  settingsToggle.addEventListener('click', () => {
+    settingsDrawer?.toggle();
+  });
   findInput.addEventListener('input', () => runSearch(findInput.value, true));
   findInput.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') {
@@ -909,6 +922,61 @@
         if (typeof msg.uri === 'string') {
           ds.uri = msg.uri;
           persistNow();
+        }
+        if (msg.labels && typeof msg.labels === 'object') {
+          const L = msg.labels;
+          ds.labelLocked = L.locked;
+          ds.labelUnlocked = L.pin;
+          ds.bgAuto = L.bgAuto;
+          ds.bgLight = L.bgLight;
+          ds.bgDark = L.bgDark;
+          ds.bgGrid = L.bgGrid;
+          $('zoomOut').title = L.zoomOut;
+          zoomLabel.title = L.resetZoom;
+          $('zoomIn').title = L.zoomIn;
+          $('fit').textContent = L.fit;
+          $('fit').title = L.fitTitle;
+          bgToggle.title = L.bgTitle;
+          mapToggle.textContent = L.map;
+          mapToggle.title = L.mapTitle;
+          findToggle.textContent = L.find;
+          findToggle.title = L.findTitle;
+          lockToggle.title = L.lockTitle;
+          $('exportSvg').title = L.exportSvgTitle;
+          $('exportPng').title = L.exportPngTitle;
+          $('copySvg').textContent = L.copySvg;
+          $('copySvg').title = L.copySvgTitle;
+          $('copyPng').textContent = L.copyPng;
+          $('copyPng').title = L.copyPngTitle;
+          prevItem.title = L.prevTitle;
+          nextItem.title = L.nextTitle;
+          spinner.textContent = L.rendering;
+          settingsToggle.title = L.settingsTitle;
+          findInput.placeholder = L.findPlaceholder;
+          $('findPrev').title = L.findPrev;
+          $('findNext').title = L.findNext;
+          $('findClose').title = L.findClose;
+          emptyBox.textContent = L.empty;
+          syncBgUi();
+          syncLockUi();
+        }
+        if (msg.settings) {
+          settingsDrawer?.setState(msg.settings);
+        }
+        break;
+      case 'settingsState':
+        settingsDrawer?.setState(msg.settings);
+        break;
+      case 'toggleSettings':
+        if (msg.settings) {
+          settingsDrawer?.setState(msg.settings);
+        }
+        if (msg.open === true) {
+          settingsDrawer?.open();
+        } else if (msg.open === false) {
+          settingsDrawer?.close();
+        } else {
+          settingsDrawer?.toggle();
         }
         break;
       case 'silentExport':

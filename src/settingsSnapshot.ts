@@ -1,0 +1,127 @@
+import * as vscode from 'vscode';
+import { getLanguage, getLanguageSetting, type LanguageSetting, type ResolvedLanguage } from './l10n';
+import { config } from './util';
+
+export interface SettingsSnapshot {
+  isTrusted: boolean;
+  vscodeLanguage: string;
+  language: LanguageSetting;
+  resolvedLanguage: ResolvedLanguage;
+  drawio: {
+    theme: string;
+    ui: string;
+    svgColorScheme: string;
+    hideGithubIcon: boolean;
+    vscodeShortcuts: boolean;
+    url: string;
+  };
+  preview: {
+    mermaidTheme: string;
+    pngScale: number;
+    pngTransparent: boolean;
+    followActiveEditor: boolean;
+    debounce: number;
+    codeLens: boolean;
+    showQuickMenu: boolean;
+  };
+  plantuml: {
+    render: string;
+    server: string;
+    jar: string;
+    exportOnSave: string;
+    markdownMermaid: boolean;
+    markdownPlantuml: boolean;
+  };
+}
+
+const RESTRICTED_SETTINGS = new Set([
+  'drawio.url',
+  'plantuml.render',
+  'plantuml.server',
+  'plantuml.jar',
+  'exportOnSave',
+]);
+
+const ALLOWED_SETTINGS = new Set([
+  'language',
+  'drawio.theme',
+  'drawio.ui',
+  'drawio.svgColorScheme',
+  'drawio.hideGithubIcon',
+  'drawio.vscodeShortcuts',
+  'drawio.url',
+  'mermaid.theme',
+  'preview.pngScale',
+  'preview.pngTransparent',
+  'preview.followActiveEditor',
+  'preview.debounce',
+  'editor.codeLens',
+  'toolbar.showQuickMenu',
+  'plantuml.render',
+  'plantuml.server',
+  'plantuml.jar',
+  'exportOnSave',
+  'markdown.mermaid',
+  'markdown.plantuml',
+]);
+
+export function getSettingsSnapshot(): SettingsSnapshot {
+  const cfg = config();
+  return {
+    isTrusted: vscode.workspace.isTrusted,
+    vscodeLanguage: vscode.env.language || 'en',
+    language: getLanguageSetting(),
+    resolvedLanguage: getLanguage(),
+    drawio: {
+      theme: cfg.get<string>('drawio.theme', 'auto'),
+      ui: cfg.get<string>('drawio.ui', 'kennedy'),
+      svgColorScheme: cfg.get<string>('drawio.svgColorScheme', 'auto'),
+      hideGithubIcon: cfg.get<boolean>('drawio.hideGithubIcon', true),
+      vscodeShortcuts: cfg.get<boolean>('drawio.vscodeShortcuts', true),
+      url: cfg.get<string>('drawio.url', 'https://embed.diagrams.net/'),
+    },
+    preview: {
+      mermaidTheme: cfg.get<string>('mermaid.theme', 'auto'),
+      pngScale: cfg.get<number>('preview.pngScale', 2),
+      pngTransparent: cfg.get<boolean>('preview.pngTransparent', false),
+      followActiveEditor: cfg.get<boolean>('preview.followActiveEditor', true),
+      debounce: cfg.get<number>('preview.debounce', 400),
+      codeLens: cfg.get<boolean>('editor.codeLens', true),
+      showQuickMenu: cfg.get<boolean>('toolbar.showQuickMenu', true),
+    },
+    plantuml: {
+      render: cfg.get<string>('plantuml.render', 'auto'),
+      server: cfg.get<string>('plantuml.server', 'https://www.plantuml.com/plantuml'),
+      jar: cfg.get<string>('plantuml.jar', ''),
+      exportOnSave: cfg.get<string>('exportOnSave', 'off'),
+      markdownMermaid: cfg.get<boolean>('markdown.mermaid', true),
+      markdownPlantuml: cfg.get<boolean>('markdown.plantuml', true),
+    },
+  };
+}
+
+export async function applySettingUpdate(key: string, rawValue: unknown): Promise<boolean> {
+  if (!ALLOWED_SETTINGS.has(key)) {
+    return false;
+  }
+  if (!vscode.workspace.isTrusted && RESTRICTED_SETTINGS.has(key)) {
+    return false;
+  }
+  let value: unknown = rawValue;
+  if (key === 'preview.pngScale') {
+    const n = Number(rawValue);
+    if (![1, 2, 3, 4].includes(n)) {
+      return false;
+    }
+    value = n;
+  } else if (key === 'preview.debounce') {
+    const n = Math.max(0, Math.round(Number(rawValue) || 0));
+    value = n;
+  }
+  await config().update(key, value, vscode.ConfigurationTarget.Global);
+  return true;
+}
+
+export async function openExtensionSettingsInVscode(): Promise<void> {
+  await vscode.commands.executeCommand('workbench.action.openSettings', '@ext:drawgraph.drawgraph');
+}
