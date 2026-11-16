@@ -1,0 +1,199 @@
+import * as vscode from 'vscode';
+import { splitDiagrams } from '../plantuml/encoder';
+import { config } from '../util';
+import {
+  findMarkdownDiagramFences,
+  parseMermaidOutline,
+  parsePlantUmlOutline,
+  type OutlineKind,
+  type OutlineNode,
+} from './symbols';
+
+export class DiagramDiagnostics implements vscode.Disposable {
+  private readonly collection = vscode.languages.createDiagnosticCollection('drawGraph');
+  private readonly closeSub: vscode.Disposable;
+
+  constructor() {
+    this.closeSub = vscode.workspace.onDidCloseTextDocument((doc) => {
+      this.collection.delete(doc.uri);
+    });
+  }
+
+  setError(document: vscode.TextDocument, zeroBasedLine: number, message: string): void {
+    const safeLine = Math.max(0, Math.min(zeroBasedLine, Math.max(0, document.lineCount - 1)));
+    const lineText = document.lineAt(safeLine);
+    const range = lineText.range.isEmpty ? new vscode.Range(safeLine, 0, safeLine, 1) : lineText.range;
+    const diagnostic = new vscode.Diagnostic(range, message, vscode.DiagnosticSeverity.Error);
+    diagnostic.source = 'DrawGraph';
+    this.collection.set(document.uri, [diagnostic]);
+  }
+
+  clear(uri: vscode.Uri): void {
+    this.collection.delete(uri);
+  }
+
+  dispose(): void {
+    this.closeSub.dispose();
+    this.collection.dispose();
+  }
+}
+
+function toSymbolKind(kind: OutlineKind): vscode.SymbolKind {
+  switch (kind) {
+    case 'diagram':
+      return vscode.SymbolKind.Module;
+    case 'container':
+      return vscode.SymbolKind.Namespace;
+    case 'class':
+      return vscode.SymbolKind.Class;
+    case 'interface':
+      return vscode.SymbolKind.Interface;
+    case 'enum':
+      return vscode.SymbolKind.Enum;
+    case 'actor':
+    case 'participant':
+      return vscode.SymbolKind.Object;
+    case 'state':
+      return vscode.SymbolKind.Event;
+    case 'section':
+      return vscode.SymbolKind.Package;
+  }
+}
+
+function toDocumentSymbol(document: vscode.TextDocument, node: OutlineNode): vscode.DocumentSymbol {
+  const start = Math.max(0, Math.min(node.startLine, document.lineCount - 1));
+  const end = Math.max(start, Math.min(node.endLine, document.lineCount - 1));
+  const sel = Math.max(start, Math.min(node.selectionLine, end));
+  const fullRange = new vscode.Range(start, 0, end, document.lineAt(end).text.length);
+  const selRange = document.lineAt(sel).range;
+  const symbol = new vscode.DocumentSymbol(node.name, node.detail ?? '', toSymbolKind(node.kind), fullRange, selRange);
+  symbol.children = node.children.map((c) => toDocumentSymbol(document, c));
+  return symbol;
+}
+
+class DiagramSymbolProvider implements vscode.DocumentSymbolProvider {
+  provideDocumentSymbols(document: vscode.TextDocument): vscode.DocumentSymbol[] {
+    if (document.lineCount === 0) {
+      return [];
+    }
+    const text = document.getText();
+    const nodes = document.languageId === 'plantuml' ? parsePlantUmlOutline(text) : parseMermaidOutline(text);
+    return nodes.map((n) => toDocumentSymbol(document, n));
+  }
+}
+
+class DiagramCodeLensProvider implements vscode.CodeLensProvider {
+  private readonly emitter = new vscode.EventEmitter<void>();
+  readonly onDidChangeCodeLenses = this.emitter.event;
+
+  refresh(): void {
+    this.emitter.fire();
+  }
+
+  dispose(): void {
+    this.emitter.dispose();
+  }
+
+  provideCodeLenses(document: vscode.TextDocument): vscode.CodeLens[] {
+    if (!config().get<boolean>('editor.codeLens', true)) {
+      return [];
+    }
+    const lenses: vscode.CodeLens[] = [];
+    const text = document.getText();
+
+    if (document.languageId === 'plantuml') {
+      const blocks = splitDiagrams(text);
+      blocks.forEach((block, index) => {
+        const range = new vscode.Range(block.startLine, 0, block.startLine, 0);
+        lenses.push(
+          new vscode.CodeLens(range, {
+            title: `$(open-preview) ${vscode.l10n.t('Preview')}`,
+            command: 'drawGraph.preview.openAtLine',
+            arguments: [document.uri, block.startLine],
+          }),
+          new vscode.CodeLens(range, {
+            title: vscode.l10n.t('Export as SVG'),
+            command: 'drawGraph.plantuml.exportBlock',
+            arguments: [document.uri, index, 'svg'],
+          }),
+          new vscode.CodeLens(range, {
+            title: vscode.l10n.t('Export as PNG'),
+            command: 'drawGraph.plantuml.exportBlock',
+            arguments: [document.uri, index, 'png'],
+          }),
+        );
+      });
+      return lenses;
+    }
+
+    if (document.languageId === 'mermaid') {
+      const firstLine = text.split(/\r?\n/).findIndex((l) => {
+        const t = l.trim();
+        return t.length > 0 && !t.startsWith('%%');
+      });
+      if (firstLine >= 0) {
+        const range = new vscode.Range(firstLine, 0, firstLine, 0);
+        lenses.push(
+          new vscode.CodeLens(range, {
+            title: `$(open-preview) ${vscode.l10n.t('Preview')}`,
+            command: 'drawGraph.preview.openToSide',
+            arguments: [document.uri],
+          }),
+          new vscode.CodeLens(range, {
+            title: vscode.l10n.t('Open in Draw.io'),
+            command: 'drawGraph.mermaid.openInDrawio',
+            arguments: [document.uri],
+          }),
+        );
+      }
+      return lenses;
+    }
+
+    if (document.languageId === 'markdown') {
+      for (const fence of findMarkdownDiagramFences(text)) {
+        const range = new vscode.Range(fence.startLine, 0, fence.startLine, 0);
+        lenses.push(
+          new vscode.CodeLens(range, {
+            title: `$(open-preview) ${vscode.l10n.t('Preview')}`,
+            command: 'markdown.showPreviewToSide',
+            arguments: [document.uri],
+          }),
+        );
+        if (fence.kind === 'mermaid' && fence.content.trim().length > 0) {
+          lenses.push(
+            new vscode.CodeLens(range, {
+              title: vscode.l10n.t('Open in Draw.io'),
+              command: 'drawGraph.mermaid.openInDrawio',
+              arguments: [document.uri, fence.content],
+            }),
+          );
+        }
+      }
+    }
+
+    return lenses;
+  }
+}
+
+export function registerLanguageFeatures(context: vscode.ExtensionContext): DiagramDiagnostics {
+  const diagnostics = new DiagramDiagnostics();
+  const symbolProvider = new DiagramSymbolProvider();
+  const codeLensProvider = new DiagramCodeLensProvider();
+
+  context.subscriptions.push(
+    diagnostics,
+    codeLensProvider,
+    vscode.languages.registerDocumentSymbolProvider([{ language: 'mermaid' }, { language: 'plantuml' }], symbolProvider),
+    vscode.languages.registerCodeLensProvider(
+      [{ language: 'mermaid' }, { language: 'plantuml' }, { language: 'markdown' }],
+      codeLensProvider,
+    ),
+    vscode.workspace.onDidChangeConfiguration((e) => {
+      if (e.affectsConfiguration('drawGraph.editor.codeLens')) {
+        codeLensProvider.refresh();
+      }
+    }),
+  );
+
+  return diagnostics;
+}

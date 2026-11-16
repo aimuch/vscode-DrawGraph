@@ -36,9 +36,11 @@ export interface DiagramBlock {
   source: string;
   startLine: number;
   endLine: number;
+  /** Optional label parsed from `@startuml <name>` or `title <text>`. */
+  title?: string;
 }
 
-function stripBlockComments(line: string, inComment: boolean): { code: string; inComment: boolean } {
+export function stripBlockComments(line: string, inComment: boolean): { code: string; inComment: boolean } {
   if (!inComment && !line.includes("/'")) {
     return { code: line, inComment: false };
   }
@@ -77,6 +79,7 @@ export function splitDiagrams(text: string): DiagramBlock[] {
   let start = -1;
   let endTagRe: RegExp | undefined;
   let startSuffix = 'uml';
+  let blockTitle: string | undefined;
   let inComment = false;
 
   for (let i = 0; i < lines.length; i++) {
@@ -87,28 +90,60 @@ export function splitDiagrams(text: string): DiagramBlock[] {
       continue;
     }
     if (start < 0) {
-      const m = /^@start(\w*)/i.exec(line);
+      const m = /^@start(\w*)(?:\s+(.+))?$/i.exec(line);
       if (m && m[1].toLowerCase() !== 'sub') {
         start = i;
         startSuffix = m[1] || 'uml';
+        blockTitle = m[2]?.trim() || undefined;
         endTagRe = new RegExp(`^@end${m[1]}(?:\\b|\\s|$)`, 'i');
       }
     } else if (endTagRe?.test(line)) {
-      blocks.push({ source: lines.slice(start, i + 1).join('\n'), startLine: start, endLine: i });
+      blocks.push({ source: lines.slice(start, i + 1).join('\n'), startLine: start, endLine: i, title: blockTitle });
       start = -1;
       endTagRe = undefined;
+      blockTitle = undefined;
+    } else if (!blockTitle) {
+      const titleMatch = /^title\s+(.+)$/i.exec(line);
+      if (titleMatch) {
+        blockTitle = titleMatch[1].replace(/^["']|["']$/g, '').trim() || undefined;
+      }
     }
   }
   if (start >= 0) {
     // Unterminated block: render it anyway so the user sees progress while typing.
     const rest = lines.slice(start);
     const end = '@end' + startSuffix;
-    blocks.push({ source: [...rest, end].join('\n'), startLine: start, endLine: lines.length - 1 });
+    blocks.push({ source: [...rest, end].join('\n'), startLine: start, endLine: lines.length - 1, title: blockTitle });
   }
   if (blocks.length === 0 && text.trim().length > 0) {
     blocks.push({ source: `@startuml\n${text}\n@enduml`, startLine: 0, endLine: lines.length - 1 });
   }
   return blocks;
+}
+
+/** Counts how many pages a single PlantUML diagram block produces via `newpage` directives. */
+export function countPages(blockSource: string): number {
+  const lines = blockSource.split(/\r?\n/);
+  let pages = 1;
+  let inComment = false;
+  let seenBody = false;
+  for (const raw of lines) {
+    const stripped = stripBlockComments(raw, inComment);
+    inComment = stripped.inComment;
+    const line = stripped.code.trim();
+    if (!line || line.startsWith("'") || /^@(?:start|end)\w*/i.test(line)) {
+      continue;
+    }
+    if (/^newpage(?:\b|\s|$)/i.test(line)) {
+      if (seenBody) {
+        pages++;
+        seenBody = false;
+      }
+    } else {
+      seenBody = true;
+    }
+  }
+  return pages;
 }
 
 /** Picks the block that contains `line`, falling back to the nearest preceding one, then the first. */

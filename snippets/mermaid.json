@@ -1,0 +1,130 @@
+{
+  "Flowchart": {
+    "prefix": ["flowchart", "graph"],
+    "description": "Mermaid flowchart diagram",
+    "body": [
+      "flowchart ${1|TD,LR,TB,BT,RL|}",
+      "    ${2:Start}[${3:Start}] --> ${4:Check}{${5:Condition?}}",
+      "    ${4:Check} -- Yes --> ${6:Done}[${7:Done}]",
+      "    ${4:Check} -- No --> ${8:Retry}[${9:Retry}]",
+      "    ${8:Retry} --> ${4:Check}"
+    ]
+  },
+  "Sequence Diagram": {
+    "prefix": ["sequence", "seq"],
+    "description": "Mermaid sequence diagram",
+    "body": [
+      "sequenceDiagram",
+      "    actor ${1:User}",
+      "    participant ${2:Client}",
+      "    participant ${3:Server}",
+      "",
+      "    ${1:User}->>${2:Client}: ${4:Action}",
+      "    ${2:Client}->>+${3:Server}: ${5:Request}",
+      "    ${3:Server}-->>-${2:Client}: ${6:Response}",
+      "    $0"
+    ]
+  },
+  "Class Diagram": {
+    "prefix": ["classDiagram", "class"],
+    "description": "Mermaid class diagram",
+    "body": [
+      "classDiagram",
+      "    class ${1:Service} {",
+      "        +${2:String} ${3:name}",
+      "        +${4:execute}() ${5:void}",
+      "    }",
+      "    class ${6:Repository} {",
+      "        +${7:findById}(id) ${8:Entity}",
+      "    }",
+      "    ${1:Service} --> ${6:Repository} : uses"
+    ]
+  },
+  "State Diagram": {
+    "prefix": ["stateDiagram", "state"],
+    "description": "Mermaid state diagram (v2)",
+    "body": [
+      "stateDiagram-v2",
+      "    [*] --> ${1:Idle}",
+      "    ${1:Idle} --> ${2:Processing} : ${3:start}",
+      "    ${2:Processing} --> ${4:Completed} : ${5:success}",
+      "    ${2:Processing} --> ${1:Idle} : ${6:cancel}",
+      "    ${4:Completed} --> [*]"
+    ]
+  },
+  "ER Diagram": {
+    "prefix": ["erDiagram", "er"],
+    "description": "Mermaid entity-relationship diagram",
+    "body": [
+      "erDiagram",
+      "    ${1:USER} ||--o{ ${2:ORDER} : places",
+      "    ${1:USER} {",
+      "        string id PK",
+      "        string email",
+      "    }",
+      "    ${2:ORDER} {",
+      "        string id PK",
+      "        string user_id FK",
+      "        datetime created_at",
+      "    }"
+    ]
+  },
+  "Gantt Chart": {
+    "prefix": ["gantt"],
+    "description": "Mermaid Gantt chart",
+    "body": [
+      "gantt",
+      "    title ${1:Project Schedule}",
+      "    dateFormat YYYY-MM-DD",
+      "    section ${2:Phase 1}",
+      "        ${3:Design}       :a1, ${4:2026-01-01}, ${5:5d}",
+      "        ${6:Development}  :after a1, ${7:10d}"
+    ]
+  },
+  "Mindmap": {
+    "prefix": ["mindmap"],
+    "description": "Mermaid mindmap diagram",
+    "body": [
+      "mindmap",
+      "  root((${1:Central Topic}))",
+      "    ${2:Branch A}",
+      "      ${3:Subtopic 1}",
+      "      ${4:Subtopic 2}",
+      "    ${5:Branch B}",
+      "      ${6:Subtopic 3}"
+    ]
+  },
+  "Pie Chart": {
+    "prefix": ["pie"],
+    "description": "Mermaid pie chart",
+    "body": [
+      "pie showData",
+      "    title ${1:Distribution}",
+      "    \"${2:Category A}\" : ${3:60}",
+      "    \"${4:Category B}\" : ${5:30}",
+      "    \"${6:Category C}\" : ${7:10}"
+    ]
+  },
+  "Git Graph": {
+    "prefix": ["gitGraph", "git"],
+    "description": "Mermaid git branch graph",
+    "body": [
+      "gitGraph",
+      "    commit id: \"${1:init}\"",
+      "    branch ${2:feature}",
+      "    checkout ${2:feature}",
+      "    commit id: \"${3:work}\"",
+      "    checkout main",
+      "    merge ${2:feature}"
+    ]
+  },
+  "Subgraph": {
+    "prefix": ["subgraph", "sub"],
+    "description": "Mermaid subgraph block",
+    "body": [
+      "subgraph ${1:GroupId}[\"${2:Group Title}\"]",
+      "    $0",
+      "end"
+    ]
+  }
+}

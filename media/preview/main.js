@@ -1,6 +1,6 @@
 // @ts-check
 // Diagram preview: renders Mermaid in the webview, displays PlantUML SVG from the host,
-// and provides zoom / pan / export.
+// and provides zoom / pan / background switching / multi-diagram navigation / export / copy.
 (function () {
   // @ts-ignore injected by VS Code
   const vscode = acquireVsCodeApi();
@@ -15,12 +15,21 @@
   const spinner = $('spinner');
   const info = $('info');
   const zoomLabel = $('zoomLabel');
+  const prevItem = $('prevItem');
+  const nextItem = $('nextItem');
+  const bgToggle = $('bgToggle');
+  const lockToggle = $('lockToggle');
 
   const ds = document.body.dataset;
   const MSG_INVALID_SVG = ds.errInvalidSvg || 'Invalid SVG received from renderer.';
   const MSG_MERMAID_LOAD = ds.errMermaidLoad || 'Mermaid library failed to load.';
   const MSG_PNG_RASTER = ds.errPngRaster || 'PNG export failed: the SVG could not be rasterized. Try exporting as SVG.';
 
+  let pngScale = Math.max(1, Number(ds.pngScale) || 2);
+  let pngTransparent = ds.pngTransparent === 'true';
+  let locked = ds.locked === 'true';
+
+  const BG_MODES = ['auto', 'light', 'dark', 'grid'];
   const MIN_ZOOM = 0.05;
   const MAX_ZOOM = 20;
   const saved = vscode.getState() || {};
@@ -28,8 +37,8 @@
     zoom: typeof saved.zoom === 'number' ? saved.zoom : 1,
     x: typeof saved.x === 'number' ? saved.x : 0,
     y: typeof saved.y === 'number' ? saved.y : 0,
-    // Keep fitting the diagram to the window until the user zooms or pans manually.
     autoFit: saved.autoFit !== false,
+    bg: BG_MODES.includes(saved.bg) ? saved.bg : 'auto',
   };
   let natural = { width: 0, height: 0 };
   /** @type {SVGSVGElement | null} */
@@ -38,12 +47,28 @@
   /** @type {ReturnType<typeof setTimeout> | undefined} */
   let persistTimer;
 
+  function syncLockUi() {
+    lockToggle.setAttribute('aria-pressed', locked ? 'true' : 'false');
+    lockToggle.textContent = locked ? ds.labelLocked || 'Locked' : ds.labelUnlocked || 'Pin';
+  }
+
+  function syncBgUi() {
+    document.body.dataset.bg = view.bg;
+    const labels = {
+      auto: ds.bgAuto || 'Bg: Auto',
+      light: ds.bgLight || 'Bg: Light',
+      dark: ds.bgDark || 'Bg: Dark',
+      grid: ds.bgGrid || 'Bg: Grid',
+    };
+    bgToggle.textContent = labels[/** @type {keyof typeof labels} */ (view.bg)] || labels.auto;
+  }
+
   function persistNow() {
     if (persistTimer !== undefined) {
       clearTimeout(persistTimer);
       persistTimer = undefined;
     }
-    vscode.setState({ uri: ds.uri, zoom: view.zoom, x: view.x, y: view.y, autoFit: view.autoFit });
+    vscode.setState({ uri: ds.uri, locked, zoom: view.zoom, x: view.x, y: view.y, autoFit: view.autoFit, bg: view.bg });
   }
 
   function schedulePersist() {
@@ -187,12 +212,16 @@
     }
   }
 
-  function showError(/** @type {string} */ message) {
+  /**
+   * @param {string} message
+   * @param {number} [line]
+   */
+  function showError(message, line) {
     errorBox.textContent = message;
     errorBox.hidden = false;
     emptyBox.hidden = true;
     canvas.classList.add('stale');
-    vscode.postMessage({ type: 'status', state: 'error', message });
+    vscode.postMessage({ type: 'status', state: 'error', message, line });
   }
 
   function showEmpty() {
@@ -256,10 +285,8 @@
       const { svg } = await mermaid.render(id, source);
       showSvg(svg);
     } catch (err) {
-      showError(errorMessage(err));
+      showError(errorMessage(err), errorLine(err));
     } finally {
-      // Mermaid leaves temporary nodes behind when rendering fails. (The rendered SVG
-      // shown in #canvas carries the same id, so leave that one alone.)
       document.getElementById(`d${id}`)?.remove();
       const leftover = document.getElementById(id);
       if (leftover && !canvas.contains(leftover)) {
@@ -275,7 +302,17 @@
     return String(err.message || err.str || err);
   }
 
-  // ---- Export --------------------------------------------------------------------------
+  function errorLine(/** @type {any} */ err) {
+    const locLine = err && err.hash && ((err.hash.loc && err.hash.loc.first_line) || err.hash.line);
+    if (typeof locLine === 'number' && locLine >= 1) {
+      return locLine;
+    }
+    const msg = errorMessage(err);
+    const m = /(?:Parse error on line|line)\s+(\d+)/i.exec(msg);
+    return m ? parseInt(m[1], 10) : undefined;
+  }
+
+  // ---- Export & Clipboard --------------------------------------------------------------
 
   function serializeSvg() {
     if (!currentSvg) {
@@ -289,42 +326,77 @@
     return new XMLSerializer().serializeToString(clone);
   }
 
-  function exportSvg() {
+  /** @returns {Promise<HTMLCanvasElement | null>} */
+  function rasterizeToCanvas() {
+    const data = serializeSvg();
+    if (!data) {
+      return Promise.resolve(null);
+    }
+    const scale = pngScale;
+    const transparent = pngTransparent || view.bg === 'grid';
+    const url = URL.createObjectURL(new Blob([data], { type: 'image/svg+xml' }));
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => {
+        try {
+          const c = document.createElement('canvas');
+          c.width = Math.ceil(natural.width * scale);
+          c.height = Math.ceil(natural.height * scale);
+          const ctx = /** @type {CanvasRenderingContext2D} */ (c.getContext('2d'));
+          if (!transparent) {
+            ctx.fillStyle = view.bg === 'dark' ? '#1e1e1e' : view.bg === 'light' ? '#ffffff' : getComputedStyle(stage).backgroundColor || '#ffffff';
+            ctx.fillRect(0, 0, c.width, c.height);
+          }
+          ctx.drawImage(img, 0, 0, c.width, c.height);
+          resolve(c);
+        } catch (err) {
+          reject(err);
+        } finally {
+          URL.revokeObjectURL(url);
+        }
+      };
+      img.onerror = () => {
+        URL.revokeObjectURL(url);
+        reject(new Error(MSG_PNG_RASTER));
+      };
+      img.src = url;
+    });
+  }
+
+  function exportSvg(silent = false) {
     const data = serializeSvg();
     if (data) {
-      vscode.postMessage({ type: 'export', format: 'svg', data });
+      vscode.postMessage({ type: silent ? 'autoExportData' : 'export', format: 'svg', data });
     }
   }
 
-  function exportPng() {
-    const data = serializeSvg();
-    if (!data) {
-      return;
-    }
-    const scale = 2;
-    const url = URL.createObjectURL(new Blob([data], { type: 'image/svg+xml' }));
-    const img = new Image();
-    img.onload = () => {
-      try {
-        const c = document.createElement('canvas');
-        c.width = Math.ceil(natural.width * scale);
-        c.height = Math.ceil(natural.height * scale);
-        const ctx = /** @type {CanvasRenderingContext2D} */ (c.getContext('2d'));
-        ctx.fillStyle = getComputedStyle(stage).backgroundColor || '#ffffff';
-        ctx.fillRect(0, 0, c.width, c.height);
-        ctx.drawImage(img, 0, 0, c.width, c.height);
-        vscode.postMessage({ type: 'export', format: 'png', data: c.toDataURL('image/png') });
-      } catch (err) {
-        vscode.postMessage({ type: 'error', message: `PNG export failed (${errorMessage(err)}). Try exporting as SVG.` });
-      } finally {
-        URL.revokeObjectURL(url);
+  async function exportPng(silent = false) {
+    try {
+      const c = await rasterizeToCanvas();
+      if (c) {
+        vscode.postMessage({ type: silent ? 'autoExportData' : 'export', format: 'png', data: c.toDataURL('image/png') });
       }
-    };
-    img.onerror = () => {
-      URL.revokeObjectURL(url);
-      vscode.postMessage({ type: 'error', message: MSG_PNG_RASTER });
-    };
-    img.src = url;
+    } catch (err) {
+      if (!silent) {
+        vscode.postMessage({ type: 'error', message: errorMessage(err) });
+      }
+    }
+  }
+
+  async function copyPng() {
+    try {
+      const c = await rasterizeToCanvas();
+      if (!c) {
+        return;
+      }
+      const blob = await new Promise((resolve, reject) => {
+        c.toBlob((b) => (b ? resolve(b) : reject(new Error('Failed to encode PNG.'))), 'image/png');
+      });
+      await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
+      vscode.postMessage({ type: 'copiedPng' });
+    } catch (err) {
+      vscode.postMessage({ type: 'error', message: `Copy PNG failed: ${errorMessage(err)}` });
+    }
   }
 
   // ---- UI events -----------------------------------------------------------------------
@@ -336,13 +408,35 @@
     view.autoFit = true;
     fit(true);
   });
-  $('exportSvg').addEventListener('click', exportSvg);
-  $('exportPng').addEventListener('click', exportPng);
+  bgToggle.addEventListener('click', () => {
+    const idx = BG_MODES.indexOf(view.bg);
+    view.bg = BG_MODES[(idx + 1) % BG_MODES.length];
+    syncBgUi();
+    persistNow();
+  });
+  lockToggle.addEventListener('click', () => {
+    vscode.postMessage({ type: 'toggleLock' });
+  });
+  prevItem.addEventListener('click', () => vscode.postMessage({ type: 'navigate', delta: -1 }));
+  nextItem.addEventListener('click', () => vscode.postMessage({ type: 'navigate', delta: 1 }));
+  $('exportSvg').addEventListener('click', () => exportSvg(false));
+  $('exportPng').addEventListener('click', () => void exportPng(false));
   $('copySvg').addEventListener('click', () => {
     const data = serializeSvg();
     if (data) {
       vscode.postMessage({ type: 'copy', data });
     }
+  });
+  $('copyPng').addEventListener('click', () => void copyPng());
+
+  stage.addEventListener('dblclick', (e) => {
+    let label = '';
+    const target = /** @type {Element | null} */ (e.target instanceof Element ? e.target : null);
+    const textEl = target && target.closest('text, foreignObject');
+    if (textEl) {
+      label = (textEl.textContent || '').trim();
+    }
+    vscode.postMessage({ type: 'openSource', label });
   });
 
   stage.addEventListener(
@@ -351,7 +445,6 @@
       e.preventDefault();
       const rect = stage.getBoundingClientRect();
       if (e.ctrlKey || e.metaKey) {
-        // Pinch-to-zoom on trackpads arrives as ctrl+wheel.
         zoomTo(view.zoom * Math.exp(-e.deltaY * 0.01), e.clientX - rect.left, e.clientY - rect.top, false);
       } else {
         view.x -= e.deltaX;
@@ -405,6 +498,10 @@
     } else if (e.key === 'f') {
       view.autoFit = true;
       fit(true);
+    } else if (e.key === '[') {
+      vscode.postMessage({ type: 'navigate', delta: -1 });
+    } else if (e.key === ']') {
+      vscode.postMessage({ type: 'navigate', delta: 1 });
     }
   });
 
@@ -424,18 +521,50 @@
     }
     switch (msg.type) {
       case 'mermaid':
+        info.textContent = '';
+        prevItem.hidden = true;
+        nextItem.hidden = true;
         void renderMermaid(String(msg.source ?? ''), String(msg.theme || 'default'));
         break;
       case 'svg':
         spinner.hidden = true;
         info.textContent = msg.info || '';
+        prevItem.hidden = !msg.canNav;
+        nextItem.hidden = !msg.canNav;
         showSvg(String(msg.svg));
+        break;
+      case 'config':
+        if (typeof msg.pngScale === 'number' && msg.pngScale >= 1) {
+          pngScale = msg.pngScale;
+        }
+        if (typeof msg.pngTransparent === 'boolean') {
+          pngTransparent = msg.pngTransparent;
+        }
+        if (typeof msg.locked === 'boolean') {
+          locked = msg.locked;
+          syncLockUi();
+          persistNow();
+        }
+        if (typeof msg.uri === 'string') {
+          ds.uri = msg.uri;
+          persistNow();
+        }
+        break;
+      case 'silentExport':
+        if (msg.format === 'svg') {
+          exportSvg(true);
+        } else if (msg.format === 'png') {
+          void exportPng(true);
+        }
         break;
       case 'loading':
         spinner.hidden = false;
         break;
       case 'empty':
         spinner.hidden = true;
+        info.textContent = '';
+        prevItem.hidden = true;
+        nextItem.hidden = true;
         showEmpty();
         break;
       case 'error':
@@ -445,6 +574,8 @@
     }
   });
 
+  syncBgUi();
+  syncLockUi();
   renderTransform();
   persistNow();
   vscode.postMessage({ type: 'ready' });

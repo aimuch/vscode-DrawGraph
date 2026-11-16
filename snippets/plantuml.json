@@ -1,0 +1,149 @@
+{
+  "Sequence Diagram": {
+    "prefix": ["startuml", "sequence", "seq"],
+    "description": "PlantUML sequence diagram",
+    "body": [
+      "@startuml",
+      "actor ${1:User}",
+      "participant \"${2:Client}\" as Client",
+      "participant \"${3:Server}\" as Server",
+      "",
+      "${1:User} -> Client : ${4:request}",
+      "Client -> Server : ${5:call API}",
+      "Server --> Client : ${6:response}",
+      "$0",
+      "@enduml"
+    ]
+  },
+  "Class Diagram": {
+    "prefix": ["classDiagram", "class"],
+    "description": "PlantUML class diagram",
+    "body": [
+      "@startuml",
+      "interface ${1:Repository} {",
+      "  +${2:findById}(id: String): ${3:Entity}",
+      "}",
+      "",
+      "class ${4:Service} {",
+      "  -${5:repo}: ${1:Repository}",
+      "  +${6:execute}(): void",
+      "}",
+      "",
+      "${4:Service} --> ${1:Repository}",
+      "@enduml"
+    ]
+  },
+  "Component Diagram": {
+    "prefix": ["component", "comp"],
+    "description": "PlantUML component/architecture diagram",
+    "body": [
+      "@startuml",
+      "package \"${1:Application}\" {",
+      "  [${2:API Gateway}] as Gateway",
+      "  [${3:Core Service}] as Core",
+      "}",
+      "database \"${4:PostgreSQL}\" as DB",
+      "",
+      "Gateway --> Core : HTTP",
+      "Core --> DB : SQL",
+      "@enduml"
+    ]
+  },
+  "Activity Diagram": {
+    "prefix": ["activity", "act"],
+    "description": "PlantUML activity diagram",
+    "body": [
+      "@startuml",
+      "start",
+      ":${1:Receive input};",
+      "if (${2:Valid?}) then (yes)",
+      "  :${3:Process request};",
+      "else (no)",
+      "  :${4:Return validation error};",
+      "endif",
+      "stop",
+      "@enduml"
+    ]
+  },
+  "State Diagram": {
+    "prefix": ["state"],
+    "description": "PlantUML state diagram",
+    "body": [
+      "@startuml",
+      "[*] --> ${1:Idle}",
+      "${1:Idle} --> ${2:Running} : ${3:start}",
+      "${2:Running} --> ${4:Done} : ${5:finish}",
+      "${4:Done} --> [*]",
+      "@enduml"
+    ]
+  },
+  "Use Case Diagram": {
+    "prefix": ["usecase"],
+    "description": "PlantUML use case diagram",
+    "body": [
+      "@startuml",
+      "left to right direction",
+      "actor \"${1:Customer}\" as User",
+      "rectangle \"${2:System}\" {",
+      "  usecase \"${3:Sign In}\" as UC1",
+      "  usecase \"${4:Place Order}\" as UC2",
+      "}",
+      "User --> UC1",
+      "User --> UC2",
+      "@enduml"
+    ]
+  },
+  "MindMap": {
+    "prefix": ["mindmap", "startmindmap"],
+    "description": "PlantUML mindmap diagram",
+    "body": [
+      "@startmindmap",
+      "* ${1:Root Topic}",
+      "** ${2:Branch 1}",
+      "*** ${3:Item 1.1}",
+      "*** ${4:Item 1.2}",
+      "** ${5:Branch 2}",
+      "*** ${6:Item 2.1}",
+      "@endmindmap"
+    ]
+  },
+  "WBS Diagram": {
+    "prefix": ["wbs", "startwbs"],
+    "description": "PlantUML work breakdown structure",
+    "body": [
+      "@startwbs",
+      "* ${1:Project}",
+      "** ${2:Design}",
+      "*** ${3:Architecture}",
+      "** ${4:Implementation}",
+      "*** ${5:Backend}",
+      "*** ${6:Frontend}",
+      "@endwbs"
+    ]
+  },
+  "Gantt Chart": {
+    "prefix": ["gantt", "startgantt"],
+    "description": "PlantUML Gantt chart",
+    "body": [
+      "@startgantt",
+      "Project starts ${1:2026-01-01}",
+      "[${2:Design}] lasts ${3:5} days",
+      "[${4:Implementation}] lasts ${5:10} days",
+      "[${4:Implementation}] starts at [${2:Design}]'s end",
+      "@endgantt"
+    ]
+  },
+  "JSON Diagram": {
+    "prefix": ["startjson", "json"],
+    "description": "PlantUML JSON visualization",
+    "body": [
+      "@startjson",
+      "{",
+      "  \"${1:service}\": \"${2:drawgraph}\",",
+      "  \"${3:enabled}\": true,",
+      "  \"${4:items}\": [\"${5:mermaid}\", \"${6:plantuml}\"]",
+      "}",
+      "@endjson"
+    ]
+  }
+}

@@ -36,3 +36,197 @@ Code -> DrawGraph : text changed
 DrawGraph --> User : live preview
 @enduml
 `;
+
+export interface DiagramTemplate {
+  id: string;
+  kind: 'mermaid' | 'plantuml' | 'drawio';
+  label: string;
+  detail: string;
+  content: string;
+}
+
+export const DIAGRAM_TEMPLATES: readonly DiagramTemplate[] = [
+  {
+    id: 'mermaid-flowchart',
+    kind: 'mermaid',
+    label: 'Mermaid: Flowchart',
+    detail: 'Top-down decision flowchart',
+    content: MERMAID_TEMPLATE,
+  },
+  {
+    id: 'mermaid-sequence',
+    kind: 'mermaid',
+    label: 'Mermaid: Sequence Diagram',
+    detail: 'Actor and service interaction timeline',
+    content: `sequenceDiagram
+    actor User
+    participant App as Web App
+    participant API as Backend API
+
+    User->>App: Submit form
+    App->>+API: POST /items
+    API-->>-App: 201 Created
+    App-->>User: Show confirmation
+`,
+  },
+  {
+    id: 'mermaid-class',
+    kind: 'mermaid',
+    label: 'Mermaid: Class Diagram',
+    detail: 'Object-oriented classes and relationships',
+    content: `classDiagram
+    class OrderService {
+        +createOrder(items) Order
+        +cancelOrder(id) bool
+    }
+    class OrderRepository {
+        +save(order) void
+        +findById(id) Order
+    }
+    OrderService --> OrderRepository : depends on
+`,
+  },
+  {
+    id: 'mermaid-state',
+    kind: 'mermaid',
+    label: 'Mermaid: State Diagram',
+    detail: 'Finite state machine transitions',
+    content: `stateDiagram-v2
+    [*] --> Draft
+    Draft --> Review : submit
+    Review --> Approved : approve
+    Review --> Draft : request changes
+    Approved --> [*]
+`,
+  },
+  {
+    id: 'mermaid-er',
+    kind: 'mermaid',
+    label: 'Mermaid: ER Diagram',
+    detail: 'Database entities and foreign-key relationships',
+    content: `erDiagram
+    CUSTOMER ||--o{ ORDER : places
+    ORDER ||--|{ LINE_ITEM : contains
+    CUSTOMER {
+        string id PK
+        string email
+    }
+    ORDER {
+        string id PK
+        datetime created_at
+    }
+`,
+  },
+  {
+    id: 'mermaid-gantt',
+    kind: 'mermaid',
+    label: 'Mermaid: Gantt Chart',
+    detail: 'Project milestones and task schedule',
+    content: `gantt
+    title Release Plan
+    dateFormat YYYY-MM-DD
+    section Design
+        Architecture review :a1, 2026-01-01, 4d
+    section Implementation
+        Core features       :a2, after a1, 8d
+        Integration tests   :after a2, 3d
+`,
+  },
+  {
+    id: 'mermaid-mindmap',
+    kind: 'mermaid',
+    label: 'Mermaid: Mindmap',
+    detail: 'Hierarchical topic mindmap',
+    content: `mindmap
+  root((System Design))
+    Frontend
+      UI Components
+      State Management
+    Backend
+      REST API
+      Storage
+`,
+  },
+  {
+    id: 'plantuml-sequence',
+    kind: 'plantuml',
+    label: 'PlantUML: Sequence Diagram',
+    detail: 'Participant message sequence',
+    content: PLANTUML_TEMPLATE,
+  },
+  {
+    id: 'plantuml-class',
+    kind: 'plantuml',
+    label: 'PlantUML: Class Diagram',
+    detail: 'Interfaces, classes, and associations',
+    content: `@startuml
+interface Renderer {
+  +render(source: String): String
+}
+
+class PlantUmlRenderer {
+  -cache: Map
+  +render(source: String): String
+}
+
+PlantUmlRenderer ..|> Renderer
+@enduml
+`,
+  },
+  {
+    id: 'plantuml-component',
+    kind: 'plantuml',
+    label: 'PlantUML: Component Diagram',
+    detail: 'Packages, services, and databases',
+    content: `@startuml
+package "Backend" {
+  [Gateway] --> [Auth Service]
+  [Gateway] --> [Order Service]
+}
+database "Primary DB" as DB
+[Order Service] --> DB
+@enduml
+`,
+  },
+  {
+    id: 'plantuml-activity',
+    kind: 'plantuml',
+    label: 'PlantUML: Activity Diagram',
+    detail: 'Conditional workflow and branches',
+    content: `@startuml
+start
+:Validate request;
+if (Authorized?) then (yes)
+  :Execute action;
+  :Return 200 OK;
+else (no)
+  :Return 401 Unauthorized;
+endif
+stop
+@enduml
+`,
+  },
+  {
+    id: 'plantuml-mindmap',
+    kind: 'plantuml',
+    label: 'PlantUML: MindMap',
+    detail: 'OrgMode-style PlantUML mindmap',
+    content: `@startmindmap
+* Architecture
+** Client
+*** Webview
+*** Editor
+** Host
+*** PreviewManager
+*** Renderer
+@endmindmap
+`,
+  },
+  {
+    id: 'drawio-flowchart',
+    kind: 'drawio',
+    label: 'Draw.io: Flowchart (.drawio / .drawio.svg / .drawio.png)',
+    detail: 'Editable visual canvas diagram',
+    content: DRAWIO_TEMPLATE,
+  },
+];

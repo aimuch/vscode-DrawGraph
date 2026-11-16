@@ -62,9 +62,11 @@ test('Mermaid preview renders, reports errors and recovers', async () => {
   await replaceAll(doc, 'flowchart TD\n  A --> ');
   const bad = await waitFor('mermaid error', () => previewOf(uri)?.status.state === 'error' && previewOf(uri).status);
   assert.match(bad.error, /Parse error|error/i);
+  await waitFor('mermaid diagnostic published', () => vscode.languages.getDiagnostics(uri).some((d) => d.source === 'DrawGraph'));
 
   await replaceAll(doc, good);
   await waitFor('mermaid recovered', () => previewOf(uri)?.status.state === 'rendered');
+  await waitFor('mermaid diagnostic cleared', () => vscode.languages.getDiagnostics(uri).filter((d) => d.source === 'DrawGraph').length === 0);
   await vscode.commands.executeCommand('workbench.action.files.revert');
 });
 
@@ -92,11 +94,42 @@ test('PlantUML preview renders the block under the cursor (server mode)', async 
   assert.notDeepEqual([second.width, second.height], [first.width, first.height]);
 });
 
-test('Markdown preview plugin turns ```mermaid into a diagram placeholder', async () => {
-  const md = fs.readFileSync(path.join(workspace, 'notes.md'), 'utf8');
+test('Markdown preview plugin renders ```mermaid and ```plantuml blocks', async () => {
+  const md = fs.readFileSync(path.join(workspace, 'notes.md'), 'utf8') + '\n```plantuml\nAlice -> Bob : hello\n```\n';
   const html = await vscode.commands.executeCommand('markdown.api.render', md);
   assert.match(html, /class="drawgraph-mermaid/);
   assert.match(html, /sequenceDiagram/);
+  assert.match(html, /class="drawgraph-plantuml/);
+  assert.match(html, /plantuml\.com\/plantuml\/svg\//);
+});
+
+test('Document symbols, CodeLens, templates and preview lock work', async () => {
+  const pumlUri = file('sequence.puml');
+  await vscode.workspace.openTextDocument(pumlUri);
+  const symbols = await vscode.commands.executeCommand('vscode.executeDocumentSymbolProvider', pumlUri);
+  assert.ok(Array.isArray(symbols) && symbols.length >= 2, 'PlantUML outline symbols returned');
+
+  const lenses = await vscode.commands.executeCommand('vscode.executeCodeLensProvider', pumlUri);
+  assert.ok(Array.isArray(lenses) && lenses.length >= 2, 'PlantUML CodeLenses returned');
+
+  // Open preview for flowchart.mmd, lock it, then create a template diagram alongside it.
+  const mmdUri = file('flowchart.mmd');
+  const mmdDoc = await vscode.workspace.openTextDocument(mmdUri);
+  await vscode.window.showTextDocument(mmdDoc, vscode.ViewColumn.One);
+  await vscode.commands.executeCommand('drawGraph.preview.openToSide');
+  await waitFor('flowchart rendered before lock', () => previewOf(mmdUri)?.status.state === 'rendered');
+  if (!previewOf(mmdUri).locked) {
+    await vscode.commands.executeCommand('drawGraph.preview.toggleLock');
+  }
+  assert.equal(previewOf(mmdUri).locked, true, 'preview locked to flowchart.mmd');
+
+  await vscode.commands.executeCommand('drawGraph.diagram.newFromTemplate', 'mermaid-sequence');
+  const tplDoc = vscode.window.activeTextEditor?.document;
+  assert.ok(tplDoc && tplDoc.isUntitled && tplDoc.getText().includes('sequenceDiagram'));
+  await waitFor('template preview rendered while locked preview stays open', () => previewOf(tplDoc.uri)?.status.state === 'rendered');
+  assert.ok(previewOf(mmdUri), 'locked preview was preserved');
+  await vscode.commands.executeCommand('workbench.action.revertAndCloseActiveEditor');
+  await vscode.commands.executeCommand('workbench.action.closeAllEditors');
 });
 
 test('new Mermaid diagram command opens an untitled file with a live preview', async () => {
@@ -289,6 +322,43 @@ test('drawGraph.drawio.svgColorScheme controls the colors written to SVG', async
   }
 });
 
+test('.drawio.png opens in draw.io, edits rewrite valid PNG with embedded diagram, and Mermaid converts to draw.io', async () => {
+  const pngUri = file('editable.drawio.png');
+  await openDrawio(file('architecture.drawio'));
+  await vscode.commands.executeCommand('drawGraph.drawio.exportPng', pngUri);
+  const initialPng = fs.readFileSync(pngUri.fsPath);
+  assert.deepEqual([...initialPng.subarray(0, 4)], [0x89, 0x50, 0x4e, 0x47]);
+
+  await vscode.commands.executeCommand('workbench.action.closeAllEditors');
+  await vscode.commands.executeCommand('vscode.open', pngUri);
+  const tab = vscode.window.tabGroups.activeTabGroup.activeTab;
+  assert.ok(tab.input instanceof vscode.TabInputCustom && tab.input.viewType === 'drawGraph.drawioPng', 'opened in drawioPng editor');
+  await waitFor('drawioPng loaded', () => drawioOf(pngUri)?.loads >= 1, 60000);
+
+  const beforeChanges = drawioOf(pngUri).changes;
+  assert.ok(api.diagnostics.drawioAction(pngUri.toString(), mergeCell('PNG Editable Node')));
+  await waitFor('drawioPng updated', () => drawioOf(pngUri)?.changes > beforeChanges, 30000);
+  await vscode.commands.executeCommand('workbench.action.files.save');
+
+  const checkSvg = file('from-png-check.drawio.svg');
+  await vscode.commands.executeCommand('drawGraph.drawio.exportSvg', checkSvg);
+  assert.match(fs.readFileSync(checkSvg.fsPath, 'utf8'), /PNG Editable Node/);
+
+  // Convert a Mermaid diagram directly into a saved .drawio file and verify draw.io loads it.
+  const convertedUri = file('from-mermaid.drawio');
+  await vscode.commands.executeCommand('workbench.action.closeAllEditors');
+  await vscode.commands.executeCommand('drawGraph.mermaid.openInDrawio', file('flowchart.mmd'), undefined, convertedUri);
+  await waitFor(
+    'Mermaid converted, saved, and loaded in draw.io',
+    () =>
+      fs.existsSync(convertedUri.fsPath) &&
+      fs.readFileSync(convertedUri.fsPath, 'utf8').includes('<mxGraphModel') &&
+      drawioOf(convertedUri)?.loads >= 1,
+    60000,
+  );
+  await vscode.commands.executeCommand('workbench.action.closeAllEditors');
+});
+
 // --- Keyboard shortcuts inside the draw.io editor ----------------------------------------
 // Real input is sent through the Chrome DevTools protocol (runTest.mjs opens port 9339).
 
@@ -318,7 +388,9 @@ async function devtools() {
     close: () => ws.close(),
     evaluate,
     async clickWebview(fx, fy) {
-      const r = await evaluate(`(() => { const f = [...document.querySelectorAll('iframe')].find((f) => f.offsetWidth > 100 && f.offsetHeight > 100); const r = f.getBoundingClientRect(); return { x: r.x, y: r.y, w: r.width, h: r.height }; })()`);
+      const r = await evaluate(
+        `(() => { const f = [...document.querySelectorAll('iframe')].find((el) => { const b = el.getBoundingClientRect(); return b.width > 100 && b.height > 100 && b.left >= 0 && b.top >= 0 && getComputedStyle(el).visibility !== 'hidden'; }); const r = f.getBoundingClientRect(); return { x: r.x, y: r.y, w: r.width, h: r.height }; })()`,
+      );
       for (const type of ['mousePressed', 'mouseReleased']) {
         await send('Input.dispatchMouseEvent', { type, x: r.x + r.w * fx, y: r.y + r.h * fy, button: 'left', clickCount: 1 });
       }

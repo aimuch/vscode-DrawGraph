@@ -20,6 +20,7 @@ body {
   flex: none;
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 4px;
   padding: 4px 8px;
   border-bottom: 1px solid var(--vscode-panel-border, transparent);
@@ -42,8 +43,18 @@ body {
   background: var(--vscode-button-secondaryHoverBackground);
 }
 
+#toolbar button[aria-pressed='true'] {
+  color: var(--vscode-button-foreground);
+  background: var(--vscode-button-background);
+}
+
 #zoomLabel {
   min-width: 52px !important;
+}
+
+.nav-btn {
+  min-width: 24px !important;
+  padding: 0 5px !important;
 }
 
 .sep {
@@ -54,7 +65,7 @@ body {
 }
 
 #info {
-  margin-left: 8px;
+  margin: 0 4px;
   color: var(--vscode-descriptionForeground);
 }
 
@@ -68,12 +79,44 @@ body {
   flex: 1;
   overflow: hidden;
   cursor: grab;
-  /* PlantUML and light Mermaid themes assume a white page. */
+  /* PlantUML and light Mermaid themes assume a white page by default. */
   background: #ffffff;
 }
 
-body[data-kind='mermaid'][data-theme='dark'] #stage {
+body[data-kind='mermaid'][data-theme='dark'][data-bg='auto'] #stage {
   background: var(--vscode-editor-background);
+}
+
+body[data-bg='light'] #stage {
+  background: #ffffff;
+}
+
+body[data-bg='dark'] #stage {
+  background: #1e1e1e;
+}
+
+body[data-bg='grid'] #stage {
+  background-color: #ffffff;
+  background-image:
+    linear-gradient(45deg, #e2e2e2 25%, transparent 25%),
+    linear-gradient(-45deg, #e2e2e2 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, #e2e2e2 75%),
+    linear-gradient(-45deg, transparent 75%, #e2e2e2 75%);
+  background-size: 16px 16px;
+  background-position:
+    0 0,
+    0 8px,
+    8px -8px,
+    -8px 0;
+}
+
+body.vscode-dark[data-bg='grid'] #stage {
+  background-color: #252526;
+  background-image:
+    linear-gradient(45deg, #333337 25%, transparent 25%),
+    linear-gradient(-45deg, #333337 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, #333337 75%),
+    linear-gradient(-45deg, transparent 75%, #333337 75%);
 }
 
 #stage.dragging {

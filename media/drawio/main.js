@@ -81,8 +81,11 @@
       window.dispatchEvent(event);
     }
   }
+
   let configureRequested = false;
   let initialized = false;
+  /** @type {Set<number>} */
+  const clipboardPngRequests = new Set();
 
   /** @param {object} message */
   function postToDrawio(message) {
@@ -92,10 +95,20 @@
   function sendConfigure(force = false) {
     if ((configureRequested || force) && drawioConfig) {
       // The user's own drawGraph.drawio.config wins over our defaults (including passThroughKeys).
-      const defaults = { compressXml: false, passThroughKeys: forwardShortcuts ? passThroughKeys() : [] };
+      const defaults = {
+        compressXml: false,
+        passThroughKeys: forwardShortcuts ? passThroughKeys() : force ? [] : undefined,
+      };
       postToDrawio({ action: 'configure', config: Object.assign(defaults, drawioConfig) });
       configureRequested = false;
     }
+  }
+
+  /** @param {string} dataUri */
+  async function writePngDataUriToClipboard(dataUri) {
+    const response = await fetch(dataUri);
+    const blob = await response.blob();
+    await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
   }
 
   const failTimer = setTimeout(() => {
@@ -140,6 +153,9 @@
         break;
       case 'export':
         // draw.io echoes the request back in `message`, which is how replies are matched.
+        if (msg.copyToClipboard) {
+          clipboardPngRequests.add(msg.requestId);
+        }
         postToDrawio(Object.assign({ action: 'export', format: msg.format, drawGraphRequestId: msg.requestId }, msg.options || {}));
         break;
     }
@@ -174,7 +190,14 @@
       case 'export': {
         const requestId = msg.message && msg.message.drawGraphRequestId;
         if (requestId !== undefined) {
-          vscode.postMessage({ type: 'export', requestId, data: msg.data });
+          if (clipboardPngRequests.delete(requestId) && msg.data) {
+            writePngDataUriToClipboard(msg.data).then(
+              () => vscode.postMessage({ type: 'export', requestId, data: 'copied' }),
+              (err) => vscode.postMessage({ type: 'export', requestId, error: String((err && err.message) || err) }),
+            );
+          } else {
+            vscode.postMessage({ type: 'export', requestId, data: msg.data });
+          }
         }
         break;
       }

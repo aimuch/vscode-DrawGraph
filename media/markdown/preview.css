@@ -1,6 +1,10 @@
-.drawgraph-mermaid {
+.drawgraph-mermaid,
+.drawgraph-plantuml {
   margin: 1em 0;
   text-align: center;
+}
+
+.drawgraph-mermaid {
   white-space: pre;
 }
 
@@ -8,9 +12,21 @@
   white-space: normal;
 }
 
-.drawgraph-mermaid svg {
+.drawgraph-mermaid svg,
+.drawgraph-plantuml img {
   max-width: 100%;
   height: auto;
+}
+
+.drawgraph-plantuml img {
+  background: #ffffff;
+  border-radius: 3px;
+  padding: 4px;
+}
+
+.drawgraph-plantuml-loading {
+  color: var(--vscode-descriptionForeground);
+  font-style: italic;
 }
 
 .drawgraph-mermaid-error {

@@ -38,17 +38,21 @@
       "supported": "limited",
       "restrictedConfigurations": [
         "drawGraph.drawio.url",
+        "drawGraph.drawio.customLibraries",
         "drawGraph.plantuml.render",
         "drawGraph.plantuml.server",
         "drawGraph.plantuml.jar",
         "drawGraph.plantuml.java",
-        "drawGraph.plantuml.dot"
+        "drawGraph.plantuml.dot",
+        "drawGraph.exportOnSave",
+        "drawGraph.exportOnSaveOutDir"
       ]
     }
   },
   "activationEvents": [
     "onLanguage:mermaid",
     "onLanguage:plantuml",
+    "onLanguage:markdown",
     "onWebviewPanel:drawGraph.preview"
   ],
   "contributes": {
@@ -101,6 +105,26 @@
         "embeddedLanguages": {
           "meta.embedded.block.mermaid": "mermaid"
         }
+      },
+      {
+        "scopeName": "markdown.plantuml.codeblock",
+        "path": "./syntaxes/plantuml.markdown.tmLanguage.json",
+        "injectTo": [
+          "text.html.markdown"
+        ],
+        "embeddedLanguages": {
+          "meta.embedded.block.plantuml": "plantuml"
+        }
+      }
+    ],
+    "snippets": [
+      {
+        "language": "mermaid",
+        "path": "./snippets/mermaid.json"
+      },
+      {
+        "language": "plantuml",
+        "path": "./snippets/plantuml.json"
       }
     ],
     "customEditors": [
@@ -122,6 +146,16 @@
           }
         ],
         "priority": "default"
+      },
+      {
+        "viewType": "drawGraph.drawioPng",
+        "displayName": "%customEditor.drawio%",
+        "selector": [
+          {
+            "filenamePattern": "*.drawio.png"
+          }
+        ],
+        "priority": "default"
       }
     ],
     "commands": [
@@ -136,6 +170,22 @@
         "title": "%command.preview.openToSide%",
         "category": "DrawGraph",
         "icon": "$(open-preview)"
+      },
+      {
+        "command": "drawGraph.preview.toggleLock",
+        "title": "%command.preview.toggleLock%",
+        "category": "DrawGraph",
+        "icon": "$(pin)"
+      },
+      {
+        "command": "drawGraph.preview.openAtLine",
+        "title": "%command.preview.openToSide%",
+        "category": "DrawGraph"
+      },
+      {
+        "command": "drawGraph.plantuml.exportBlock",
+        "title": "%command.drawio.exportSvg%",
+        "category": "DrawGraph"
       },
       {
         "command": "drawGraph.drawio.new",
@@ -153,6 +203,16 @@
         "category": "DrawGraph"
       },
       {
+        "command": "drawGraph.diagram.newFromTemplate",
+        "title": "%command.diagram.newFromTemplate%",
+        "category": "DrawGraph"
+      },
+      {
+        "command": "drawGraph.mermaid.openInDrawio",
+        "title": "%command.mermaid.openInDrawio%",
+        "category": "DrawGraph"
+      },
+      {
         "command": "drawGraph.drawio.exportSvg",
         "title": "%command.drawio.exportSvg%",
         "category": "DrawGraph"
@@ -160,6 +220,16 @@
       {
         "command": "drawGraph.drawio.exportPng",
         "title": "%command.drawio.exportPng%",
+        "category": "DrawGraph"
+      },
+      {
+        "command": "drawGraph.drawio.copySvg",
+        "title": "%command.drawio.copySvg%",
+        "category": "DrawGraph"
+      },
+      {
+        "command": "drawGraph.drawio.copyPng",
+        "title": "%command.drawio.copyPng%",
         "category": "DrawGraph"
       },
       {
@@ -177,25 +247,45 @@
           "group": "navigation"
         },
         {
+          "command": "drawGraph.mermaid.openInDrawio",
+          "when": "editorLangId == mermaid",
+          "group": "1_drawgraph@1"
+        },
+        {
           "command": "drawGraph.drawio.openAsText",
           "when": "activeCustomEditorId == drawGraph.drawio",
           "group": "navigation"
         },
         {
           "command": "drawGraph.drawio.exportSvg",
-          "when": "activeCustomEditorId == drawGraph.drawio",
+          "when": "activeCustomEditorId == drawGraph.drawio || activeCustomEditorId == drawGraph.drawioPng",
           "group": "1_drawgraph@1"
         },
         {
           "command": "drawGraph.drawio.exportPng",
-          "when": "activeCustomEditorId == drawGraph.drawio",
+          "when": "activeCustomEditorId == drawGraph.drawio || activeCustomEditorId == drawGraph.drawioPng",
           "group": "1_drawgraph@2"
+        },
+        {
+          "command": "drawGraph.drawio.copyPng",
+          "when": "activeCustomEditorId == drawGraph.drawio || activeCustomEditorId == drawGraph.drawioPng",
+          "group": "1_drawgraph@3"
+        },
+        {
+          "command": "drawGraph.drawio.copySvg",
+          "when": "activeCustomEditorId == drawGraph.drawio || activeCustomEditorId == drawGraph.drawioPng",
+          "group": "1_drawgraph@4"
         }
       ],
       "explorer/context": [
         {
           "command": "drawGraph.preview.open",
           "when": "resourceLangId == mermaid || resourceLangId == plantuml",
+          "group": "navigation"
+        },
+        {
+          "command": "drawGraph.mermaid.openInDrawio",
+          "when": "resourceLangId == mermaid",
           "group": "navigation"
         }
       ],
@@ -209,12 +299,36 @@
           "when": "editorLangId == mermaid || editorLangId == plantuml"
         },
         {
+          "command": "drawGraph.preview.toggleLock",
+          "when": "activeWebviewPanelId == drawGraph.preview"
+        },
+        {
+          "command": "drawGraph.preview.openAtLine",
+          "when": "false"
+        },
+        {
+          "command": "drawGraph.plantuml.exportBlock",
+          "when": "false"
+        },
+        {
+          "command": "drawGraph.mermaid.openInDrawio",
+          "when": "editorLangId == mermaid"
+        },
+        {
           "command": "drawGraph.drawio.exportSvg",
-          "when": "activeCustomEditorId == drawGraph.drawio"
+          "when": "activeCustomEditorId == drawGraph.drawio || activeCustomEditorId == drawGraph.drawioPng"
         },
         {
           "command": "drawGraph.drawio.exportPng",
-          "when": "activeCustomEditorId == drawGraph.drawio"
+          "when": "activeCustomEditorId == drawGraph.drawio || activeCustomEditorId == drawGraph.drawioPng"
+        },
+        {
+          "command": "drawGraph.drawio.copySvg",
+          "when": "activeCustomEditorId == drawGraph.drawio || activeCustomEditorId == drawGraph.drawioPng"
+        },
+        {
+          "command": "drawGraph.drawio.copyPng",
+          "when": "activeCustomEditorId == drawGraph.drawio || activeCustomEditorId == drawGraph.drawioPng"
         },
         {
           "command": "drawGraph.drawio.openAsText",
@@ -271,6 +385,14 @@
           "default": {},
           "markdownDescription": "%config.drawio.config%"
         },
+        "drawGraph.drawio.customLibraries": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "markdownDescription": "%config.drawio.customLibraries%"
+        },
         "drawGraph.drawio.svgColorScheme": {
           "type": "string",
           "enum": [
@@ -308,6 +430,11 @@
           "type": "boolean",
           "default": true,
           "markdownDescription": "%config.markdown.mermaid%"
+        },
+        "drawGraph.markdown.plantuml": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "%config.markdown.plantuml%"
         },
         "drawGraph.plantuml.render": {
           "type": "string",
@@ -352,6 +479,52 @@
           "default": 400,
           "minimum": 0,
           "markdownDescription": "%config.preview.debounce%"
+        },
+        "drawGraph.preview.followActiveEditor": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "%config.preview.followActiveEditor%"
+        },
+        "drawGraph.preview.pngScale": {
+          "type": "number",
+          "enum": [
+            1,
+            2,
+            3,
+            4
+          ],
+          "default": 2,
+          "markdownDescription": "%config.preview.pngScale%"
+        },
+        "drawGraph.preview.pngTransparent": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "%config.preview.pngTransparent%"
+        },
+        "drawGraph.editor.codeLens": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "%config.editor.codeLens%"
+        },
+        "drawGraph.exportOnSave": {
+          "type": "string",
+          "enum": [
+            "off",
+            "svg",
+            "png"
+          ],
+          "enumDescriptions": [
+            "%config.exportOnSave.off%",
+            "%config.exportOnSave.svg%",
+            "%config.exportOnSave.png%"
+          ],
+          "default": "off",
+          "markdownDescription": "%config.exportOnSave%"
+        },
+        "drawGraph.exportOnSaveOutDir": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "%config.exportOnSaveOutDir%"
         }
       }
     },

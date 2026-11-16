@@ -10,6 +10,8 @@ export interface PlantUmlOptions {
   dot: string;
   /** Directory used to resolve relative `!include` paths in local mode. */
   baseDir?: string;
+  /** Zero-based page index for multi-page (`newpage`) diagrams. */
+  page?: number;
   /** Skip the in-memory SVG cache (used on explicit config/theme refreshes). */
   noCache?: boolean;
 }
@@ -342,12 +344,13 @@ export class PlantUmlRenderer {
 
   async render(source: string, options: PlantUmlOptions): Promise<string> {
     this.cancel();
+    const page = Math.max(0, Math.floor(options.page ?? 0));
     const jar = options.jar.trim();
     const useLocal = options.mode === 'local' || (options.mode === 'auto' && jar !== '');
     const configKey = useLocal
       ? `local\0${options.java || 'java'}\0${jar}\0${options.dot.trim()}\0${options.baseDir ?? ''}`
       : `server\0${normalizeServerBase(options.server)}`;
-    const cacheKey = `${configKey}\0${source}`;
+    const cacheKey = `${configKey}\0${page}\0${source}`;
 
     if (!options.noCache) {
       const cached = this.cache.get(cacheKey);
@@ -359,9 +362,39 @@ export class PlantUmlRenderer {
       }
     }
 
-    const svg = useLocal ? await this.renderLocal(source, options, configKey) : await this.renderServer(source, options);
+    const svg = useLocal
+      ? await this.renderLocal(source, options, configKey, page)
+      : await this.renderServer(source, options, page);
     this.storeCache(cacheKey, svg);
     return svg;
+  }
+
+  /** Renders a PlantUML block directly to PNG bytes (used for headless export / auto-export on save). */
+  async renderPng(source: string, options: PlantUmlOptions): Promise<Uint8Array> {
+    const page = Math.max(0, Math.floor(options.page ?? 0));
+    const jar = options.jar.trim();
+    const useLocal = options.mode === 'local' || (options.mode === 'auto' && jar !== '');
+    if (useLocal) {
+      if (!jar) {
+        throw new Error('Local PlantUML rendering needs the "drawGraph.plantuml.jar" setting (path to plantuml.jar).');
+      }
+      return runOneShotLocal(source, options, 'png', page);
+    }
+    const base = normalizeServerBase(options.server);
+    const encoded = await encodePlantUmlAsync(source);
+    const pageSegment = page > 0 ? `${page}/` : '';
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+    try {
+      const response = await fetch(`${base}/png/${pageSegment}${encoded}`, { signal: controller.signal });
+      const buf = new Uint8Array(await response.arrayBuffer());
+      if (buf.length >= 8 && buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47) {
+        return buf;
+      }
+      throw new ServerError(`PlantUML server ${base} responded ${response.status} ${response.statusText}`);
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   private storeCache(key: string, svg: string): void {
@@ -375,7 +408,7 @@ export class PlantUmlRenderer {
     }
   }
 
-  private async renderServer(source: string, options: PlantUmlOptions): Promise<string> {
+  private async renderServer(source: string, options: PlantUmlOptions, page: number): Promise<string> {
     const base = normalizeServerBase(options.server);
     const controller = new AbortController();
     this.serverAbort = controller;
@@ -385,7 +418,8 @@ export class PlantUmlRenderer {
       if (controller.signal.aborted) {
         throw new CancelledError();
       }
-      const response = await fetch(`${base}/svg/${encoded}`, { signal: controller.signal });
+      const pageSegment = page > 0 ? `${page}/` : '';
+      const response = await fetch(`${base}/svg/${pageSegment}${encoded}`, { signal: controller.signal });
       const body = await response.text();
       // The server answers syntax errors with HTTP 400 *and* an SVG describing the error.
       if (body.includes('<svg')) {
@@ -415,10 +449,17 @@ export class PlantUmlRenderer {
     }
   }
 
-  private renderLocal(source: string, options: PlantUmlOptions, workerKey: string): Promise<string> {
+  private async renderLocal(source: string, options: PlantUmlOptions, workerKey: string, page: number): Promise<string> {
     const jar = options.jar.trim();
     if (!jar) {
-      return Promise.reject(new Error('Local PlantUML rendering needs the "drawGraph.plantuml.jar" setting (path to plantuml.jar).'));
+      throw new Error('Local PlantUML rendering needs the "drawGraph.plantuml.jar" setting (path to plantuml.jar).');
+    }
+    if (page > 0) {
+      const out = (await runOneShotLocal(source, options, 'svg', page)).toString('utf8');
+      if (out.includes('<svg')) {
+        return extractSvg(out);
+      }
+      throw new Error('PlantUML produced no SVG for the requested page.');
     }
     if (this.worker && this.worker.key !== workerKey) {
       this.worker.dispose();
@@ -429,6 +470,79 @@ export class PlantUmlRenderer {
     }
     return this.worker.render(source);
   }
+}
+
+function runOneShotLocal(source: string, options: PlantUmlOptions, format: 'svg' | 'png', page: number): Promise<Buffer> {
+  const jar = options.jar.trim();
+  const args = ['-Djava.awt.headless=true'];
+  if (options.baseDir) {
+    args.push(`-Dplantuml.include.path=${options.baseDir}`);
+  }
+  args.push('-jar', jar, format === 'png' ? '-tpng' : '-tsvg', '-pipe', '-charset', 'UTF-8');
+  if (format === 'svg') {
+    args.push('-nometadata');
+  }
+  if (page > 0) {
+    args.push('-pipeimageindex', String(page));
+  }
+  if (options.dot.trim()) {
+    args.push('-graphvizdot', options.dot.trim());
+  }
+
+  return new Promise<Buffer>((resolve, reject) => {
+    let child: ChildProcess;
+    try {
+      child = spawn(options.java || 'java', args, { cwd: options.baseDir ?? path.dirname(jar), windowsHide: true });
+    } catch (err) {
+      reject(err as Error);
+      return;
+    }
+    const timer = setTimeout(() => {
+      killProcess(child);
+      reject(new Error(`PlantUML did not finish within ${TIMEOUT_MS / 1000}s`));
+    }, TIMEOUT_MS);
+
+    const stdout: Buffer[] = [];
+    const stderr: Buffer[] = [];
+    let totalBytes = 0;
+    child.stdout?.on('data', (d: Buffer) => {
+      totalBytes += d.length;
+      if (totalBytes <= MAX_OUTPUT_BYTES) {
+        stdout.push(d);
+      } else {
+        killProcess(child);
+      }
+    });
+    child.stderr?.on('data', (d: Buffer) => {
+      if (stderr.length < 64) {
+        stderr.push(d);
+      }
+    });
+    child.on('error', (err: NodeJS.ErrnoException) => {
+      clearTimeout(timer);
+      if (err.code === 'ENOENT') {
+        reject(new Error(`Java executable "${options.java}" not found. Install Java or set "drawGraph.plantuml.java".`));
+      } else {
+        reject(err);
+      }
+    });
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      if (totalBytes > MAX_OUTPUT_BYTES) {
+        reject(new Error('PlantUML output exceeded the 32 MB safety limit.'));
+        return;
+      }
+      const out = Buffer.concat(stdout);
+      if (out.length > 0 && (format === 'png' || out.toString('utf8').includes('<svg'))) {
+        resolve(out);
+      } else {
+        const err = Buffer.concat(stderr).toString('utf8').trim();
+        reject(new Error(err || `PlantUML exited with code ${code}`));
+      }
+    });
+    child.stdin?.on('error', () => undefined);
+    child.stdin?.end(source.trim() + '\n', 'utf8');
+  });
 }
 
 function normalizeServerBase(raw: string): string {
@@ -482,4 +596,39 @@ export function extractSvg(text: string): string {
     }
   }
   return text.slice(start);
+}
+
+/**
+ * Inspects a rendered PlantUML SVG for a PlantUML syntax-error report, returning the
+ * 1-based line number within the block and a readable diagnostic message when found.
+ */
+export function extractPlantUmlError(svg: string): { line: number; message: string } | undefined {
+  if (!/Syntax Error/i.test(svg)) {
+    return undefined;
+  }
+  const texts: string[] = [];
+  const textRe = /<text\b[^>]*>([\s\S]*?)<\/text>/gi;
+  let m: RegExpExecArray | null;
+  while ((m = textRe.exec(svg)) !== null) {
+    const plain = m[1]
+      .replace(/<[^>]+>/g, '')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&quot;/g, '"')
+      .replace(/&apos;/g, "'")
+      .replace(/&amp;/g, '&')
+      .trim();
+    if (plain) {
+      texts.push(plain);
+    }
+  }
+  const joined = texts.join('\n');
+  if (!/Syntax Error/i.test(joined)) {
+    return undefined;
+  }
+  const lineMatch = /\(line\s+(\d+)\)/i.exec(joined);
+  const line = lineMatch ? Math.max(1, parseInt(lineMatch[1], 10)) : 1;
+  const syntaxIdx = texts.findIndex((t) => /Syntax Error/i.test(t));
+  const summary = syntaxIdx >= 0 ? texts.slice(syntaxIdx, syntaxIdx + 2).join(' — ') : 'PlantUML syntax error';
+  return { line, message: summary };
 }

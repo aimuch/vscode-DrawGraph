@@ -1,3 +1,4 @@
+import * as path from 'node:path';
 import { randomBytes } from 'node:crypto';
 import * as vscode from 'vscode';
 
@@ -45,4 +46,19 @@ export async function saveBytes(defaultUri: vscode.Uri, data: Uint8Array, filter
   if (choice === open) {
     await vscode.commands.executeCommand('vscode.open', target);
   }
+}
+
+/** Resolves the target URI for `drawGraph.exportOnSave` alongside or in `exportOnSaveOutDir`. */
+export function resolveAutoExportUri(sourceUri: vscode.Uri, ext: '.svg' | '.png'): vscode.Uri {
+  const outDir = config().get<string>('exportOnSaveOutDir', '').trim();
+  const replaced = withExtension(sourceUri, ext);
+  if (!outDir) {
+    return replaced;
+  }
+  const baseName = path.posix.basename(replaced.path);
+  if (path.isAbsolute(outDir)) {
+    return vscode.Uri.file(path.join(outDir, baseName));
+  }
+  const dirUri = vscode.Uri.joinPath(sourceUri, '..');
+  return vscode.Uri.joinPath(dirUri, outDir, baseName);
 }
