@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Extension logo (`icon.png`) and colorful top-right toolbar quick-menu icon (`DrawGraph: Diagram Menu`, `drawGraph.toolbar.showQuickMenu`), plus direct top-right toolbar icons for diagram export, PNG copy, and Mermaid-to-Draw.io conversion.
 - Edit `*.drawio.svg` and `*.drawio.png` files directly in the draw.io editor: edits rewrite valid SVG/PNG images with the diagram embedded inside.
 - Markdown support for PlantUML: syntax highlighting and built-in Markdown preview rendering for ```` ```plantuml ```` / ```` ```puml ```` blocks (`drawGraph.markdown.plantuml`).
 - Copy diagrams as PNG images directly to the clipboard from both the Mermaid/PlantUML preview toolbar and the draw.io editor (`DrawGraph: Copy Draw.io Diagram as PNG` / `SVG`), with configurable scale (`drawGraph.preview.pngScale`) and transparent background (`drawGraph.preview.pngTransparent`).

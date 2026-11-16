@@ -5,7 +5,7 @@ import { isSvgDiagramPath } from './drawio/drawioSvg';
 import { convertMermaidToDrawioXml } from './drawio/mermaidToDrawio';
 import { registerLanguageFeatures } from './language/diagramFeatures';
 import { disposeMarkdownPlantUml, mermaidMarkdownPlugin } from './markdown/markdownIt';
-import { PreviewManager } from './preview/previewManager';
+import { diagramKind, PreviewManager } from './preview/previewManager';
 import type { TransitionRecord } from './stateMachine';
 import { DIAGRAM_TEMPLATES, DRAWIO_TEMPLATE, MERMAID_TEMPLATE, PLANTUML_TEMPLATE } from './templates';
 import { withExtension } from './util';
@@ -41,6 +41,21 @@ async function createAndOpenDrawio(target: vscode.Uri): Promise<void> {
   await vscode.workspace.fs.writeFile(target, bytes);
   const viewType = png ? DrawioEditorProvider.pngViewType : DrawioEditorProvider.viewType;
   await vscode.commands.executeCommand('vscode.openWith', target, viewType);
+}
+
+function activeTabContext(): { uri?: vscode.Uri; viewType?: string } {
+  const tab = vscode.window.tabGroups.activeTabGroup?.activeTab;
+  const input = tab?.input;
+  if (input instanceof vscode.TabInputText) {
+    return { uri: input.uri };
+  }
+  if (input instanceof vscode.TabInputCustom) {
+    return { uri: input.uri, viewType: input.viewType };
+  }
+  if (vscode.window.activeTextEditor) {
+    return { uri: vscode.window.activeTextEditor.document.uri };
+  }
+  return {};
 }
 
 export function activate(context: vscode.ExtensionContext) {
@@ -160,6 +175,128 @@ export function activate(context: vscode.ExtensionContext) {
     }
     const viewType = png ? DrawioEditorProvider.pngViewType : DrawioEditorProvider.viewType;
     await vscode.commands.executeCommand('vscode.openWith', normalized, viewType);
+  });
+
+  interface QuickActionItem extends vscode.QuickPickItem {
+    id?: string;
+    run?: () => Thenable<unknown> | Promise<unknown> | void;
+  }
+
+  register('drawGraph.quickMenu', async (uriArg?: unknown, directActionId?: unknown) => {
+    const tabCtx = activeTabContext();
+    const targetUri = asUri(uriArg) ?? tabCtx.uri;
+    const isDrawioTab =
+      tabCtx.viewType === DrawioEditorProvider.viewType || tabCtx.viewType === DrawioEditorProvider.pngViewType;
+
+    const contextual: QuickActionItem[] = [];
+    if (isDrawioTab) {
+      contextual.push(
+        {
+          id: 'exportSvg',
+          label: `$(export) ${vscode.l10n.t('Export as SVG')}`,
+          run: () => drawio.exportActive('xmlsvg'),
+        },
+        {
+          id: 'exportPng',
+          label: `$(file-media) ${vscode.l10n.t('Export as PNG')}`,
+          run: () => drawio.exportActive('xmlpng'),
+        },
+        {
+          id: 'copyPng',
+          label: `$(clippy) ${vscode.l10n.t('Copy PNG')}`,
+          run: () => drawio.copyActive('png'),
+        },
+        {
+          id: 'copySvg',
+          label: `$(copy) ${vscode.l10n.t('Copy SVG')}`,
+          run: () => drawio.copyActive('svg'),
+        },
+      );
+      if (tabCtx.viewType === DrawioEditorProvider.viewType && targetUri) {
+        contextual.push({
+          id: 'openAsText',
+          label: `$(code) ${vscode.l10n.t('Open as Text')}`,
+          run: () => vscode.commands.executeCommand('vscode.openWith', targetUri, 'default'),
+        });
+      }
+    } else if (targetUri) {
+      const openDoc = vscode.workspace.textDocuments.find((d) => d.uri.toString() === targetUri.toString());
+      const kind = openDoc ? diagramKind(openDoc) : undefined;
+      if (kind === 'mermaid' || kind === 'plantuml') {
+        contextual.push({
+          id: 'previewSide',
+          label: `$(open-preview) ${vscode.l10n.t('Open Diagram Preview to the Side')}`,
+          run: () => previews.open(targetUri, true),
+        });
+        if (kind === 'mermaid') {
+          contextual.push({
+            id: 'mermaidToDrawio',
+            label: `$(type-hierarchy) ${vscode.l10n.t('Open in Draw.io')}`,
+            run: () => vscode.commands.executeCommand('drawGraph.mermaid.openInDrawio', targetUri),
+          });
+        }
+      } else if (openDoc?.languageId === 'markdown') {
+        contextual.push({
+          id: 'markdownPreview',
+          label: `$(open-preview) ${vscode.l10n.t('Open Markdown Preview to the Side')}`,
+          run: () => vscode.commands.executeCommand('markdown.showPreviewToSide', targetUri),
+        });
+      } else if (/\.(?:drawio|dio|svg|png|xml)$/i.test(targetUri.path)) {
+        const viewType = isPngDiagramPath(targetUri.path)
+          ? DrawioEditorProvider.pngViewType
+          : DrawioEditorProvider.viewType;
+        contextual.push({
+          id: 'openInDrawio',
+          label: `$(edit) ${vscode.l10n.t('Open Current File in Draw.io Editor')}`,
+          description: vscode.workspace.asRelativePath(targetUri),
+          run: () => vscode.commands.executeCommand('vscode.openWith', targetUri, viewType),
+        });
+      }
+    }
+
+    const creation: QuickActionItem[] = [
+      {
+        id: 'newDrawio',
+        label: `$(edit) ${vscode.l10n.t('New Draw.io Diagram')}`,
+        detail: '.drawio / .drawio.svg / .drawio.png',
+        run: () => vscode.commands.executeCommand('drawGraph.drawio.new'),
+      },
+      {
+        id: 'newMermaid',
+        label: `$(git-merge) ${vscode.l10n.t('New Mermaid Diagram')}`,
+        detail: vscode.l10n.t('Live text-to-diagram preview'),
+        run: () => newTextDiagram('mermaid', MERMAID_TEMPLATE),
+      },
+      {
+        id: 'newPlantuml',
+        label: `$(type-hierarchy-sub) ${vscode.l10n.t('New PlantUML Diagram')}`,
+        detail: vscode.l10n.t('UML sequence, class, component, mindmap…'),
+        run: () => newTextDiagram('plantuml', PLANTUML_TEMPLATE),
+      },
+      {
+        id: 'newFromTemplate',
+        label: `$(symbol-misc) ${vscode.l10n.t('New Diagram from Template…')}`,
+        detail: vscode.l10n.t('Choose from 13 built-in diagram templates'),
+        run: () => vscode.commands.executeCommand('drawGraph.diagram.newFromTemplate'),
+      },
+    ];
+
+    const items: QuickActionItem[] =
+      contextual.length > 0
+        ? [...contextual, { label: '', kind: vscode.QuickPickItemKind.Separator }, ...creation]
+        : creation;
+
+    if (typeof directActionId === 'string') {
+      const match = items.find((i) => i.id === directActionId);
+      await match?.run?.();
+      return;
+    }
+
+    const picked = await vscode.window.showQuickPick(items, {
+      title: 'DrawGraph',
+      placeHolder: vscode.l10n.t('Create, preview, or convert diagrams'),
+    });
+    await picked?.run?.();
   });
 
   // Returned API is picked up by the built-in Markdown preview ("markdown.markdownItPlugins").

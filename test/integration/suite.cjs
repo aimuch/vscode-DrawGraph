@@ -45,7 +45,7 @@ test('activates and registers languages', async () => {
   const puml = await vscode.workspace.openTextDocument(file('sequence.puml'));
   assert.equal(puml.languageId, 'plantuml');
   const commands = await vscode.commands.getCommands(true);
-  for (const id of ['drawGraph.preview.open', 'drawGraph.preview.openToSide', 'drawGraph.drawio.new', 'drawGraph.drawio.exportSvg']) {
+  for (const id of ['drawGraph.quickMenu', 'drawGraph.preview.open', 'drawGraph.preview.openToSide', 'drawGraph.drawio.new', 'drawGraph.drawio.exportSvg']) {
     assert.ok(commands.includes(id), `command ${id}`);
   }
 });

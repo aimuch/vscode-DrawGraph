@@ -4,6 +4,7 @@
   "description": "%description%",
   "version": "0.1.0",
   "publisher": "drawgraph",
+  "icon": "media/icons/icon.png",
   "license": "UNLICENSED",
   "repository": {
     "type": "git",
@@ -53,7 +54,8 @@
     "onLanguage:mermaid",
     "onLanguage:plantuml",
     "onLanguage:markdown",
-    "onWebviewPanel:drawGraph.preview"
+    "onWebviewPanel:drawGraph.preview",
+    "onCommand:drawGraph.quickMenu"
   ],
   "contributes": {
     "languages": [
@@ -160,6 +162,12 @@
     ],
     "commands": [
       {
+        "command": "drawGraph.quickMenu",
+        "title": "%command.quickMenu%",
+        "category": "DrawGraph",
+        "icon": "./media/icons/drawgraph.svg"
+      },
+      {
         "command": "drawGraph.preview.open",
         "title": "%command.preview.open%",
         "category": "DrawGraph",
@@ -205,76 +213,87 @@
       {
         "command": "drawGraph.diagram.newFromTemplate",
         "title": "%command.diagram.newFromTemplate%",
-        "category": "DrawGraph"
+        "category": "DrawGraph",
+        "icon": "$(symbol-misc)"
       },
       {
         "command": "drawGraph.mermaid.openInDrawio",
         "title": "%command.mermaid.openInDrawio%",
-        "category": "DrawGraph"
+        "category": "DrawGraph",
+        "icon": "$(type-hierarchy)"
       },
       {
         "command": "drawGraph.drawio.exportSvg",
         "title": "%command.drawio.exportSvg%",
-        "category": "DrawGraph"
+        "category": "DrawGraph",
+        "icon": "$(export)"
       },
       {
         "command": "drawGraph.drawio.exportPng",
         "title": "%command.drawio.exportPng%",
-        "category": "DrawGraph"
+        "category": "DrawGraph",
+        "icon": "$(file-media)"
       },
       {
         "command": "drawGraph.drawio.copySvg",
         "title": "%command.drawio.copySvg%",
-        "category": "DrawGraph"
+        "category": "DrawGraph",
+        "icon": "$(copy)"
       },
       {
         "command": "drawGraph.drawio.copyPng",
         "title": "%command.drawio.copyPng%",
-        "category": "DrawGraph"
+        "category": "DrawGraph",
+        "icon": "$(clippy)"
       },
       {
         "command": "drawGraph.drawio.openAsText",
         "title": "%command.drawio.openAsText%",
         "category": "DrawGraph",
-        "icon": "$(go-to-file)"
+        "icon": "$(code)"
       }
     ],
     "menus": {
       "editor/title": [
         {
+          "command": "drawGraph.quickMenu",
+          "when": "config.drawGraph.toolbar.showQuickMenu",
+          "group": "navigation@10"
+        },
+        {
           "command": "drawGraph.preview.openToSide",
           "when": "editorLangId == mermaid || editorLangId == plantuml",
-          "group": "navigation"
+          "group": "navigation@11"
         },
         {
           "command": "drawGraph.mermaid.openInDrawio",
           "when": "editorLangId == mermaid",
-          "group": "1_drawgraph@1"
-        },
-        {
-          "command": "drawGraph.drawio.openAsText",
-          "when": "activeCustomEditorId == drawGraph.drawio",
-          "group": "navigation"
+          "group": "navigation@12"
         },
         {
           "command": "drawGraph.drawio.exportSvg",
           "when": "activeCustomEditorId == drawGraph.drawio || activeCustomEditorId == drawGraph.drawioPng",
-          "group": "1_drawgraph@1"
+          "group": "navigation@11"
         },
         {
           "command": "drawGraph.drawio.exportPng",
           "when": "activeCustomEditorId == drawGraph.drawio || activeCustomEditorId == drawGraph.drawioPng",
-          "group": "1_drawgraph@2"
+          "group": "navigation@12"
         },
         {
           "command": "drawGraph.drawio.copyPng",
           "when": "activeCustomEditorId == drawGraph.drawio || activeCustomEditorId == drawGraph.drawioPng",
-          "group": "1_drawgraph@3"
+          "group": "navigation@13"
+        },
+        {
+          "command": "drawGraph.drawio.openAsText",
+          "when": "activeCustomEditorId == drawGraph.drawio",
+          "group": "navigation@14"
         },
         {
           "command": "drawGraph.drawio.copySvg",
           "when": "activeCustomEditorId == drawGraph.drawio || activeCustomEditorId == drawGraph.drawioPng",
-          "group": "1_drawgraph@4"
+          "group": "1_drawgraph@1"
         }
       ],
       "explorer/context": [
@@ -505,6 +524,11 @@
           "type": "boolean",
           "default": true,
           "markdownDescription": "%config.editor.codeLens%"
+        },
+        "drawGraph.toolbar.showQuickMenu": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "%config.toolbar.showQuickMenu%"
         },
         "drawGraph.exportOnSave": {
           "type": "string",

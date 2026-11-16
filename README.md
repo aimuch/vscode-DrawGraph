@@ -53,8 +53,10 @@ code --install-extension drawgraph-0.1.0.vsix
 ### Markdown 中的 Mermaid 与 PlantUML
 内置 Markdown 预览支持直接渲染 ```` ```mermaid ```` 以及 ```` ```plantuml ```` / ```` ```puml ```` 代码块，编辑器里也有对应的语法高亮与 CodeLens 入口。可分别用 `drawGraph.markdown.mermaid` 和 `drawGraph.markdown.plantuml` 开关。
 
-### 新建图表与模板
-命令面板（`Cmd/Ctrl+Shift+P`）里有以下命令：
+### 新建图表与右上角快捷菜单
+编辑器右上角标题栏默认常驻一个彩色的 **DrawGraph 图标**（可通过 `drawGraph.toolbar.showQuickMenu` 关闭），在任何页面点击都可快速新建图表、选择模板，或将当前 `.svg` / `.png` / `.xml` 文件用 Draw.io 打开；打开图表页时右上角还会直接显示专属操作图标（预览、导出 SVG/PNG、复制 PNG、转 Draw.io、以文本打开）。
+
+命令面板（`Cmd/Ctrl+Shift+P`）里也有以下命令：
 - `DrawGraph: 从模板新建图表…`（涵盖流程图、时序图、类图、状态图、ER 图、甘特图、思维导图、组件图等）
 - `DrawGraph: 新建 Draw.io 图表`
 - `DrawGraph: 新建 Mermaid 图表`
@@ -99,6 +101,7 @@ code --install-extension drawgraph-0.1.0.vsix
 | `drawGraph.preview.pngScale` | `2` | 导出或复制 PNG 时的缩放倍率（`1` / `2` / `3` / `4`） |
 | `drawGraph.preview.pngTransparent` | `false` | 导出或复制 PNG 时使用透明背景 |
 | `drawGraph.editor.codeLens` | `true` | 在图表与 Markdown 图表代码块上方显示 CodeLens 快捷入口 |
+| `drawGraph.toolbar.showQuickMenu` | `true` | 在编辑器右上角标题栏常驻显示彩色 DrawGraph 快捷菜单图标 |
 | `drawGraph.exportOnSave` | `"off"` | 保存图表时自动导出图片：`"off"` / `"svg"` / `"png"` |
 | `drawGraph.exportOnSaveOutDir` | `""` | 自动导出图片的输出目录（留空则保存在源文件同目录） |
 
