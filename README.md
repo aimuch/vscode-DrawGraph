@@ -79,7 +79,7 @@ code --install-extension drawgraph-0.1.0.vsix
 | `drawGraph.drawio.theme` | `auto` | `auto` / `light` / `dark` |
 | `drawGraph.drawio.config` | `{}` | 额外的 [draw.io 配置](https://www.drawio.com/doc/faq/configure-diagram-editor) |
 | `drawGraph.drawio.svgColorScheme` | `auto` | `.drawio.svg` 和「导出为 SVG」的配色：`auto` 自适应查看者的深浅色模式（draw.io 默认），`light` / `dark` 固定配色 |
-| `drawGraph.drawio.vscodeShortcuts` | `true` | 焦点在 draw.io 编辑器里时，把常用 VS Code 快捷键交给 VS Code 处理（修改后需重新打开图表） |
+| `drawGraph.drawio.vscodeShortcuts` | `true` | 焦点在 draw.io 编辑器里时，把常用 VS Code 快捷键交给 VS Code 处理 |
 | `drawGraph.mermaid.theme` | `auto` | `auto` / `default` / `dark` / `forest` / `neutral` / `base` |
 | `drawGraph.markdown.mermaid` | `true` | 在 Markdown 预览中渲染 Mermaid |
 | `drawGraph.plantuml.render` | `auto` | `auto` / `local` / `server` |

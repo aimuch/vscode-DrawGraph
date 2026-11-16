@@ -1,21 +1,34 @@
-import { deflateRawSync } from 'node:zlib';
+import { promisify } from 'node:util';
+import { deflateRaw, deflateRawSync } from 'node:zlib';
 
+const deflateRawAsync = promisify(deflateRaw);
 const ALPHABET = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz-_';
 
-/** Encodes PlantUML source the way the PlantUML server expects in its URLs (deflate + custom base64). */
-export function encodePlantUml(source: string): string {
-  const data = deflateRawSync(Buffer.from(source, 'utf8'), { level: 9 });
-  let out = '';
+function encodeBytes(data: Uint8Array): string {
+  const chunks: string[] = new Array(Math.ceil(data.length / 3));
+  let idx = 0;
   for (let i = 0; i < data.length; i += 3) {
     const b1 = data[i];
     const b2 = i + 1 < data.length ? data[i + 1] : 0;
     const b3 = i + 2 < data.length ? data[i + 2] : 0;
-    out += ALPHABET[b1 >> 2];
-    out += ALPHABET[((b1 & 0x3) << 4) | (b2 >> 4)];
-    out += ALPHABET[((b2 & 0xf) << 2) | (b3 >> 6)];
-    out += ALPHABET[b3 & 0x3f];
+    chunks[idx++] =
+      ALPHABET[b1 >> 2] +
+      ALPHABET[((b1 & 0x3) << 4) | (b2 >> 4)] +
+      ALPHABET[((b2 & 0xf) << 2) | (b3 >> 6)] +
+      ALPHABET[b3 & 0x3f];
   }
-  return out;
+  return chunks.join('');
+}
+
+/** Encodes PlantUML source the way the PlantUML server expects in its URLs (deflate + custom base64). */
+export function encodePlantUml(source: string): string {
+  return encodeBytes(deflateRawSync(Buffer.from(source, 'utf8'), { level: 6 }));
+}
+
+/** Asynchronous variant of `encodePlantUml` so large diagrams do not block the extension host. */
+export async function encodePlantUmlAsync(source: string): Promise<string> {
+  const compressed = await deflateRawAsync(Buffer.from(source, 'utf8'), { level: 6 });
+  return encodeBytes(compressed);
 }
 
 export interface DiagramBlock {
@@ -25,27 +38,71 @@ export interface DiagramBlock {
   endLine: number;
 }
 
+function stripBlockComments(line: string, inComment: boolean): { code: string; inComment: boolean } {
+  if (!inComment && !line.includes("/'")) {
+    return { code: line, inComment: false };
+  }
+  let code = '';
+  let pos = 0;
+  while (pos < line.length) {
+    if (inComment) {
+      const end = line.indexOf("'/", pos);
+      if (end < 0) {
+        return { code, inComment: true };
+      }
+      inComment = false;
+      pos = end + 2;
+    } else {
+      const start = line.indexOf("/'", pos);
+      if (start < 0) {
+        code += line.slice(pos);
+        break;
+      }
+      code += line.slice(pos, start);
+      inComment = true;
+      pos = start + 2;
+    }
+  }
+  return { code, inComment };
+}
+
 /**
- * Splits a file into its `@startXXX ... @endXXX` blocks. A file without any
+ * Splits a file into its `@startXXX ... @endXXX` blocks. Nested `@startsub ... @endsub`
+ * sections and markers inside `/' ... '/` block comments are ignored. A file without any
  * markers is treated as a single `@startuml` diagram.
  */
 export function splitDiagrams(text: string): DiagramBlock[] {
   const lines = text.split(/\r?\n/);
   const blocks: DiagramBlock[] = [];
   let start = -1;
+  let endTagRe: RegExp | undefined;
+  let startSuffix = 'uml';
+  let inComment = false;
+
   for (let i = 0; i < lines.length; i++) {
-    const line = lines[i].trim();
-    if (start < 0 && /^@start\w*/i.test(line)) {
-      start = i;
-    } else if (start >= 0 && /^@end\w*/i.test(line)) {
+    const stripped = stripBlockComments(lines[i], inComment);
+    inComment = stripped.inComment;
+    const line = stripped.code.trim();
+    if (!line || line.startsWith("'")) {
+      continue;
+    }
+    if (start < 0) {
+      const m = /^@start(\w*)/i.exec(line);
+      if (m && m[1].toLowerCase() !== 'sub') {
+        start = i;
+        startSuffix = m[1] || 'uml';
+        endTagRe = new RegExp(`^@end${m[1]}(?:\\b|\\s|$)`, 'i');
+      }
+    } else if (endTagRe?.test(line)) {
       blocks.push({ source: lines.slice(start, i + 1).join('\n'), startLine: start, endLine: i });
       start = -1;
+      endTagRe = undefined;
     }
   }
   if (start >= 0) {
     // Unterminated block: render it anyway so the user sees progress while typing.
     const rest = lines.slice(start);
-    const end = '@end' + (/^@start(\w*)/i.exec(rest[0].trim())?.[1] ?? 'uml');
+    const end = '@end' + startSuffix;
     blocks.push({ source: [...rest, end].join('\n'), startLine: start, endLine: lines.length - 1 });
   }
   if (blocks.length === 0 && text.trim().length > 0) {

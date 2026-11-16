@@ -33,6 +33,19 @@
   ],
   "main": "./dist/extension.js",
   "l10n": "./l10n",
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": "limited",
+      "restrictedConfigurations": [
+        "drawGraph.drawio.url",
+        "drawGraph.plantuml.render",
+        "drawGraph.plantuml.server",
+        "drawGraph.plantuml.jar",
+        "drawGraph.plantuml.java",
+        "drawGraph.plantuml.dot"
+      ]
+    }
+  },
   "activationEvents": [
     "onLanguage:mermaid",
     "onLanguage:plantuml",
@@ -319,16 +332,19 @@
         "drawGraph.plantuml.jar": {
           "type": "string",
           "default": "",
+          "scope": "machine",
           "markdownDescription": "%config.plantuml.jar%"
         },
         "drawGraph.plantuml.java": {
           "type": "string",
           "default": "java",
+          "scope": "machine",
           "markdownDescription": "%config.plantuml.java%"
         },
         "drawGraph.plantuml.dot": {
           "type": "string",
           "default": "",
+          "scope": "machine",
           "markdownDescription": "%config.plantuml.dot%"
         },
         "drawGraph.preview.debounce": {
@@ -341,7 +357,6 @@
     },
     "markdown.markdownItPlugins": true,
     "markdown.previewScripts": [
-      "./media/vendor/mermaid.min.js",
       "./media/markdown/preview.js"
     ],
     "markdown.previewStyles": [

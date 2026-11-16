@@ -26,12 +26,18 @@ export function activate(context: vscode.ExtensionContext) {
 
   register('drawGraph.drawio.new', async () => {
     const folder = vscode.workspace.workspaceFolders?.[0]?.uri;
-    const target = await vscode.window.showSaveDialog({
+    let target = await vscode.window.showSaveDialog({
       defaultUri: folder ? vscode.Uri.joinPath(folder, 'diagram.drawio') : undefined,
-      filters: { 'draw.io': ['drawio', 'dio'], [vscode.l10n.t('draw.io SVG (editable image)')]: ['svg'] },
+      filters: {
+        'draw.io': ['drawio', 'dio'],
+        [vscode.l10n.t('draw.io SVG (editable image)')]: ['drawio.svg', 'svg'],
+      },
     });
     if (!target) {
       return;
+    }
+    if (/\.svg$/i.test(target.path) && !/\.drawio\.svg$/i.test(target.path)) {
+      target = target.with({ path: target.path.replace(/\.svg$/i, '.drawio.svg') });
     }
     // An SVG diagram starts empty: the editor shows a blank page and writes the SVG on the first edit.
     const content = isSvgDiagramPath(target.path) ? '' : DRAWIO_TEMPLATE;
@@ -48,15 +54,15 @@ export function activate(context: vscode.ExtensionContext) {
   register('drawGraph.plantuml.new', () => newTextDiagram('plantuml', PLANTUML_TEMPLATE));
 
   // Returned API is picked up by the built-in Markdown preview ("markdown.markdownItPlugins").
-  return {
-    extendMarkdownIt: mermaidMarkdownPlugin,
-    /** Read-only state snapshots, used by the integration tests. */
-    diagnostics: {
+  const api: Record<string, unknown> = { extendMarkdownIt: mermaidMarkdownPlugin };
+  if (context.extensionMode !== vscode.ExtensionMode.Production) {
+    api.diagnostics = {
       previews: () => previews.snapshot(),
       drawioEditors: () => drawio.snapshot(),
       drawioAction: (uri: string, action: Record<string, unknown>) => drawio.postAction(uri, action),
-    },
-  };
+    };
+  }
+  return api;
 }
 
 export function deactivate() {}

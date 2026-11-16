@@ -85,8 +85,8 @@ class DiagramPreview {
     this.updateTimer = setTimeout(() => void this.update(), delay);
   }
 
-  async update(force = false) {
-    if (this.disposed) {
+  async update(force = false, bypassCache = false) {
+    if (this.disposed || !this.panel.visible) {
       return;
     }
     let document = this.document;
@@ -125,6 +125,7 @@ class DiagramPreview {
         java: cfg.get('plantuml.java', 'java'),
         dot: cfg.get('plantuml.dot', ''),
         baseDir: document.uri.scheme === 'file' ? path.dirname(document.uri.fsPath) : undefined,
+        noCache: bypassCache,
       });
       this.post({ type: 'svg', svg, info: blocks.length > 1 ? `${blocks.indexOf(block) + 1} / ${blocks.length}` : '' });
     } catch (err) {
@@ -156,7 +157,7 @@ class DiagramPreview {
         this.status = { state: msg.state ?? 'pending', width: msg.width, height: msg.height, error: msg.message, count: this.status.count + 1 };
         break;
       case 'ready':
-        await this.update(true);
+        await this.update(true, false);
         break;
       case 'export':
         if (!msg.data) {
@@ -194,7 +195,7 @@ class DiagramPreview {
       `font-src ${webview.cspSource} data:`,
       `script-src 'nonce-${nonce}'`,
     ].join('; ');
-    const t = (s: string) => vscode.l10n.t(s);
+    const t = (s: string) => escapeAttr(vscode.l10n.t(s));
     const mermaidScript = this.kind === 'mermaid' ? `<script nonce="${nonce}" src="${media('vendor', 'mermaid.min.js')}"></script>` : '';
     return /* html */ `<!DOCTYPE html>
 <html lang="en">
@@ -204,7 +205,13 @@ class DiagramPreview {
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <link href="${media('preview', 'main.css')}" rel="stylesheet">
 </head>
-<body data-kind="${this.kind}" data-uri="${escapeAttr(this.uri.toString())}">
+<body
+  data-kind="${this.kind}"
+  data-uri="${escapeAttr(this.uri.toString())}"
+  data-err-invalid-svg="${t('Invalid SVG received from renderer.')}"
+  data-err-mermaid-load="${t('Mermaid library failed to load.')}"
+  data-err-png-raster="${t('PNG export failed: the SVG could not be rasterized. Try exporting as SVG.')}"
+>
   <div id="toolbar">
     <button id="zoomOut" title="${t('Zoom out')}">−</button>
     <button id="zoomLabel" title="${t('Reset zoom (100%)')}">100%</button>
@@ -232,7 +239,7 @@ class DiagramPreview {
     }
     this.disposed = true;
     clearTimeout(this.updateTimer);
-    this.renderer.cancel();
+    this.renderer.dispose();
     this.disposables.forEach((d) => d.dispose());
     this.panel.dispose();
     this.onDispose();
@@ -268,11 +275,11 @@ export class PreviewManager implements vscode.WebviewPanelSerializer {
       }),
       vscode.workspace.onDidChangeConfiguration((e) => {
         if (e.affectsConfiguration('drawGraph')) {
-          this.previews.forEach((p) => void p.update(true));
+          this.previews.forEach((p) => void p.update(true, true));
         }
       }),
       vscode.window.onDidChangeActiveColorTheme(() => {
-        this.previews.forEach((p) => void p.update(true));
+        this.previews.forEach((p) => void p.update(true, false));
       }),
       { dispose: () => this.previews.forEach((p) => p.dispose()) },
     );
@@ -301,7 +308,7 @@ export class PreviewManager implements vscode.WebviewPanelSerializer {
       PreviewManager.viewType,
       path.basename(target.path),
       { viewColumn: column, preserveFocus: toSide },
-      { enableScripts: true, retainContextWhenHidden: true },
+      { enableScripts: true },
     );
     const preview = this.create(panel, target, kind);
     if (editor && editor.document.uri.toString() === target.toString()) {

@@ -23,5 +23,8 @@
   "This file is not a Mermaid or PlantUML diagram.": "该文件不是 Mermaid 或 PlantUML 图表。",
   "{0} has no embedded draw.io diagram. Editing it will replace the image with a new diagram.": "{0} 中没有内嵌的 draw.io 图表。编辑后会用新图表替换原图片。",
   "Could not update {0}: {1}": "无法更新 {0}：{1}",
-  "draw.io SVG (editable image)": "draw.io SVG（可编辑的图片）"
+  "draw.io SVG (editable image)": "draw.io SVG（可编辑的图片）",
+  "Invalid SVG received from renderer.": "渲染器返回了无效的 SVG。",
+  "Mermaid library failed to load.": "Mermaid 库加载失败。",
+  "PNG export failed: the SVG could not be rasterized. Try exporting as SVG.": "PNG 导出失败：无法光栅化该 SVG，请尝试导出为 SVG。"
 }

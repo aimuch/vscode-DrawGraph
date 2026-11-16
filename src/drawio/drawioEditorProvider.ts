@@ -22,6 +22,8 @@ interface EditorSession {
   status: { initialized: boolean; loads: number; changes: number };
 }
 
+const SVG_SYNC_DEBOUNCE_MS = 200;
+
 /**
  * Custom text editor that embeds the draw.io web app (embed mode, JSON protocol)
  * and keeps it in sync with the underlying TextDocument, so dirty state, undo
@@ -41,11 +43,27 @@ export class DrawioEditorProvider implements vscode.CustomTextEditorProvider {
         webviewOptions: { retainContextWhenHidden: true },
         supportsMultipleEditorsPerDocument: false,
       }),
+      vscode.workspace.onDidChangeConfiguration((e) => {
+        if (e.affectsConfiguration('drawGraph.drawio.config') || e.affectsConfiguration('drawGraph.drawio.vscodeShortcuts')) {
+          provider.broadcastSetup();
+        }
+      }),
     );
     return provider;
   }
 
   private constructor(private readonly context: vscode.ExtensionContext) {}
+
+  private broadcastSetup(): void {
+    const payload = {
+      type: 'setup',
+      drawioConfig: config().get<object>('drawio.config') ?? {},
+      forwardShortcuts: config().get<boolean>('drawio.vscodeShortcuts', true),
+    };
+    for (const s of this.sessions) {
+      void s.panel.webview.postMessage(payload);
+    }
+  }
 
   async resolveCustomTextEditor(document: vscode.TextDocument, panel: vscode.WebviewPanel): Promise<void> {
     const session: EditorSession = { panel, document, pendingExports: new Map(), status: { initialized: false, loads: 0, changes: 0 } };
@@ -58,17 +76,24 @@ export class DrawioEditorProvider implements vscode.CustomTextEditorProvider {
     panel.webview.options = { enableScripts: true, localResourceRoots: [mediaRoot] };
     panel.webview.html = this.getHtml(panel.webview);
 
-    // The XML the draw.io frame currently shows, used to avoid echoing our own edits back.
+    // The XML/SVG the draw.io frame currently corresponds to, used to avoid echoing our own edits back.
     let webviewXml: string | undefined;
+    let lastAppliedVersion = -1;
     let applyingEdit = false;
-    let editQueue: Promise<unknown> = Promise.resolve();
+    let disposed = false;
+    let editQueue: Promise<boolean> = Promise.resolve(true);
 
-    const post = (message: unknown) => panel.webview.postMessage(message);
+    const post = (message: unknown) => {
+      if (!disposed) {
+        void panel.webview.postMessage(message);
+      }
+    };
     // `*.drawio.svg`: the file is an SVG image with the diagram embedded in it.
     const svgFile = isSvgDiagramPath(document.uri.path);
 
     const sendLoad = () => {
       webviewXml = document.getText();
+      lastAppliedVersion = document.version;
       let xml = webviewXml;
       if (svgFile && xml.trim() !== '') {
         const embedded = extractDiagramFromSvg(xml);
@@ -84,101 +109,196 @@ export class DrawioEditorProvider implements vscode.CustomTextEditorProvider {
       if (xml.trim() === '') {
         xml = EMPTY_DIAGRAM;
       }
-      void post({ type: 'load', xml, title: displayName(document.uri) });
+      post({ type: 'load', xml, title: displayName(document.uri) });
     };
 
-    const applyXml = (xml: string) => {
+    const applyXml = (xml: string): Promise<boolean> => {
       webviewXml = xml;
-      editQueue = editQueue.then(async () => {
+      const next = editQueue.then(async () => {
+        if (disposed) {
+          return false;
+        }
         if (document.getText() === xml) {
-          return;
+          lastAppliedVersion = document.version;
+          return true;
         }
         const edit = new vscode.WorkspaceEdit();
         const fullRange = new vscode.Range(0, 0, document.lineCount, 0);
         edit.replace(document.uri, fullRange, xml);
         applyingEdit = true;
         try {
-          await vscode.workspace.applyEdit(edit);
+          const ok = await vscode.workspace.applyEdit(edit);
+          if (ok) {
+            lastAppliedVersion = document.version;
+          }
+          return ok;
         } finally {
           applyingEdit = false;
         }
       });
-      return editQueue;
+      editQueue = next.catch(() => false);
+      return next;
     };
 
-    // For SVG files every change is exported from draw.io as an editable SVG. Exports are
-    // serialized; changes arriving meanwhile trigger one more export of the latest state.
-    let svgSync: Promise<void> | undefined;
+    // For SVG files changes are coalesced and exported from draw.io as an editable SVG.
+    // Exports are serialized; changes arriving meanwhile discard the stale export and run one final export.
+    let svgSync: Promise<boolean> | undefined;
     let svgSyncAgain = false;
+    let svgDebounceTimer: NodeJS.Timeout | undefined;
+    let pendingDebouncedSync: { promise: Promise<boolean>; resolve: (ok: boolean) => void } | undefined;
     // Latest (uncompressed) diagram XML reported by draw.io's autosave/save events.
     let latestXml: string | undefined;
-    const syncSvg = (): Promise<void> => {
+
+    const cancelPendingSvgDebounce = () => {
+      if (svgDebounceTimer !== undefined) {
+        clearTimeout(svgDebounceTimer);
+        svgDebounceTimer = undefined;
+      }
+      if (pendingDebouncedSync) {
+        pendingDebouncedSync.resolve(false);
+        pendingDebouncedSync = undefined;
+      }
+    };
+
+    const syncSvgNow = (): Promise<boolean> => {
+      if (svgDebounceTimer !== undefined) {
+        clearTimeout(svgDebounceTimer);
+        svgDebounceTimer = undefined;
+      }
+      const waiter = pendingDebouncedSync;
+      pendingDebouncedSync = undefined;
+
+      if (svgSync) {
+        svgSyncAgain = true;
+        if (waiter) {
+          void svgSync.then(waiter.resolve);
+        }
+        return svgSync;
+      }
+      svgSync = (async () => {
+        let finalSvg: string | undefined;
+        do {
+          svgSyncAgain = false;
+          const xmlSnapshot = latestXml;
+          const result = await this.requestExport(session, 'xmlsvg', svgColorOptions());
+          if (disposed) {
+            return false;
+          }
+          if (!result.data) {
+            void vscode.window.showErrorMessage(vscode.l10n.t('Could not update {0}: {1}', displayName(document.uri), result.error ?? 'no data'));
+            return false;
+          }
+          if (svgSyncAgain) {
+            // A newer edit arrived while draw.io was exporting; skip writing stale data and export again.
+            continue;
+          }
+          const svg = Buffer.from(decodeDataUri(result.data)).toString('utf8');
+          const xmlToEmbed = latestXml ?? xmlSnapshot;
+          finalSvg = xmlToEmbed ? replaceEmbeddedDiagram(svg, xmlToEmbed) : svg;
+        } while (svgSyncAgain && !disposed);
+        return finalSvg !== undefined ? applyXml(finalSvg) : false;
+      })().finally(() => {
+        svgSync = undefined;
+      });
+      if (waiter) {
+        void svgSync.then(waiter.resolve);
+      }
+      return svgSync;
+    };
+
+    const scheduleSvgSync = (): Promise<boolean> => {
       if (svgSync) {
         svgSyncAgain = true;
         return svgSync;
       }
-      svgSync = (async () => {
-        do {
-          svgSyncAgain = false;
-          const result = await this.requestExport(session, 'xmlsvg', svgColorOptions());
-          if (!result.data) {
-            void vscode.window.showErrorMessage(vscode.l10n.t('Could not update {0}: {1}', displayName(document.uri), result.error ?? 'no data'));
-            return;
-          }
-          const svg = Buffer.from(decodeDataUri(result.data)).toString('utf8');
-          await applyXml(latestXml && !svgSyncAgain ? replaceEmbeddedDiagram(svg, latestXml) : svg);
-        } while (svgSyncAgain);
-      })().finally(() => {
-        svgSync = undefined;
-      });
-      return svgSync;
+      if (!pendingDebouncedSync) {
+        let resolveFn!: (ok: boolean) => void;
+        const promise = new Promise<boolean>((r) => {
+          resolveFn = r;
+        });
+        pendingDebouncedSync = { promise, resolve: resolveFn };
+      }
+      if (svgDebounceTimer !== undefined) {
+        clearTimeout(svgDebounceTimer);
+      }
+      svgDebounceTimer = setTimeout(() => {
+        svgDebounceTimer = undefined;
+        void syncSvgNow();
+      }, SVG_SYNC_DEBOUNCE_MS);
+      return pendingDebouncedSync.promise;
     };
 
+    let messageChain: Promise<void> = Promise.resolve();
     const disposables: vscode.Disposable[] = [];
     disposables.push(
-      panel.webview.onDidReceiveMessage(async (message: WebviewMessage) => {
-        switch (message.type) {
-          case 'ready':
-            void post({
-              type: 'setup',
-              drawioConfig: config().get<object>('drawio.config') ?? {},
-              forwardShortcuts: config().get<boolean>('drawio.vscodeShortcuts', true),
-            });
-            break;
-          case 'init':
-            session.status.initialized = true;
-            sendLoad();
-            break;
-          case 'loaded':
-            session.status.loads++;
-            break;
-          case 'change':
-            session.status.changes++;
-            latestXml = message.xml;
-            await (svgFile ? syncSvg() : applyXml(message.xml));
-            break;
-          case 'save':
-            latestXml = message.xml;
-            await (svgFile ? syncSvg() : applyXml(message.xml));
-            await document.save();
-            break;
-          case 'export': {
-            const resolve = session.pendingExports.get(message.requestId);
-            session.pendingExports.delete(message.requestId);
-            resolve?.(message);
-            break;
-          }
-          case 'error':
-            void vscode.window.showErrorMessage(message.message);
-            break;
+      panel.webview.onDidReceiveMessage((message: WebviewMessage) => {
+        // Export replies resolve in-flight promises awaited inside messageChain, so handle them immediately.
+        if (message.type === 'export') {
+          const resolve = session.pendingExports.get(message.requestId);
+          session.pendingExports.delete(message.requestId);
+          resolve?.(message);
+          return;
+        }
+        messageChain = messageChain
+          .then(async () => {
+            if (disposed) {
+              return;
+            }
+            switch (message.type) {
+              case 'ready':
+                post({
+                  type: 'setup',
+                  drawioConfig: config().get<object>('drawio.config') ?? {},
+                  forwardShortcuts: config().get<boolean>('drawio.vscodeShortcuts', true),
+                });
+                break;
+              case 'init':
+                session.status.initialized = true;
+                sendLoad();
+                break;
+              case 'loaded':
+                session.status.loads++;
+                break;
+              case 'change': {
+                latestXml = message.xml;
+                const applied = await (svgFile ? scheduleSvgSync() : applyXml(message.xml));
+                if (applied) {
+                  session.status.changes++;
+                }
+                break;
+              }
+              case 'save': {
+                latestXml = message.xml;
+                const ok = await (svgFile ? syncSvgNow() : applyXml(message.xml));
+                if (ok && !disposed) {
+                  await document.save();
+                }
+                break;
+              }
+              case 'error':
+                void vscode.window.showErrorMessage(message.message);
+                break;
+            }
+          })
+          .catch(() => undefined);
+      }),
+      vscode.workspace.onWillSaveTextDocument((e) => {
+        if (e.document.uri.toString() === document.uri.toString() && svgFile && svgDebounceTimer !== undefined) {
+          e.waitUntil(syncSvgNow().then(() => []));
         }
       }),
       vscode.workspace.onDidChangeTextDocument((e) => {
-        if (e.document.uri.toString() !== document.uri.toString() || e.contentChanges.length === 0 || applyingEdit) {
+        if (
+          e.document.uri.toString() !== document.uri.toString() ||
+          e.contentChanges.length === 0 ||
+          applyingEdit ||
+          e.document.version === lastAppliedVersion
+        ) {
           return;
         }
         // External change (text editor, git, revert...): reload the diagram.
         if (document.getText() !== webviewXml) {
+          cancelPendingSvgDebounce();
           sendLoad();
         }
       }),
@@ -192,6 +312,8 @@ export class DrawioEditorProvider implements vscode.CustomTextEditorProvider {
     );
 
     panel.onDidDispose(() => {
+      disposed = true;
+      cancelPendingSvgDebounce();
       this.sessions.delete(session);
       if (this.activeSession === session) {
         this.activeSession = undefined;
@@ -199,8 +321,13 @@ export class DrawioEditorProvider implements vscode.CustomTextEditorProvider {
       for (const resolve of session.pendingExports.values()) {
         resolve({ error: 'Editor closed' });
       }
+      session.pendingExports.clear();
       disposables.forEach((d) => d.dispose());
     });
+  }
+
+  private get currentSession(): EditorSession | undefined {
+    return this.activeSession ?? [...this.sessions].find((s) => s.panel.visible);
   }
 
   /**
@@ -208,7 +335,7 @@ export class DrawioEditorProvider implements vscode.CustomTextEditorProvider {
    * with `target` (e.g. from a script or `executeCommand`) it is written directly.
    */
   async exportActive(format: ExportFormat, target?: vscode.Uri): Promise<void> {
-    const session = this.activeSession ?? [...this.sessions].find((s) => s.panel.visible);
+    const session = this.currentSession;
     if (!session) {
       void vscode.window.showWarningMessage(vscode.l10n.t('No active draw.io editor.'));
       return;
@@ -238,13 +365,16 @@ export class DrawioEditorProvider implements vscode.CustomTextEditorProvider {
   private requestExport(session: EditorSession, format: ExportFormat, options: Record<string, unknown>): Promise<ExportResult> {
     const requestId = ++this.exportCounter;
     return new Promise<ExportResult>((resolve) => {
-      session.pendingExports.set(requestId, resolve);
-      void session.panel.webview.postMessage({ type: 'export', format, requestId, options });
-      setTimeout(() => {
+      const timer = setTimeout(() => {
         if (session.pendingExports.delete(requestId)) {
           resolve({ error: vscode.l10n.t('Timed out waiting for draw.io to export.') });
         }
       }, 30000);
+      session.pendingExports.set(requestId, (result) => {
+        clearTimeout(timer);
+        resolve(result);
+      });
+      void session.panel.webview.postMessage({ type: 'export', format, requestId, options });
     });
   }
 
@@ -261,7 +391,7 @@ export class DrawioEditorProvider implements vscode.CustomTextEditorProvider {
   }
 
   get activeDocumentUri(): vscode.Uri | undefined {
-    return this.activeSession?.document.uri;
+    return this.currentSession?.document.uri;
   }
 
   private getHtml(webview: vscode.Webview): string {
@@ -319,6 +449,9 @@ function buildDrawioUrl(): URL {
   let url: URL;
   try {
     url = new URL(cfg.get<string>('drawio.url') || 'https://embed.diagrams.net/');
+    if (url.protocol !== 'https:' && url.protocol !== 'http:') {
+      url = new URL('https://embed.diagrams.net/');
+    }
   } catch {
     url = new URL('https://embed.diagrams.net/');
   }

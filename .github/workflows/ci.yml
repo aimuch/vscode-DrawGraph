@@ -74,7 +74,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .vscode-test
-          key: vscode-test-${{ runner.os }}-${{ github.run_id }}
+          key: vscode-test-${{ runner.os }}-${{ hashFiles('package-lock.json', 'test/integration/runTest.mjs') }}
           restore-keys: vscode-test-${{ runner.os }}-
 
       # Downloads the latest stable VS Code and drives it under a virtual display.

@@ -16,6 +16,11 @@
   const info = $('info');
   const zoomLabel = $('zoomLabel');
 
+  const ds = document.body.dataset;
+  const MSG_INVALID_SVG = ds.errInvalidSvg || 'Invalid SVG received from renderer.';
+  const MSG_MERMAID_LOAD = ds.errMermaidLoad || 'Mermaid library failed to load.';
+  const MSG_PNG_RASTER = ds.errPngRaster || 'PNG export failed: the SVG could not be rasterized. Try exporting as SVG.';
+
   const MIN_ZOOM = 0.05;
   const MAX_ZOOM = 20;
   const saved = vscode.getState() || {};
@@ -29,15 +34,45 @@
   let natural = { width: 0, height: 0 };
   /** @type {SVGSVGElement | null} */
   let currentSvg = null;
+  let rafId = 0;
+  /** @type {ReturnType<typeof setTimeout> | undefined} */
+  let persistTimer;
 
-  function persist() {
-    vscode.setState({ uri: document.body.dataset.uri, zoom: view.zoom, x: view.x, y: view.y, autoFit: view.autoFit });
+  function persistNow() {
+    if (persistTimer !== undefined) {
+      clearTimeout(persistTimer);
+      persistTimer = undefined;
+    }
+    vscode.setState({ uri: ds.uri, zoom: view.zoom, x: view.x, y: view.y, autoFit: view.autoFit });
   }
 
-  function applyView() {
+  function schedulePersist() {
+    if (persistTimer !== undefined) {
+      clearTimeout(persistTimer);
+    }
+    persistTimer = setTimeout(persistNow, 200);
+  }
+
+  function renderTransform() {
+    if (rafId) {
+      cancelAnimationFrame(rafId);
+      rafId = 0;
+    }
     canvas.style.transform = `translate(${view.x}px, ${view.y}px) scale(${view.zoom})`;
     zoomLabel.textContent = `${Math.round(view.zoom * 100)}%`;
-    persist();
+  }
+
+  function applyView(immediate = true) {
+    if (immediate) {
+      renderTransform();
+    } else if (!rafId) {
+      rafId = requestAnimationFrame(() => {
+        rafId = 0;
+        canvas.style.transform = `translate(${view.x}px, ${view.y}px) scale(${view.zoom})`;
+        zoomLabel.textContent = `${Math.round(view.zoom * 100)}%`;
+      });
+    }
+    schedulePersist();
   }
 
   /** @param {boolean} allowUpscale */
@@ -55,21 +90,22 @@
     view.zoom = clamp(zoom, MIN_ZOOM, MAX_ZOOM);
     view.x = (stage.clientWidth - natural.width * view.zoom) / 2;
     view.y = Math.max(pad, (stage.clientHeight - natural.height * view.zoom) / 2);
-    applyView();
+    applyView(true);
   }
 
   /**
    * @param {number} zoom
    * @param {number} [cx] zoom anchor, relative to the stage
    * @param {number} [cy]
+   * @param {boolean} [immediate]
    */
-  function zoomTo(zoom, cx = stage.clientWidth / 2, cy = stage.clientHeight / 2) {
+  function zoomTo(zoom, cx = stage.clientWidth / 2, cy = stage.clientHeight / 2, immediate = true) {
     zoom = clamp(zoom, MIN_ZOOM, MAX_ZOOM);
     view.x = cx - ((cx - view.x) * zoom) / view.zoom;
     view.y = cy - ((cy - view.y) * zoom) / view.zoom;
     view.zoom = zoom;
     view.autoFit = false;
-    applyView();
+    applyView(immediate);
   }
 
   function clamp(/** @type {number} */ v, /** @type {number} */ lo, /** @type {number} */ hi) {
@@ -83,13 +119,31 @@
     const doc = new DOMParser().parseFromString(markup, 'image/svg+xml');
     const svg = doc.documentElement;
     if (!svg || svg.nodeName.toLowerCase() !== 'svg' || doc.querySelector('parsererror')) {
-      showError('Invalid SVG received from renderer.');
+      showError(MSG_INVALID_SVG);
       return;
     }
-    svg.querySelectorAll('script').forEach((n) => n.remove());
+    svg.querySelectorAll('script, iframe, object, embed, applet, meta, base').forEach((n) => n.remove());
+    for (const styleEl of svg.querySelectorAll('style')) {
+      const css = styleEl.textContent || '';
+      if (/@import\b|javascript:/i.test(css)) {
+        styleEl.remove();
+      }
+    }
     for (const el of [svg, ...svg.querySelectorAll('*')]) {
+      const tagName = el.nodeName.toLowerCase();
+      if ((tagName === 'animate' || tagName === 'set') && /^(?:xlink:)?href$|^on/i.test(el.getAttribute('attributeName') || '')) {
+        el.remove();
+        continue;
+      }
       for (const attr of [...el.attributes]) {
-        if (/^on/i.test(attr.name) || (/href$/i.test(attr.name) && /^\s*javascript:/i.test(attr.value))) {
+        const name = attr.name.toLowerCase();
+        const val = attr.value.replace(/[\u0000-\u0020]+/g, '');
+        if (
+          name.startsWith('on') ||
+          name === 'srcdoc' ||
+          ((name === 'href' || name === 'xlink:href' || name === 'src' || name === 'action' || name === 'formaction') &&
+            /^(?:javascript|vbscript|data:text\/html):/i.test(val))
+        ) {
           el.removeAttribute(attr.name);
         }
       }
@@ -109,7 +163,7 @@
     if (view.autoFit) {
       fit(false);
     } else {
-      applyView();
+      applyView(true);
     }
     vscode.postMessage({ type: 'status', state: 'rendered', width: natural.width, height: natural.height });
   }
@@ -125,8 +179,12 @@
     if (w > 0 && h > 0) {
       return { width: w, height: h };
     }
-    const box = svg.getBBox();
-    return { width: Math.max(box.width, 1), height: Math.max(box.height, 1) };
+    try {
+      const box = svg.getBBox();
+      return { width: Math.max(box.width, 1), height: Math.max(box.height, 1) };
+    } catch {
+      return { width: 300, height: 150 };
+    }
   }
 
   function showError(/** @type {string} */ message) {
@@ -174,7 +232,7 @@
 
   async function renderMermaidNow(/** @type {string} */ source, /** @type {string} */ theme) {
     if (!mermaid) {
-      showError('Mermaid library failed to load.');
+      showError(MSG_MERMAID_LOAD);
       return;
     }
     if (!source.trim()) {
@@ -264,7 +322,7 @@
     };
     img.onerror = () => {
       URL.revokeObjectURL(url);
-      vscode.postMessage({ type: 'error', message: 'PNG export failed: the SVG could not be rasterized. Try exporting as SVG.' });
+      vscode.postMessage({ type: 'error', message: MSG_PNG_RASTER });
     };
     img.src = url;
   }
@@ -294,12 +352,12 @@
       const rect = stage.getBoundingClientRect();
       if (e.ctrlKey || e.metaKey) {
         // Pinch-to-zoom on trackpads arrives as ctrl+wheel.
-        zoomTo(view.zoom * Math.exp(-e.deltaY * 0.01), e.clientX - rect.left, e.clientY - rect.top);
+        zoomTo(view.zoom * Math.exp(-e.deltaY * 0.01), e.clientX - rect.left, e.clientY - rect.top, false);
       } else {
         view.x -= e.deltaX;
         view.y -= e.deltaY;
         view.autoFit = false;
-        applyView();
+        applyView(false);
       }
     },
     { passive: false },
@@ -322,17 +380,20 @@
     view.x = e.clientX - drag.x;
     view.y = e.clientY - drag.y;
     view.autoFit = false;
-    applyView();
+    applyView(false);
   });
   const endDrag = () => {
-    drag = null;
-    stage.classList.remove('dragging');
+    if (drag) {
+      drag = null;
+      stage.classList.remove('dragging');
+      persistNow();
+    }
   };
   stage.addEventListener('pointerup', endDrag);
   stage.addEventListener('pointercancel', endDrag);
 
   window.addEventListener('keydown', (e) => {
-    if (e.target instanceof HTMLInputElement) {
+    if (e.ctrlKey || e.metaKey || e.altKey || e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
       return;
     }
     if (e.key === '+' || e.key === '=') {
@@ -352,6 +413,7 @@
       fit(false);
     }
   });
+  window.addEventListener('pagehide', persistNow);
 
   // ---- Host messages -------------------------------------------------------------------
 
@@ -383,6 +445,7 @@
     }
   });
 
-  applyView();
+  renderTransform();
+  persistNow();
   vscode.postMessage({ type: 'ready' });
 })();

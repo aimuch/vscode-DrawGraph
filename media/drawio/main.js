@@ -89,10 +89,10 @@
     frame.contentWindow?.postMessage(JSON.stringify(message), frameOrigin);
   }
 
-  function sendConfigure() {
-    if (configureRequested && drawioConfig) {
+  function sendConfigure(force = false) {
+    if ((configureRequested || force) && drawioConfig) {
       // The user's own drawGraph.drawio.config wins over our defaults (including passThroughKeys).
-      const defaults = { compressXml: false, passThroughKeys: forwardShortcuts ? passThroughKeys() : undefined };
+      const defaults = { compressXml: false, passThroughKeys: forwardShortcuts ? passThroughKeys() : [] };
       postToDrawio({ action: 'configure', config: Object.assign(defaults, drawioConfig) });
       configureRequested = false;
     }
@@ -129,7 +129,7 @@
       case 'setup':
         drawioConfig = msg.drawioConfig || {};
         forwardShortcuts = msg.forwardShortcuts !== false;
-        sendConfigure();
+        sendConfigure(initialized);
         break;
       case 'load':
         postToDrawio({ action: 'load', xml: msg.xml || '', autosave: 1, title: msg.title, saveAndExit: '0', noSaveBtn: '1', noExitBtn: '1' });

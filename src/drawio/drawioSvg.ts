@@ -6,16 +6,29 @@ export function isSvgDiagramPath(path: string): boolean {
   return /\.svg$/i.test(path);
 }
 
+const ROOT_SVG_TOKEN = /<!--[\s\S]*?-->|<!\[CDATA\[[\s\S]*?\]\]>|(<svg\b(?:[^>"']|"[^"]*"|'[^']*')*>)/gi;
+
+function findRootSvgTag(svg: string): { index: number; tag: string } | undefined {
+  ROOT_SVG_TOKEN.lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = ROOT_SVG_TOKEN.exec(svg)) !== null) {
+    if (match[1]) {
+      return { index: match.index, tag: match[1] };
+    }
+  }
+  return undefined;
+}
+
 /**
  * Returns the diagram XML (`<mxfile>…</mxfile>`, possibly compressed) embedded in a
  * draw.io SVG, or `undefined` when the SVG carries no diagram.
  */
 export function extractDiagramFromSvg(svg: string): string | undefined {
-  const root = /<svg\b[^>]*>/i.exec(svg);
+  const root = findRootSvgTag(svg);
   if (!root) {
     return undefined;
   }
-  const attr = /\scontent\s*=\s*("([^"]*)"|'([^']*)')/i.exec(root[0]);
+  const attr = /\scontent\s*=\s*("([^"]*)"|'([^']*)')/i.exec(root.tag);
   if (!attr) {
     return undefined;
   }
@@ -47,16 +60,16 @@ export function unescapeXml(text: string): string {
  * stores it compressed; storing the plain XML instead keeps `git diff` readable.
  */
 export function replaceEmbeddedDiagram(svg: string, xml: string): string {
-  const root = /<svg\b[^>]*>/i.exec(svg);
+  const root = findRootSvgTag(svg);
   if (!root) {
     return svg;
   }
   const value = `content="${escapeXmlAttribute(xml)}"`;
   const contentAttr = /\scontent\s*=\s*("[^"]*"|'[^']*')/i;
-  const newRoot = contentAttr.test(root[0])
-    ? root[0].replace(contentAttr, () => ` ${value}`)
-    : root[0].replace(/^<svg\b/i, () => `<svg ${value}`);
-  return svg.slice(0, root.index) + newRoot + svg.slice(root.index + root[0].length);
+  const newRoot = contentAttr.test(root.tag)
+    ? root.tag.replace(contentAttr, () => ` ${value}`)
+    : root.tag.replace(/^<svg\b/i, () => `<svg ${value}`);
+  return svg.slice(0, root.index) + newRoot + svg.slice(root.index + root.tag.length);
 }
 
 export function escapeXmlAttribute(text: string): string {

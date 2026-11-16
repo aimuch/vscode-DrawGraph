@@ -2,7 +2,7 @@
 //   npm run test:integration
 // Uses the locally installed VS Code when found (VSCODE_PATH overrides), otherwise downloads one.
 import { runTests } from '@vscode/test-electron';
-import { cpSync, existsSync, mkdtempSync } from 'node:fs';
+import { cpSync, existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
@@ -35,5 +35,7 @@ try {
   });
 } catch (err) {
   console.error('Integration tests failed:', err);
-  process.exit(1);
+  process.exitCode = 1;
+} finally {
+  rmSync(sandbox, { recursive: true, force: true });
 }

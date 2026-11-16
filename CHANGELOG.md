@@ -5,9 +5,13 @@
 - Edit `*.drawio.svg` files: they open in the draw.io editor and every edit rewrites a valid SVG with the diagram embedded uncompressed (readable `git diff`).
 - VS Code shortcuts (command palette, quick open, close editor, Ctrl+Tab, editor groups, …) now work while the draw.io editor has focus; `drawGraph.drawio.vscodeShortcuts` turns this off.
 - `drawGraph.drawio.svgColorScheme` setting: keep draw.io's adaptive SVG colors (`auto`) or pin them to `light` / `dark`.
+- Local PlantUML rendering now reuses a persistent background process and caches rendered SVGs for faster updates and instant block switching.
+- Lazy-load Mermaid in the built-in Markdown preview only when a document contains a `mermaid` block, respecting `drawGraph.mermaid.theme` and live theme changes.
+- Workspace Trust support: restrict executable paths and external rendering endpoints in untrusted workspaces.
 - Fix: empty `.drawio` files no longer hang while loading.
 - Fix: Mermaid blocks now render in the built-in Markdown preview (the script no longer runs before Mermaid has loaded).
 - Fix: draw.io could get stuck on "Loading draw.io…" when opened from the browser cache.
+- Fix: PlantUML diagrams with nested `@startsub`/`@endsub`, block-commented markers, or nested `<svg>` sprites render without truncation.
 
 ## 0.1.0
 

@@ -29,5 +29,5 @@
   "config.drawio.svgColorScheme.auto": "Adaptive (draw.io default): the image switches to dark colors when the viewer (GitHub, browser, OS) is in dark mode.",
   "config.drawio.svgColorScheme.light": "Always the light colors you see in the light editor.",
   "config.drawio.svgColorScheme.dark": "Always dark colors.",
-  "config.drawio.vscodeShortcuts": "Let common VS Code shortcuts work while the draw.io editor has focus: F1 / Cmd+Shift+P (command palette), Cmd+P (quick open), Cmd+W, Cmd+N, Cmd+O, Cmd+Shift+N/T/W/X, Cmd+\\\\, Cmd+1…9, Ctrl+Tab, Ctrl+` (Ctrl instead of Cmd on Windows/Linux). Cmd+Shift+P and Cmd+P then no longer toggle draw.io's format panel or print. Reopen the diagram after changing this setting."
+  "config.drawio.vscodeShortcuts": "Let common VS Code shortcuts work while the draw.io editor has focus: F1 / Cmd+Shift+P (command palette), Cmd+P (quick open), Cmd+W, Cmd+N, Cmd+O, Cmd+Shift+N/T/W/X, Cmd+\\\\, Cmd+1…9, Ctrl+Tab, Ctrl+` (Ctrl instead of Cmd on Windows/Linux). Cmd+Shift+P and Cmd+P then no longer toggle draw.io's format panel or print."
 }

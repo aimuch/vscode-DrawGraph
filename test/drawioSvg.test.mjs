@@ -1,12 +1,14 @@
 // Unit tests for the .drawio.svg helpers (run with `npm test`).
 import assert from 'node:assert/strict';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { test } from 'node:test';
+import { after, test } from 'node:test';
 import * as esbuild from 'esbuild';
 
 const outdir = mkdtempSync(join(tmpdir(), 'drawgraph-test-'));
+after(() => rmSync(outdir, { recursive: true, force: true }));
+
 await esbuild.build({
   entryPoints: { drawioSvg: 'src/drawio/drawioSvg.ts' },
   bundle: true,
@@ -29,6 +31,16 @@ test('extracts the diagram embedded by draw.io', () => {
 test('handles an XML prolog, single quotes and other attributes before content', () => {
   const svg = `<?xml version="1.0"?>\n<!DOCTYPE svg>\n<svg version='1.1' content='${escapeAttr(MXFILE)}' style="background:#fff">\n</svg>`;
   assert.equal(extractDiagramFromSvg(svg), MXFILE);
+});
+
+test('handles XML comments before <svg> and literal > characters inside quoted attributes', () => {
+  const attrWithLiteralGt = escapeAttr(MXFILE).replace(/&gt;/g, '>');
+  const svg = `<?xml version="1.0"?>\n<!-- <svg content="fake"/> -->\n<svg data-expr="1 > 0" content='${attrWithLiteralGt}' width="10"><rect/></svg>`;
+  assert.equal(extractDiagramFromSvg(svg), MXFILE);
+
+  const updated = replaceEmbeddedDiagram(svg, MXFILE);
+  assert.equal(extractDiagramFromSvg(updated), MXFILE);
+  assert.ok(updated.includes('<!-- <svg content="fake"/> -->'));
 });
 
 test('ignores SVGs without a draw.io diagram', () => {

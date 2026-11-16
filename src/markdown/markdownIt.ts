@@ -10,9 +10,11 @@ export function mermaidMarkdownPlugin(md: MarkdownIt): MarkdownIt {
   md.renderer.rules.fence = (tokens, idx, options, env, self) => {
     const token = tokens[idx];
     const lang = token.info.trim().split(/\s+/)[0]?.toLowerCase();
-    if (lang === 'mermaid' && config().get<boolean>('markdown.mermaid', true)) {
+    const cfg = config();
+    if (lang === 'mermaid' && cfg.get<boolean>('markdown.mermaid', true)) {
       const line = token.map ? ` data-line="${token.map[0]}"` : '';
-      return `<div class="drawgraph-mermaid code-line"${line}>${md.utils.escapeHtml(token.content)}</div>\n`;
+      const theme = md.utils.escapeHtml(cfg.get<string>('mermaid.theme', 'auto'));
+      return `<div class="drawgraph-mermaid code-line"${line} data-mermaid-theme="${theme}">${md.utils.escapeHtml(token.content)}</div>\n`;
     }
     return fallback(tokens, idx, options, env, self);
   };
