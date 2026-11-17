@@ -1,4 +1,5 @@
 import { stripBlockComments } from '../plantuml/encoder';
+import { C4_MACRO_SIGNATURES, PLANTUML_STDLIB_INCLUDES } from './advancedFeatures';
 
 export interface CompletionCandidate {
   label: string;
@@ -267,6 +268,15 @@ export function collectMermaidCompletions(text: string, linePrefix: string): Com
 /** Collects context-aware completion candidates for a PlantUML line prefix. */
 export function collectPlantUmlCompletions(text: string, linePrefix: string): CompletionCandidate[] {
   const trimmed = linePrefix.trimStart();
+  if (/^!include(?:_once|_many)?\s+<?[A-Za-z0-9_/-]*$/i.test(trimmed)) {
+    const startsAngle = /<\S*$/.test(trimmed);
+    return PLANTUML_STDLIB_INCLUDES.map(([inc, detail]) => ({
+      label: inc,
+      insertText: startsAngle ? inc.slice(1) : inc,
+      detail,
+      kind: 'directive',
+    }));
+  }
   if (/^!theme\s+\S*$/i.test(trimmed)) {
     return PLANTUML_THEMES.map((t) => ({ label: t, detail: 'PlantUML theme', kind: 'theme' }));
   }
@@ -301,6 +311,16 @@ export function collectPlantUmlCompletions(text: string, linePrefix: string): Co
   const out: CompletionCandidate[] = [];
   for (const kw of PLANTUML_KEYWORDS) {
     out.push({ label: kw, kind: 'keyword' });
+  }
+  if (/C4_/i.test(text)) {
+    for (const macro of C4_MACRO_SIGNATURES) {
+      out.push({
+        label: macro.name,
+        insertText: `${macro.name}(`,
+        detail: macro.signature,
+        kind: 'keyword',
+      });
+    }
   }
   for (const id of extractPlantUmlIdentifiers(text)) {
     out.push({ label: id, detail: 'Diagram participant / element', kind: 'identifier' });

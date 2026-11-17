@@ -7,6 +7,30 @@ export interface DiagramCodeLink {
   kind: 'symbol' | 'file';
 }
 
+export interface DrawioPageInfo {
+  index: number;
+  id: string;
+  name: string;
+  diagramXml: string;
+}
+
+/** Extracts the ordered list of `<diagram>` pages inside a draw.io `<mxfile>` document. */
+export function extractDrawioPages(rawXml: string): DrawioPageInfo[] {
+  const pages: DrawioPageInfo[] = [];
+  const re = /<diagram\b([^>]*)>[\s\S]*?<\/diagram>/gi;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(rawXml)) !== null) {
+    const attrs = m[1] || '';
+    const idMatch = /\bid\s*=\s*(?:"([^"]*)"|'([^']*)')/i.exec(attrs);
+    const nameMatch = /\bname\s*=\s*(?:"([^"]*)"|'([^']*)')/i.exec(attrs);
+    const index = pages.length;
+    const id = unescapeXml(idMatch?.[1] ?? idMatch?.[2] ?? `page-${index + 1}`);
+    const name = unescapeXml(nameMatch?.[1] ?? nameMatch?.[2] ?? `Page-${index + 1}`);
+    pages.push({ index, id, name, diagramXml: m[0] });
+  }
+  return pages;
+}
+
 function stripHtmlTags(raw: string): string {
   return unescapeXml(raw.replace(/<br\s*\/?>/gi, '\n').replace(/<[^>]+>/g, '')).trim();
 }

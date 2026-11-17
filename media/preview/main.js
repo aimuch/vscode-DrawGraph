@@ -20,11 +20,16 @@
   const bgToggle = $('bgToggle');
   const lockToggle = $('lockToggle');
   const findToggle = $('findToggle');
+  const presentToggle = $('presentToggle');
   const mapToggle = $('mapToggle');
   const settingsToggle = $('settingsToggle');
   const findBar = $('findBar');
   const findInput = /** @type {HTMLInputElement} */ ($('findInput'));
   const findCount = $('findCount');
+  const presentHud = $('presentHud');
+  const laserToggleBtn = $('laserToggleBtn');
+  const exitPresentBtn = $('exitPresentBtn');
+  const laserDot = $('laserDot');
   const minimap = $('minimap');
   const minimapSvg = $('minimapSvg');
   const minimapViewport = $('minimapViewport');
@@ -66,6 +71,8 @@
   /** @type {Element[]} */
   let searchMatches = [];
   let activeMatchIdx = -1;
+  let presentationMode = false;
+  let laserActive = false;
   let rafId = 0;
   /** @type {ReturnType<typeof setTimeout> | undefined} */
   let persistTimer;
@@ -459,6 +466,45 @@
     clearSearchHighlights();
   }
 
+  // ---- Presentation, Spotlight & Laser Pointer -----------------------------------------
+
+  function clearSpotlight() {
+    if (!currentSvg) {
+      return false;
+    }
+    const had = currentSvg.classList.contains('drawgraph-has-spotlight');
+    currentSvg.classList.remove('drawgraph-has-spotlight');
+    currentSvg.querySelectorAll('.drawgraph-spotlight-target').forEach((el) => {
+      el.classList.remove('drawgraph-spotlight-target');
+    });
+    return had;
+  }
+
+  /** @param {boolean} next */
+  function setPresentationMode(next) {
+    presentationMode = next;
+    document.body.classList.toggle('presentation-mode', presentationMode);
+    presentToggle.setAttribute('aria-pressed', presentationMode ? 'true' : 'false');
+    presentHud.hidden = !presentationMode;
+    if (!presentationMode) {
+      laserActive = false;
+      laserToggleBtn.setAttribute('aria-pressed', 'false');
+      laserDot.hidden = true;
+      clearSpotlight();
+    }
+    if (view.mode === 'auto_fit') {
+      setTimeout(() => fit(false), 30);
+    }
+  }
+
+  function toggleLaser() {
+    laserActive = !laserActive;
+    laserToggleBtn.setAttribute('aria-pressed', laserActive ? 'true' : 'false');
+    if (!laserActive) {
+      laserDot.hidden = true;
+    }
+  }
+
   // Explicit single-flight coalescing state machine for Mermaid renders:
   // `idle` -> `rendering` <-> `rendering_dirty` -> `idle`
   let mermaidTheme = '';
@@ -557,26 +603,27 @@
     }
     const clone = /** @type {SVGSVGElement} */ (currentSvg.cloneNode(true));
     clone.removeAttribute('style');
-    clone.querySelectorAll('.drawgraph-search-match, .drawgraph-search-active').forEach((el) => {
-      el.classList.remove('drawgraph-search-match', 'drawgraph-search-active');
+    clone.querySelectorAll('.drawgraph-search-match, .drawgraph-search-active, .drawgraph-spotlight-target').forEach((el) => {
+      el.classList.remove('drawgraph-search-match', 'drawgraph-search-active', 'drawgraph-spotlight-target');
       if (el.className && typeof el.getAttribute('class') === 'string' && !el.getAttribute('class')?.trim()) {
         el.removeAttribute('class');
       }
     });
+    clone.classList.remove('drawgraph-has-spotlight');
     clone.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
     clone.setAttribute('width', String(natural.width));
     clone.setAttribute('height', String(natural.height));
     return new XMLSerializer().serializeToString(clone);
   }
 
-  /** @returns {Promise<HTMLCanvasElement | null>} */
-  function rasterizeToCanvas() {
+  /** @param {boolean} [forceWhiteBg] @returns {Promise<HTMLCanvasElement | null>} */
+  function rasterizeToCanvas(forceWhiteBg = false) {
     const data = serializeSvg();
     if (!data) {
       return Promise.resolve(null);
     }
     const scale = pngScale;
-    const transparent = pngTransparent || view.bg === 'grid';
+    const transparent = forceWhiteBg ? false : pngTransparent || view.bg === 'grid';
     const url = URL.createObjectURL(new Blob([data], { type: 'image/svg+xml' }));
     return new Promise((resolve, reject) => {
       const img = new Image();
@@ -587,7 +634,13 @@
           c.height = Math.ceil(natural.height * scale);
           const ctx = /** @type {CanvasRenderingContext2D} */ (c.getContext('2d'));
           if (!transparent) {
-            ctx.fillStyle = view.bg === 'dark' ? '#1e1e1e' : view.bg === 'light' ? '#ffffff' : getComputedStyle(stage).backgroundColor || '#ffffff';
+            ctx.fillStyle = forceWhiteBg
+              ? '#ffffff'
+              : view.bg === 'dark'
+                ? '#1e1e1e'
+                : view.bg === 'light'
+                  ? '#ffffff'
+                  : getComputedStyle(stage).backgroundColor || '#ffffff';
             ctx.fillRect(0, 0, c.width, c.height);
           }
           ctx.drawImage(img, 0, 0, c.width, c.height);
@@ -623,6 +676,91 @@
       if (!silent) {
         vscode.postMessage({ type: 'error', message: errorMessage(err) });
       }
+    }
+  }
+
+  async function exportPdf() {
+    try {
+      const c = await rasterizeToCanvas(true);
+      if (c) {
+        vscode.postMessage({
+          type: 'export',
+          format: 'pdf',
+          data: c.toDataURL('image/png'),
+          width: natural.width,
+          height: natural.height,
+        });
+      }
+    } catch (err) {
+      vscode.postMessage({ type: 'error', message: errorMessage(err) });
+    }
+  }
+
+  /**
+   * Renders an offscreen Mermaid diagram without modifying the visible preview canvas.
+   * @param {number} requestId
+   * @param {string} source
+   * @param {string} theme
+   * @param {'svg' | 'png'} format
+   */
+  async function renderMermaidOffscreen(requestId, source, theme, format) {
+    if (!mermaid) {
+      vscode.postMessage({ type: 'offscreenRendered', requestId, error: MSG_MERMAID_LOAD });
+      return;
+    }
+    try {
+      if (theme !== mermaidTheme) {
+        mermaid.initialize({
+          startOnLoad: false,
+          theme,
+          securityLevel: 'strict',
+          htmlLabels: false,
+          flowchart: { htmlLabels: false },
+        });
+        mermaidTheme = theme;
+      }
+      const id = `drawgraph-offscreen-${++renderCount}`;
+      const { svg } = await mermaid.render(id, source);
+      document.getElementById(`d${id}`)?.remove();
+      const doc = new DOMParser().parseFromString(svg, 'image/svg+xml');
+      const root = /** @type {SVGSVGElement} */ (/** @type {unknown} */ (doc.documentElement));
+      const vb = root.viewBox && root.viewBox.baseVal;
+      const w = (vb && vb.width > 0 ? vb.width : parseFloat(root.getAttribute('width') || '400')) || 400;
+      const h = (vb && vb.height > 0 ? vb.height : parseFloat(root.getAttribute('height') || '300')) || 300;
+      root.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+      root.setAttribute('width', String(w));
+      root.setAttribute('height', String(h));
+      root.removeAttribute('style');
+      const serialized = new XMLSerializer().serializeToString(root);
+      if (format === 'svg') {
+        vscode.postMessage({ type: 'offscreenRendered', requestId, data: serialized, width: w, height: h });
+        return;
+      }
+      const url = URL.createObjectURL(new Blob([serialized], { type: 'image/svg+xml' }));
+      const img = new Image();
+      img.onload = () => {
+        try {
+          const c = document.createElement('canvas');
+          c.width = Math.ceil(w * pngScale);
+          c.height = Math.ceil(h * pngScale);
+          const ctx = /** @type {CanvasRenderingContext2D} */ (c.getContext('2d'));
+          ctx.fillStyle = '#ffffff';
+          ctx.fillRect(0, 0, c.width, c.height);
+          ctx.drawImage(img, 0, 0, c.width, c.height);
+          vscode.postMessage({ type: 'offscreenRendered', requestId, data: c.toDataURL('image/png'), width: w, height: h });
+        } catch (e) {
+          vscode.postMessage({ type: 'offscreenRendered', requestId, error: errorMessage(e) });
+        } finally {
+          URL.revokeObjectURL(url);
+        }
+      };
+      img.onerror = () => {
+        URL.revokeObjectURL(url);
+        vscode.postMessage({ type: 'offscreenRendered', requestId, error: MSG_PNG_RASTER });
+      };
+      img.src = url;
+    } catch (err) {
+      vscode.postMessage({ type: 'offscreenRendered', requestId, error: errorMessage(err) });
     }
   }
 
@@ -666,6 +804,15 @@
     } else {
       closeFindBar();
     }
+  });
+  presentToggle.addEventListener('click', () => setPresentationMode(!presentationMode));
+  laserToggleBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    toggleLaser();
+  });
+  exitPresentBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    setPresentationMode(false);
   });
   mapToggle.addEventListener('click', () => {
     view.showMap = !view.showMap;
@@ -737,6 +884,7 @@
   nextItem.addEventListener('click', () => vscode.postMessage({ type: 'navigate', delta: 1 }));
   $('exportSvg').addEventListener('click', () => exportSvg(false));
   $('exportPng').addEventListener('click', () => void exportPng(false));
+  $('exportPdf').addEventListener('click', () => void exportPdf());
   $('copySvg').addEventListener('click', () => {
     const data = serializeSvg();
     if (data) {
@@ -745,21 +893,37 @@
   });
   $('copyPng').addEventListener('click', () => void copyPng());
 
+  let pointerMovedDuringDrag = false;
   stage.addEventListener('click', (e) => {
-    if (!(e.ctrlKey || e.metaKey)) {
-      return;
-    }
     const target = /** @type {Element | null} */ (e.target instanceof Element ? e.target : null);
-    if (!target || target.closest('#findBar, #minimap')) {
+    if (!target || target.closest('#findBar, #minimap, #presentHud')) {
       return;
     }
-    const anchor = target.closest('a');
-    const href = anchor && (anchor.getAttribute('href') || anchor.getAttribute('xlink:href') || '').trim();
-    const textEl = target.closest('text, foreignObject');
-    const label = (href || (textEl && textEl.textContent) || '').trim();
-    if (label) {
-      e.preventDefault();
-      vscode.postMessage({ type: 'codeLink', target: label, fallbackLabel: label });
+    if (e.ctrlKey || e.metaKey) {
+      const anchor = target.closest('a');
+      const href = anchor && (anchor.getAttribute('href') || anchor.getAttribute('xlink:href') || '').trim();
+      const textEl = target.closest('text, foreignObject');
+      const label = (href || (textEl && textEl.textContent) || '').trim();
+      if (label) {
+        e.preventDefault();
+        vscode.postMessage({ type: 'codeLink', target: label, fallbackLabel: label });
+      }
+      return;
+    }
+    if (presentationMode && !pointerMovedDuringDrag && currentSvg) {
+      const spotCandidate = target.closest(
+        'g.node, g.cluster, g.edgePath, g.actor, g.elem, g[id^="elem_"], g[id^="flowchart-"], g[class*="node"]',
+      );
+      if (spotCandidate && currentSvg.contains(spotCandidate)) {
+        const already = spotCandidate.classList.contains('drawgraph-spotlight-target');
+        clearSpotlight();
+        if (!already) {
+          currentSvg.classList.add('drawgraph-has-spotlight');
+          spotCandidate.classList.add('drawgraph-spotlight-target');
+        }
+      } else {
+        clearSpotlight();
+      }
     }
   });
 
@@ -812,24 +976,41 @@
       return;
     }
     const target = /** @type {Element | null} */ (e.target instanceof Element ? e.target : null);
-    if (target && target.closest('#findBar, #minimap')) {
+    if (target && target.closest('#findBar, #minimap, #presentHud')) {
       return;
     }
     if ((e.ctrlKey || e.metaKey) && target && target.closest('text, foreignObject, a')) {
       return;
     }
+    pointerMovedDuringDrag = false;
     pointerGesture = { phase: 'panning', anchorX: e.clientX - view.x, anchorY: e.clientY - view.y };
     stage.setPointerCapture(e.pointerId);
     stage.classList.add('dragging');
   });
   stage.addEventListener('pointermove', (e) => {
+    if (laserActive || (presentationMode && e.shiftKey)) {
+      const rect = stage.getBoundingClientRect();
+      laserDot.hidden = false;
+      laserDot.style.left = `${e.clientX - rect.left}px`;
+      laserDot.style.top = `${e.clientY - rect.top}px`;
+    } else if (!laserActive && !laserDot.hidden) {
+      laserDot.hidden = true;
+    }
     if (pointerGesture.phase !== 'panning') {
       return;
     }
-    view.x = e.clientX - pointerGesture.anchorX;
-    view.y = e.clientY - pointerGesture.anchorY;
+    const nx = e.clientX - pointerGesture.anchorX;
+    const ny = e.clientY - pointerGesture.anchorY;
+    if (Math.hypot(nx - view.x, ny - view.y) > 4) {
+      pointerMovedDuringDrag = true;
+    }
+    view.x = nx;
+    view.y = ny;
     view.mode = 'manual';
     applyView(false);
+  });
+  stage.addEventListener('pointerleave', () => {
+    laserDot.hidden = true;
   });
   const endDrag = () => {
     if (pointerGesture.phase === 'panning') {
@@ -852,12 +1033,23 @@
       closeFindBar();
       return;
     }
+    if (e.key === 'Escape' && presentationMode) {
+      e.preventDefault();
+      if (!clearSpotlight()) {
+        setPresentationMode(false);
+      }
+      return;
+    }
     if (e.ctrlKey || e.metaKey || e.altKey || e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
       return;
     }
     if (e.key === '/') {
       e.preventDefault();
       openFindBar();
+    } else if (e.key === 'p') {
+      setPresentationMode(!presentationMode);
+    } else if (e.key === 'l' && presentationMode) {
+      toggleLaser();
     } else if (e.key === 'm') {
       view.showMap = !view.showMap;
       syncMapUi();
@@ -941,9 +1133,14 @@
           mapToggle.title = L.mapTitle;
           findToggle.textContent = L.find;
           findToggle.title = L.findTitle;
+          if (L.present) presentToggle.textContent = L.present;
+          if (L.presentTitle) presentToggle.title = L.presentTitle;
+          if (L.exitPresent) exitPresentBtn.textContent = L.exitPresent;
+          if (L.laser) laserToggleBtn.textContent = L.laser;
           lockToggle.title = L.lockTitle;
           $('exportSvg').title = L.exportSvgTitle;
           $('exportPng').title = L.exportPngTitle;
+          if (L.exportPdfTitle) $('exportPdf').title = L.exportPdfTitle;
           $('copySvg').textContent = L.copySvg;
           $('copySvg').title = L.copySvgTitle;
           $('copyPng').textContent = L.copyPng;
@@ -984,7 +1181,17 @@
           exportSvg(true);
         } else if (msg.format === 'png') {
           void exportPng(true);
+        } else if (msg.format === 'pdf') {
+          void exportPdf();
         }
+        break;
+      case 'renderOffscreen':
+        void renderMermaidOffscreen(
+          Number(msg.requestId),
+          String(msg.source ?? ''),
+          String(msg.theme || 'default'),
+          msg.format === 'png' ? 'png' : 'svg',
+        );
         break;
       case 'loading':
         transitionUiPhase('loading');

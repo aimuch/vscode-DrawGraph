@@ -51,7 +51,7 @@ function renderPlantUmlFence(md: MarkdownIt, rawContent: string, lineAttr: strin
         if (!pendingLocalKeys.has(key)) {
           pendingLocalKeys.add(key);
           void markdownPlantUmlRenderer
-            .render(block.source, { mode: 'local', server: '', jar, java, dot })
+            .render(block.source, { mode: 'local', server: '', jar, java, dot, cancelPrevious: false })
             .then((svg) => {
               localPlantUmlCache.set(key, svg);
               if (localPlantUmlCache.size > 64) {

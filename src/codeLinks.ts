@@ -1,7 +1,13 @@
 import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { t } from './l10n';
-export { buildCodeSymbolMergeXml, extractCodeLinksFromDrawioXml, type DiagramCodeLink } from './drawio/codeLinksXml';
+export {
+  buildCodeSymbolMergeXml,
+  extractCodeLinksFromDrawioXml,
+  extractDrawioPages,
+  type DiagramCodeLink,
+  type DrawioPageInfo,
+} from './drawio/codeLinksXml';
 
 function parseFileTarget(raw: string): { filePath: string; line?: number } {
   const cleaned = raw.replace(/^file:\/\//i, '').trim();
@@ -16,7 +22,41 @@ function parseFileTarget(raw: string): { filePath: string; line?: number } {
   return { filePath: cleaned };
 }
 
-async function openFileAtLine(uri: vscode.Uri, oneBasedLine?: number): Promise<boolean> {
+function isWithinAllowedBoundary(candidate: vscode.Uri, contextUri?: vscode.Uri): boolean {
+  if (candidate.scheme !== 'file') {
+    return true;
+  }
+  const normalizedTarget = path.resolve(candidate.fsPath);
+  for (const folder of vscode.workspace.workspaceFolders ?? []) {
+    const root = path.resolve(folder.uri.fsPath);
+    if (normalizedTarget === root || normalizedTarget.startsWith(root + path.sep)) {
+      return true;
+    }
+  }
+  if (contextUri && contextUri.scheme === 'file') {
+    const ctxDir = path.resolve(path.dirname(contextUri.fsPath));
+    if (normalizedTarget === ctxDir || normalizedTarget.startsWith(ctxDir + path.sep)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+async function openFileAtLine(uri: vscode.Uri, oneBasedLine?: number, contextUri?: vscode.Uri): Promise<boolean> {
+  if (!isWithinAllowedBoundary(uri, contextUri)) {
+    if (!vscode.workspace.isTrusted) {
+      return false;
+    }
+    const openBtn = t('Open');
+    const confirm = await vscode.window.showWarningMessage(
+      t('Open external file outside workspace: {0}?', uri.fsPath),
+      { modal: true },
+      openBtn,
+    );
+    if (confirm !== openBtn) {
+      return true;
+    }
+  }
   try {
     const doc = await vscode.workspace.openTextDocument(uri);
     const editor = await vscode.window.showTextDocument(doc, { viewColumn: vscode.ViewColumn.One });
@@ -62,7 +102,7 @@ export async function navigateToCodeTarget(rawTarget: string, contextUri?: vscod
     for (const candidate of candidates) {
       try {
         await vscode.workspace.fs.stat(candidate);
-        if (await openFileAtLine(candidate, line)) {
+        if (await openFileAtLine(candidate, line, contextUri)) {
           return true;
         }
       } catch {
@@ -72,7 +112,7 @@ export async function navigateToCodeTarget(rawTarget: string, contextUri?: vscod
     const baseName = path.posix.basename(filePath.replace(/\\/g, '/'));
     if (baseName) {
       const found = await vscode.workspace.findFiles(`**/${baseName}`, '**/node_modules/**', 5);
-      if (found.length > 0 && (await openFileAtLine(found[0], line))) {
+      if (found.length > 0 && (await openFileAtLine(found[0], line, contextUri))) {
         return true;
       }
     }

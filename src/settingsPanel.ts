@@ -1,6 +1,11 @@
 import * as vscode from 'vscode';
 import { t } from './l10n';
-import { applySettingUpdate, getSettingsSnapshot, openExtensionSettingsInVscode } from './settingsSnapshot';
+import {
+  applySettingUpdate,
+  getSettingsSnapshot,
+  handleSettingsDrawerAction,
+  openExtensionSettingsInVscode,
+} from './settingsSnapshot';
 import { getNonce } from './util';
 
 export class SettingsPanelManager {
@@ -16,6 +21,12 @@ export class SettingsPanelManager {
       }),
       { dispose: () => this.panel?.dispose() },
     );
+  }
+
+  refresh(): void {
+    if (this.panel) {
+      void this.panel.webview.postMessage({ type: 'settingsState', settings: getSettingsSnapshot() });
+    }
   }
 
   open(): void {
@@ -73,7 +84,7 @@ export class SettingsPanelManager {
 </body>
 </html>`;
 
-    const sub = webview.onDidReceiveMessage(async (msg: { type: string; key?: string; value?: unknown }) => {
+    const sub = webview.onDidReceiveMessage(async (msg: { type: string; key?: string; value?: unknown; action?: unknown }) => {
       switch (msg.type) {
         case 'requestSettings':
           void webview.postMessage({ type: 'settingsState', settings: getSettingsSnapshot() });
@@ -82,6 +93,10 @@ export class SettingsPanelManager {
           if (typeof msg.key === 'string') {
             await applySettingUpdate(msg.key, msg.value);
           }
+          break;
+        case 'drawerAction':
+          await handleSettingsDrawerAction(msg.action);
+          void webview.postMessage({ type: 'settingsState', settings: getSettingsSnapshot() });
           break;
         case 'openExtensionSettings':
           await openExtensionSettingsInVscode();

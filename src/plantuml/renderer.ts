@@ -15,6 +15,12 @@ export interface PlantUmlOptions {
   page?: number;
   /** Skip the in-memory SVG cache (used on explicit config/theme refreshes). */
   noCache?: boolean;
+  /**
+   * When `true` (default, for interactive single-panel previews), starting a new render
+   * cancels any in-flight render on this instance. Set to `false` for multi-block batch
+   * rendering (e.g. Markdown preview or batch export) so concurrent blocks queue cleanly.
+   */
+  cancelPrevious?: boolean;
 }
 
 export type WorkerPhase = 'cold' | 'busy' | 'draining_cancelled' | 'warm_idle' | 'disposed';
@@ -104,7 +110,7 @@ class LocalPipeWorker {
   private stderrBuf = '';
   private stdoutBytes = 0;
   private inflight: PipeRequest | undefined;
-  private queued: PipeRequest | undefined;
+  private readonly queue: PipeRequest[] = [];
   private timeoutTimer: NodeJS.Timeout | undefined;
   private cancelGraceTimer: NodeJS.Timeout | undefined;
   private idleTimer: NodeJS.Timeout | undefined;
@@ -132,18 +138,20 @@ class LocalPipeWorker {
   }
 
   get hasQueued(): boolean {
-    return this.queued !== undefined;
+    return this.queue.length > 0;
   }
 
-  render(source: string): Promise<string> {
+  render(source: string, cancelPrevious = true): Promise<string> {
     if (this.fsm.state === 'disposed') {
       return Promise.reject(new CancelledError());
     }
-    this.cancelPending();
+    if (cancelPrevious) {
+      this.cancelPending();
+    }
     return new Promise<string>((resolve, reject) => {
       const req: PipeRequest = { source, resolve, reject, cancelled: false };
       if (this.inflight) {
-        this.queued = req;
+        this.queue.push(req);
       } else {
         this.startRequest(req);
       }
@@ -151,9 +159,8 @@ class LocalPipeWorker {
   }
 
   cancelPending(): void {
-    if (this.queued) {
-      const stale = this.queued;
-      this.queued = undefined;
+    while (this.queue.length > 0) {
+      const stale = this.queue.shift()!;
       stale.reject(new CancelledError());
     }
     if (this.inflight && !this.inflight.cancelled) {
@@ -179,9 +186,8 @@ class LocalPipeWorker {
       return;
     }
     this.clearTimers();
-    if (this.queued) {
-      this.queued.reject(new CancelledError());
-      this.queued = undefined;
+    while (this.queue.length > 0) {
+      this.queue.shift()!.reject(new CancelledError());
     }
     if (this.inflight && !this.inflight.cancelled) {
       this.inflight.cancelled = true;
@@ -292,10 +298,8 @@ class LocalPipeWorker {
       if (active && !active.cancelled) {
         active.reject(formatted);
       }
-      if (this.queued) {
-        const next = this.queued;
-        this.queued = undefined;
-        next.reject(formatted);
+      while (this.queue.length > 0) {
+        this.queue.shift()!.reject(formatted);
       }
     });
 
@@ -360,9 +364,8 @@ class LocalPipeWorker {
     if (this.fsm.state === 'disposed') {
       return;
     }
-    if (this.queued) {
-      const next = this.queued;
-      this.queued = undefined;
+    if (this.queue.length > 0) {
+      const next = this.queue.shift()!;
       if (fromDrain && this.child) {
         this.fsm.send('DRAINED_TO_NEXT');
         this.startRequest(next, true);
@@ -425,7 +428,7 @@ let rendererSeq = 0;
 export class PlantUmlRenderer {
   private readonly id: string;
   private readonly onTransition?: (record: TransitionRecord<string, string>, machineId: string) => void;
-  private serverAbort: AbortController | undefined;
+  private readonly serverControllers = new Set<AbortController>();
   private worker: LocalPipeWorker | undefined;
   private readonly cache = new Map<string, string>();
 
@@ -438,8 +441,10 @@ export class PlantUmlRenderer {
   }
 
   cancel(): void {
-    this.serverAbort?.abort();
-    this.serverAbort = undefined;
+    for (const c of this.serverControllers) {
+      c.abort();
+    }
+    this.serverControllers.clear();
     this.worker?.cancelPending();
   }
 
@@ -454,7 +459,7 @@ export class PlantUmlRenderer {
     const workerSnap: MachineSnapshot<WorkerPhase, WorkerEvent> = this.worker
       ? this.worker.fsm.snapshot()
       : { id: `${this.id}:worker`, state: 'cold', allowedEvents: ['START_REQUEST', 'DISPOSE'], isSettled: true, transitions: [] };
-    const serverInFlight = this.serverAbort !== undefined;
+    const serverInFlight = this.serverControllers.size > 0;
     return {
       worker: workerSnap,
       workerPid: this.worker?.pid,
@@ -466,7 +471,9 @@ export class PlantUmlRenderer {
   }
 
   async render(source: string, options: PlantUmlOptions): Promise<string> {
-    this.cancel();
+    if (options.cancelPrevious !== false) {
+      this.cancel();
+    }
     const page = Math.max(0, Math.floor(options.page ?? 0));
     const jar = options.jar.trim();
     const useLocal = options.mode === 'local' || (options.mode === 'auto' && jar !== '');
@@ -533,7 +540,7 @@ export class PlantUmlRenderer {
   private async renderServer(source: string, options: PlantUmlOptions, page: number): Promise<string> {
     const base = normalizeServerBase(options.server);
     const controller = new AbortController();
-    this.serverAbort = controller;
+    this.serverControllers.add(controller);
     const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
     try {
       const encoded = await encodePlantUmlAsync(source);
@@ -594,7 +601,7 @@ export class PlantUmlRenderer {
       if (err instanceof ServerError || err instanceof CancelledError) {
         throw err;
       }
-      if (controller.signal.aborted && this.serverAbort !== controller) {
+      if (controller.signal.aborted && !this.serverControllers.has(controller)) {
         throw new CancelledError();
       }
       if (controller.signal.aborted) {
@@ -603,9 +610,7 @@ export class PlantUmlRenderer {
       throw new Error(`Could not reach PlantUML server ${base}: ${(err as Error).message}`);
     } finally {
       clearTimeout(timer);
-      if (this.serverAbort === controller) {
-        this.serverAbort = undefined;
-      }
+      this.serverControllers.delete(controller);
     }
   }
 
@@ -636,7 +641,7 @@ export class PlantUmlRenderer {
         this.onTransition,
       );
     }
-    return this.worker.render(source);
+    return this.worker.render(source, options.cancelPrevious !== false);
   }
 }
 

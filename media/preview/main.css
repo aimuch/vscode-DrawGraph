@@ -287,3 +287,65 @@ body:not(.vscode-dark) #minimap {
 [hidden] {
   display: none !important;
 }
+
+body.presentation-mode #toolbar {
+  display: none;
+}
+
+#presentHud {
+  position: absolute;
+  top: 10px;
+  left: 12px;
+  z-index: 14;
+  display: flex;
+  gap: 6px;
+  user-select: none;
+}
+
+#presentHud button {
+  height: 26px;
+  padding: 0 10px;
+  border-radius: 13px;
+  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.45));
+  background: var(--vscode-editorWidget-background, rgba(30, 30, 30, 0.85));
+  color: var(--vscode-foreground);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  backdrop-filter: blur(6px);
+}
+
+#presentHud button[aria-pressed='true'] {
+  background: #ef4444;
+  color: #ffffff;
+  border-color: #ef4444;
+}
+
+#laserDot {
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  margin-left: -7px;
+  margin-top: -7px;
+  border-radius: 50%;
+  background: radial-gradient(circle, #ffffff 18%, #ff2d55 55%, rgba(255, 45, 85, 0) 100%);
+  box-shadow: 0 0 12px 4px rgba(255, 45, 85, 0.75);
+  pointer-events: none;
+  z-index: 20;
+}
+
+svg.drawgraph-has-spotlight g.node,
+svg.drawgraph-has-spotlight g.cluster,
+svg.drawgraph-has-spotlight g.edgePath,
+svg.drawgraph-has-spotlight g.actor,
+svg.drawgraph-has-spotlight g.elem,
+svg.drawgraph-has-spotlight g[id^='elem_'] {
+  opacity: 0.2;
+  transition: opacity 0.16s ease;
+}
+
+svg.drawgraph-has-spotlight .drawgraph-spotlight-target,
+svg.drawgraph-has-spotlight .drawgraph-spotlight-target g {
+  opacity: 1 !important;
+  filter: drop-shadow(0 0 8px rgba(59, 130, 246, 0.65));
+}

@@ -1,7 +1,14 @@
 import * as path from 'node:path';
 import * as vscode from 'vscode';
+import { buildPdfDocument } from '../export/pdfWriter';
 import { getDrawioLanguage, t } from '../l10n';
-import { applySettingUpdate, getSettingsSnapshot, openExtensionSettingsInVscode } from '../settingsSnapshot';
+import type { DrawioToHostMessage } from '../protocol/messages';
+import {
+  applySettingUpdate,
+  getSettingsSnapshot,
+  handleSettingsDrawerAction,
+  openExtensionSettingsInVscode,
+} from '../settingsSnapshot';
 import {
   CoalescedTaskMachine,
   StateMachine,
@@ -11,9 +18,15 @@ import {
   type TransitionTable,
 } from '../stateMachine';
 import { config, decodeDataUri, getNonce, isDarkTheme, resolveAutoExportUri, saveBytes, withExtension } from '../util';
-import { buildCodeSymbolMergeXml } from './codeLinksXml';
-import { extractDiagramFromPng, pngBytesToDataUri } from './drawioPng';
+import { buildCodeSymbolMergeXml, extractDrawioPages } from './codeLinksXml';
+import { loadCustomLibraries, parseMxLibraryXml } from './customLibraryLoader';
+import { extractDiagramFromPng, isPngDiagramPath, pngBytesToDataUri } from './drawioPng';
 import { extractDiagramFromSvg, isSvgDiagramPath, replaceEmbeddedDiagram } from './drawioSvg';
+import { computeMinimalTextChange } from './minimalEdit';
+import { renderMxfileToPreviewSvg } from './mxfileToSvg';
+import type { OfflinePackManager } from './offlinePackManager';
+
+export { parseMxLibraryXml };
 
 type ExportFormat = 'xmlsvg' | 'xmlpng' | 'png';
 type ExportResult = { data?: string; error?: string };
@@ -72,20 +85,6 @@ const SESSION_TRANSITIONS: TransitionTable<DrawioSessionPhase, DrawioSessionEven
 
 const SESSION_SETTLED: readonly DrawioSessionPhase[] = ['ready', 'failed', 'disposed'];
 
-/** Messages sent from the webview to the extension host. */
-type WebviewMessage =
-  | { type: 'ready' }
-  | { type: 'phase'; phase: 'booting' | 'configured' | 'initialized' | 'ready' | 'failed' }
-  | { type: 'init' }
-  | { type: 'loaded' }
-  | { type: 'change'; xml: string }
-  | { type: 'save'; xml: string }
-  | { type: 'export'; requestId: number; data?: string; error?: string }
-  | { type: 'error'; message: string }
-  | { type: 'requestSettings' }
-  | { type: 'updateSetting'; key: string; value: unknown }
-  | { type: 'openExtensionSettings' };
-
 interface EditorSession {
   panel: vscode.WebviewPanel;
   uri: vscode.Uri;
@@ -96,6 +95,15 @@ interface EditorSession {
   pendingExports: Map<number, (result: ExportResult) => void>;
   status: { initialized: boolean; loads: number; changes: number };
   isEditQueueIdle: () => boolean;
+  flushPendingEdits: () => Promise<void>;
+}
+
+interface SessionHooks {
+  sendLoad: (event: 'LOAD_SENT' | 'RELOAD_EXTERNAL') => void;
+  onLoaded: () => Promise<void>;
+  onChange: (xml: string) => Promise<void>;
+  onSave: (xml: string) => Promise<void>;
+  onDisposeExtra?: () => void;
 }
 
 class DrawioPngDocument implements vscode.CustomDocument {
@@ -177,8 +185,9 @@ export class DrawioEditorProvider implements vscode.CustomTextEditorProvider {
   static register(
     context: vscode.ExtensionContext,
     onTransition?: (record: TransitionRecord<string, string>, machineId: string) => void,
+    offlinePack?: OfflinePackManager,
   ): DrawioEditorProvider {
-    const provider = new DrawioEditorProvider(context, onTransition);
+    const provider = new DrawioEditorProvider(context, onTransition, offlinePack);
     const pngProvider: vscode.CustomEditorProvider<DrawioPngDocument> = {
       onDidChangeCustomDocument: provider.onDidChangePngDocEmitter.event,
       openCustomDocument: (uri, openContext) => provider.openPngDocument(uri, openContext),
@@ -210,7 +219,8 @@ export class DrawioEditorProvider implements vscode.CustomTextEditorProvider {
           e.affectsConfiguration('drawGraph.language') ||
           e.affectsConfiguration('drawGraph.drawio.theme') ||
           e.affectsConfiguration('drawGraph.drawio.ui') ||
-          e.affectsConfiguration('drawGraph.drawio.url')
+          e.affectsConfiguration('drawGraph.drawio.url') ||
+          e.affectsConfiguration('drawGraph.drawio.offlineMode')
         ) {
           void provider.reloadAllFrames();
         } else if (
@@ -231,12 +241,21 @@ export class DrawioEditorProvider implements vscode.CustomTextEditorProvider {
         void provider.autoExportOnSave(doc.uri);
       }),
     );
+    if (offlinePack) {
+      context.subscriptions.push(
+        offlinePack.onDidChange(() => {
+          provider.broadcastSettingsState();
+          void provider.reloadAllFrames();
+        }),
+      );
+    }
     return provider;
   }
 
   private constructor(
     private readonly context: vscode.ExtensionContext,
     private readonly onTransition?: (record: TransitionRecord<string, string>, machineId: string) => void,
+    private readonly offlinePack?: OfflinePackManager,
   ) {
     this.codeLinksStatusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
     this.codeLinksStatusBar.command = 'drawGraph.drawio.navigateCodeLinks';
@@ -248,16 +267,29 @@ export class DrawioEditorProvider implements vscode.CustomTextEditorProvider {
     this.codeLinksStatusBar.tooltip = t('Navigate #Symbol or file:line Code Links in this Draw.io diagram');
   }
 
-  private broadcastSettingsState(): void {
+  broadcastSettingsState(): void {
     const settings = getSettingsSnapshot();
     for (const s of this.sessions) {
       void s.panel.webview.postMessage({ type: 'settingsState', settings });
     }
   }
 
+  private resolveEffectiveUrlSyncOrAsync(): URL | Promise<URL> {
+    if (!this.offlinePack) {
+      return buildDrawioUrl();
+    }
+    const base = this.offlinePack.resolveBaseUrlSyncOrAsync();
+    return base instanceof Promise ? base.then((u) => buildDrawioUrl(u)) : buildDrawioUrl(base);
+  }
+
+  private async resolveEffectiveUrl(): Promise<URL> {
+    const res = this.resolveEffectiveUrlSyncOrAsync();
+    return res instanceof Promise ? await res : res;
+  }
+
   private async reloadAllFrames(): Promise<void> {
     const setup = await this.buildSetupPayloadSyncOrAsync();
-    const nextUrl = buildDrawioUrl();
+    const nextUrl = await this.resolveEffectiveUrl();
     const loadingText = t('Loading draw.io…');
     const failText = t(
       'draw.io did not load from {0}. Check your network connection or the "drawGraph.drawio.url" setting.',
@@ -266,9 +298,7 @@ export class DrawioEditorProvider implements vscode.CustomTextEditorProvider {
     const retryText = t('Retry');
 
     for (const s of this.sessions) {
-      if (s.syncMachine && !s.syncMachine.isSettled) {
-        await s.syncMachine.flush();
-      }
+      await s.flushPendingEdits();
       if (s.frameOrigin !== nextUrl.origin) {
         s.frameOrigin = nextUrl.origin;
         s.lifecycle.send('RETRY_BOOT');
@@ -387,12 +417,113 @@ export class DrawioEditorProvider implements vscode.CustomTextEditorProvider {
     void vscode.window.setStatusBarMessage(t('Exported to {0}', vscode.workspace.asRelativePath(target)), 2500);
   }
 
+  /** Shared session message/lifecycle wiring across text and binary PNG Draw.io editors. */
+  private wireCommonSessionLifecycle(session: EditorSession, disposables: vscode.Disposable[], hooks: SessionHooks): void {
+    const { panel, lifecycle } = session;
+    const isDisposed = () => lifecycle.state === 'disposed';
+    const post = (message: unknown) => {
+      if (!isDisposed()) {
+        void panel.webview.postMessage(message);
+      }
+    };
+
+    let messageChain: Promise<void> = Promise.resolve();
+    disposables.push(
+      panel.webview.onDidReceiveMessage((message: DrawioToHostMessage) => {
+        if (message.type === 'export') {
+          const resolve = session.pendingExports.get(message.requestId);
+          session.pendingExports.delete(message.requestId);
+          resolve?.(message);
+          return;
+        }
+        messageChain = messageChain
+          .then(async () => {
+            if (isDisposed()) {
+              return;
+            }
+            switch (message.type) {
+              case 'ready': {
+                lifecycle.send('SETUP_SENT');
+                const setup = this.buildSetupPayloadSyncOrAsync();
+                post(setup instanceof Promise ? await setup : setup);
+                break;
+              }
+              case 'phase':
+                if (message.phase === 'configured') {
+                  lifecycle.send('BRIDGE_CONFIGURED');
+                } else if (message.phase === 'failed') {
+                  lifecycle.send('LOAD_FAILED');
+                } else if (message.phase === 'booting') {
+                  lifecycle.send('RETRY_BOOT');
+                }
+                break;
+              case 'init':
+                session.status.initialized = true;
+                lifecycle.send('INIT_RECEIVED');
+                hooks.sendLoad('LOAD_SENT');
+                break;
+              case 'loaded':
+                session.status.loads++;
+                lifecycle.send('DIAGRAM_LOADED');
+                await hooks.onLoaded();
+                break;
+              case 'change':
+                await hooks.onChange(message.xml);
+                break;
+              case 'save':
+                await hooks.onSave(message.xml);
+                break;
+              case 'error':
+                void vscode.window.showErrorMessage(message.message);
+                break;
+              case 'requestSettings':
+                post({ type: 'settingsState', settings: getSettingsSnapshot() });
+                break;
+              case 'updateSetting':
+                await applySettingUpdate(message.key, message.value);
+                break;
+              case 'drawerAction':
+                await handleSettingsDrawerAction(message.action);
+                break;
+              case 'openExtensionSettings':
+                await openExtensionSettingsInVscode();
+                break;
+            }
+          })
+          .catch(() => undefined);
+      }),
+      panel.onDidChangeViewState(() => {
+        if (panel.active) {
+          this.setActiveSession(session);
+        } else if (this.activeSession === session) {
+          this.setActiveSession(undefined);
+        }
+      }),
+    );
+
+    panel.onDidDispose(() => {
+      hooks.onDisposeExtra?.();
+      lifecycle.send('DISPOSE');
+      this.sessions.delete(session);
+      if (this.activeSession === session) {
+        this.setActiveSession(undefined);
+      }
+      for (const resolve of session.pendingExports.values()) {
+        resolve({ error: 'Editor closed' });
+      }
+      session.pendingExports.clear();
+      disposables.forEach((d) => d.dispose());
+    });
+  }
+
   // ---- Text-backed custom editor (.drawio, .dio, .drawio.xml, .drawio.svg) --------------
 
   async resolveCustomTextEditor(document: vscode.TextDocument, panel: vscode.WebviewPanel): Promise<void> {
     const lifecycle = this.createLifecycleMachine(document.uri);
     let pendingEdits = 0;
-    const initialUrl = buildDrawioUrl();
+    let editQueue: Promise<boolean> = Promise.resolve(true);
+    const maybeUrl = this.resolveEffectiveUrlSyncOrAsync();
+    const initialUrl = maybeUrl instanceof Promise ? await maybeUrl : maybeUrl;
 
     const session: EditorSession = {
       panel,
@@ -403,6 +534,12 @@ export class DrawioEditorProvider implements vscode.CustomTextEditorProvider {
       pendingExports: new Map(),
       status: { initialized: false, loads: 0, changes: 0 },
       isEditQueueIdle: () => pendingEdits === 0 && session.pendingExports.size === 0,
+      flushPendingEdits: async () => {
+        if (session.syncMachine && !session.syncMachine.isSettled) {
+          await session.syncMachine.flush();
+        }
+        await editQueue;
+      },
     };
     this.sessions.add(session);
     if (panel.active) {
@@ -417,7 +554,6 @@ export class DrawioEditorProvider implements vscode.CustomTextEditorProvider {
     let lastAppliedVersion = -1;
     let applyingEdit = false;
     let initialLoadPersist: 'none' | 'persist_on_first_load' = 'none';
-    let editQueue: Promise<boolean> = Promise.resolve(true);
     let latestXml: string | undefined;
 
     const isDisposed = () => lifecycle.state === 'disposed';
@@ -465,13 +601,18 @@ export class DrawioEditorProvider implements vscode.CustomTextEditorProvider {
           if (isDisposed()) {
             return false;
           }
-          if (document.getText() === xml) {
+          const currentText = document.getText();
+          const delta = computeMinimalTextChange(currentText, xml);
+          if (!delta) {
             lastAppliedVersion = document.version;
             return true;
           }
           const edit = new vscode.WorkspaceEdit();
-          const fullRange = new vscode.Range(0, 0, document.lineCount, 0);
-          edit.replace(document.uri, fullRange, xml);
+          const minRange = new vscode.Range(
+            document.positionAt(delta.startOffset),
+            document.positionAt(delta.endOffset),
+          );
+          edit.replace(document.uri, minRange, delta.replacement);
           applyingEdit = true;
           try {
             const ok = await vscode.workspace.applyEdit(edit);
@@ -514,90 +655,7 @@ export class DrawioEditorProvider implements vscode.CustomTextEditorProvider {
       : undefined;
     session.syncMachine = svgSyncMachine as CoalescedTaskMachine<unknown> | undefined;
 
-    let messageChain: Promise<void> = Promise.resolve();
-    const disposables: vscode.Disposable[] = [];
-    disposables.push(
-      panel.webview.onDidReceiveMessage((message: WebviewMessage) => {
-        if (message.type === 'export') {
-          const resolve = session.pendingExports.get(message.requestId);
-          session.pendingExports.delete(message.requestId);
-          resolve?.(message);
-          return;
-        }
-        messageChain = messageChain
-          .then(async () => {
-            if (isDisposed()) {
-              return;
-            }
-            switch (message.type) {
-              case 'ready': {
-                lifecycle.send('SETUP_SENT');
-                const setup = this.buildSetupPayloadSyncOrAsync();
-                post(setup instanceof Promise ? await setup : setup);
-                break;
-              }
-              case 'phase':
-                if (message.phase === 'configured') {
-                  lifecycle.send('BRIDGE_CONFIGURED');
-                } else if (message.phase === 'failed') {
-                  lifecycle.send('LOAD_FAILED');
-                } else if (message.phase === 'booting') {
-                  lifecycle.send('RETRY_BOOT');
-                }
-                break;
-              case 'init':
-                session.status.initialized = true;
-                lifecycle.send('INIT_RECEIVED');
-                sendLoad('LOAD_SENT');
-                break;
-              case 'loaded':
-                session.status.loads++;
-                lifecycle.send('DIAGRAM_LOADED');
-                if (initialLoadPersist === 'persist_on_first_load') {
-                  initialLoadPersist = 'none';
-                  const exported = await this.requestExport(session, 'xmlsvg', svgColorOptions());
-                  if (exported.data && !isDisposed()) {
-                    const svg = Buffer.from(decodeDataUri(exported.data)).toString('utf8');
-                    const embeddedXml = extractDiagramFromSvg(svg);
-                    const ok = await applyXml(svgFile ? (embeddedXml ? replaceEmbeddedDiagram(svg, embeddedXml) : svg) : (embeddedXml ?? svg));
-                    if (ok && !isDisposed()) {
-                      await document.save();
-                    }
-                  }
-                }
-                break;
-              case 'change': {
-                latestXml = message.xml;
-                const applied = await (svgSyncMachine ? svgSyncMachine.schedule() : applyXml(message.xml));
-                if (applied) {
-                  session.status.changes++;
-                }
-                break;
-              }
-              case 'save': {
-                latestXml = message.xml;
-                const ok = await (svgSyncMachine ? svgSyncMachine.flush() : applyXml(message.xml));
-                if (ok && !isDisposed()) {
-                  await document.save();
-                }
-                break;
-              }
-              case 'error':
-                void vscode.window.showErrorMessage(message.message);
-                break;
-              case 'requestSettings':
-                post({ type: 'settingsState', settings: getSettingsSnapshot() });
-                break;
-              case 'updateSetting':
-                await applySettingUpdate(message.key, message.value);
-                break;
-              case 'openExtensionSettings':
-                await openExtensionSettingsInVscode();
-                break;
-            }
-          })
-          .catch(() => undefined);
-      }),
+    const disposables: vscode.Disposable[] = [
       vscode.workspace.onWillSaveTextDocument((e) => {
         if (e.document.uri.toString() === document.uri.toString() && svgSyncMachine?.hasPendingDebounce) {
           e.waitUntil(svgSyncMachine.flush().then(() => []));
@@ -617,27 +675,43 @@ export class DrawioEditorProvider implements vscode.CustomTextEditorProvider {
           sendLoad('RELOAD_EXTERNAL');
         }
       }),
-      panel.onDidChangeViewState(() => {
-        if (panel.active) {
-          this.setActiveSession(session);
-        } else if (this.activeSession === session) {
-          this.setActiveSession(undefined);
-        }
-      }),
-    );
+    ];
 
-    panel.onDidDispose(() => {
-      svgSyncMachine?.dispose();
-      lifecycle.send('DISPOSE');
-      this.sessions.delete(session);
-      if (this.activeSession === session) {
-        this.setActiveSession(undefined);
-      }
-      for (const resolve of session.pendingExports.values()) {
-        resolve({ error: 'Editor closed' });
-      }
-      session.pendingExports.clear();
-      disposables.forEach((d) => d.dispose());
+    this.wireCommonSessionLifecycle(session, disposables, {
+      sendLoad,
+      onLoaded: async () => {
+        if (initialLoadPersist === 'persist_on_first_load') {
+          initialLoadPersist = 'none';
+          const exported = await this.requestExport(session, 'xmlsvg', svgColorOptions());
+          if (exported.data && !isDisposed()) {
+            const svg = Buffer.from(decodeDataUri(exported.data)).toString('utf8');
+            const embeddedXml = extractDiagramFromSvg(svg);
+            const ok = await applyXml(
+              svgFile ? (embeddedXml ? replaceEmbeddedDiagram(svg, embeddedXml) : svg) : (embeddedXml ?? svg),
+            );
+            if (ok && !isDisposed()) {
+              await document.save();
+            }
+          }
+        }
+      },
+      onChange: async (xml) => {
+        latestXml = xml;
+        const applied = await (svgSyncMachine ? svgSyncMachine.schedule() : applyXml(xml));
+        if (applied) {
+          session.status.changes++;
+        }
+      },
+      onSave: async (xml) => {
+        latestXml = xml;
+        const ok = await (svgSyncMachine ? svgSyncMachine.flush() : applyXml(xml));
+        if (ok && !isDisposed()) {
+          await document.save();
+        }
+      },
+      onDisposeExtra: () => {
+        svgSyncMachine?.dispose();
+      },
     });
   }
 
@@ -667,7 +741,8 @@ export class DrawioEditorProvider implements vscode.CustomTextEditorProvider {
   private async resolvePngEditor(document: DrawioPngDocument, panel: vscode.WebviewPanel): Promise<void> {
     const key = document.uri.toString();
     const lifecycle = this.createLifecycleMachine(document.uri);
-    const initialUrl = buildDrawioUrl();
+    const maybeUrl = this.resolveEffectiveUrlSyncOrAsync();
+    const initialUrl = maybeUrl instanceof Promise ? await maybeUrl : maybeUrl;
     const session: EditorSession = {
       panel,
       uri: document.uri,
@@ -677,6 +752,11 @@ export class DrawioEditorProvider implements vscode.CustomTextEditorProvider {
       pendingExports: new Map(),
       status: { initialized: false, loads: 0, changes: 0 },
       isEditQueueIdle: () => session.pendingExports.size === 0,
+      flushPendingEdits: async () => {
+        if (session.syncMachine && !session.syncMachine.isSettled) {
+          await session.syncMachine.flush();
+        }
+      },
     };
     this.sessions.add(session);
     if (panel.active) {
@@ -790,111 +870,40 @@ export class DrawioEditorProvider implements vscode.CustomTextEditorProvider {
       disposables.push(watcher);
     }
 
-    let messageChain: Promise<void> = Promise.resolve();
-    disposables.push(
-      panel.webview.onDidReceiveMessage((message: WebviewMessage) => {
-        if (message.type === 'export') {
-          const resolve = session.pendingExports.get(message.requestId);
-          session.pendingExports.delete(message.requestId);
-          resolve?.(message);
-          return;
-        }
-        messageChain = messageChain
-          .then(async () => {
-            if (isDisposed()) {
-              return;
+    this.wireCommonSessionLifecycle(session, disposables, {
+      sendLoad,
+      onLoaded: async () => {
+        if (initialLoadPersist === 'persist_on_first_load') {
+          initialLoadPersist = 'none';
+          const ok = await pngSyncMachine.flush();
+          if (ok && !isDisposed()) {
+            writingDisk = true;
+            try {
+              await vscode.workspace.fs.writeFile(document.uri, document.bytes);
+              document.markSaved();
+            } finally {
+              writingDisk = false;
             }
-            switch (message.type) {
-              case 'ready': {
-                lifecycle.send('SETUP_SENT');
-                const setup = this.buildSetupPayloadSyncOrAsync();
-                post(setup instanceof Promise ? await setup : setup);
-                break;
-              }
-              case 'phase':
-                if (message.phase === 'configured') {
-                  lifecycle.send('BRIDGE_CONFIGURED');
-                } else if (message.phase === 'failed') {
-                  lifecycle.send('LOAD_FAILED');
-                } else if (message.phase === 'booting') {
-                  lifecycle.send('RETRY_BOOT');
-                }
-                break;
-              case 'init':
-                session.status.initialized = true;
-                lifecycle.send('INIT_RECEIVED');
-                sendLoad('LOAD_SENT');
-                break;
-              case 'loaded':
-                session.status.loads++;
-                lifecycle.send('DIAGRAM_LOADED');
-                if (initialLoadPersist === 'persist_on_first_load') {
-                  initialLoadPersist = 'none';
-                  const ok = await pngSyncMachine.flush();
-                  if (ok && !isDisposed()) {
-                    writingDisk = true;
-                    try {
-                      await vscode.workspace.fs.writeFile(document.uri, document.bytes);
-                      document.markSaved();
-                    } finally {
-                      writingDisk = false;
-                    }
-                  }
-                }
-                break;
-              case 'change': {
-                const applied = await pngSyncMachine.schedule();
-                if (applied) {
-                  session.status.changes++;
-                }
-                break;
-              }
-              case 'save': {
-                const ok = await pngSyncMachine.flush();
-                if (ok && !isDisposed()) {
-                  await vscode.commands.executeCommand('workbench.action.files.save');
-                }
-                break;
-              }
-              case 'error':
-                void vscode.window.showErrorMessage(message.message);
-                break;
-              case 'requestSettings':
-                post({ type: 'settingsState', settings: getSettingsSnapshot() });
-                break;
-              case 'updateSetting':
-                await applySettingUpdate(message.key, message.value);
-                break;
-              case 'openExtensionSettings':
-                await openExtensionSettingsInVscode();
-                break;
-            }
-          })
-          .catch(() => undefined);
-      }),
-      panel.onDidChangeViewState(() => {
-        if (panel.active) {
-          this.setActiveSession(session);
-        } else if (this.activeSession === session) {
-          this.setActiveSession(undefined);
+          }
         }
-      }),
-    );
-
-    panel.onDidDispose(() => {
-      pngSyncMachine.dispose();
-      lifecycle.send('DISPOSE');
-      this.pngSyncMachines.delete(key);
-      this.pngReloaders.delete(key);
-      this.sessions.delete(session);
-      if (this.activeSession === session) {
-        this.setActiveSession(undefined);
-      }
-      for (const resolve of session.pendingExports.values()) {
-        resolve({ error: 'Editor closed' });
-      }
-      session.pendingExports.clear();
-      disposables.forEach((d) => d.dispose());
+      },
+      onChange: async () => {
+        const applied = await pngSyncMachine.schedule();
+        if (applied) {
+          session.status.changes++;
+        }
+      },
+      onSave: async () => {
+        const ok = await pngSyncMachine.flush();
+        if (ok && !isDisposed()) {
+          await vscode.commands.executeCommand('workbench.action.files.save');
+        }
+      },
+      onDisposeExtra: () => {
+        pngSyncMachine.dispose();
+        this.pngSyncMachines.delete(key);
+        this.pngReloaders.delete(key);
+      },
     });
   }
 
@@ -979,6 +988,131 @@ export class DrawioEditorProvider implements vscode.CustomTextEditorProvider {
       decodeDataUri(result.data),
       isSvg ? { SVG: ['svg'] } : { PNG: ['png'] },
     );
+  }
+
+  async exportActivePdf(target?: vscode.Uri): Promise<vscode.Uri | undefined> {
+    const session = this.currentSession;
+    if (!session) {
+      void vscode.window.showWarningMessage(t('No active draw.io editor.'));
+      return undefined;
+    }
+    const scale = Math.max(1, config().get<number>('preview.pngScale', 2));
+    const result = await this.requestExport(session, 'png', {
+      spinKey: 'export',
+      border: 10,
+      scale,
+      background: '#ffffff',
+    });
+    if (result.error || !result.data) {
+      void vscode.window.showErrorMessage(t('Export failed: {0}', result.error ?? 'no data'));
+      return undefined;
+    }
+    const pngBytes = decodeDataUri(result.data);
+    const pdfBytes = buildPdfDocument([{ bytes: pngBytes, format: 'png', scale }]);
+    if (target) {
+      await vscode.workspace.fs.writeFile(target, pdfBytes);
+      return target;
+    }
+    await saveBytes(withExtension(session.uri, '.pdf'), pdfBytes, { PDF: ['pdf'] });
+    return withExtension(session.uri, '.pdf');
+  }
+
+  /**
+   * Exports all `<diagram>` pages of a Draw.io file (either active editor or disk URI)
+   * as individual SVG/PNG files or a multi-page PDF document.
+   */
+  async exportAllPages(
+    uriArg?: vscode.Uri,
+    format: 'svg' | 'png' | 'pdf' = 'svg',
+    outDirArg?: vscode.Uri,
+  ): Promise<vscode.Uri[]> {
+    let sourceUri = uriArg;
+    let rawXml: string | undefined;
+    const active = !uriArg ? await this.getActiveDiagramXml() : undefined;
+    if (active) {
+      sourceUri = active.uri;
+      rawXml = active.xml;
+    } else if (sourceUri) {
+      rawXml = await readDrawioXmlFromUri(sourceUri);
+    }
+
+    if (!sourceUri || !rawXml) {
+      void vscode.window.showWarningMessage(t('No active draw.io editor.'));
+      return [];
+    }
+
+    const pages = extractDrawioPages(rawXml);
+    if (pages.length === 0) {
+      return [];
+    }
+
+    const outDir =
+      outDirArg ??
+      (sourceUri.scheme === 'file' ? vscode.Uri.joinPath(sourceUri, '..') : vscode.workspace.workspaceFolders?.[0]?.uri);
+    if (!outDir) {
+      return [];
+    }
+
+    const stem =
+      path
+        .basename(sourceUri.path)
+        .replace(/\.(?:drawio|dio)\.(?:svg|png|xml)$/i, '')
+        .replace(/\.[^.]+$/, '') || 'diagram';
+    const matchingSession = [...this.sessions].find((s) => s.uri.toString() === sourceUri!.toString());
+    const written: vscode.Uri[] = [];
+    const pdfPages: Array<{ bytes: Uint8Array; format: 'png'; scale?: number }> = [];
+
+    for (let i = 0; i < pages.length; i++) {
+      const page = pages[i];
+      const safeName = page.name.replace(/[^\w\u0080-\uffff.-]+/g, '_').replace(/^_+|_+$/g, '') || `Page-${i + 1}`;
+      const suffix = pages.length === 1 ? '' : `-${safeName}`;
+      const singleMxfile = `<mxfile>${page.diagramXml}</mxfile>`;
+
+      if (format === 'svg') {
+        let svgBytes: Uint8Array;
+        if (matchingSession && pages.length === 1) {
+          const res = await this.requestExport(matchingSession, 'xmlsvg', { border: 10, ...svgColorOptions() });
+          svgBytes = res.data
+            ? decodeDataUri(res.data)
+            : Buffer.from(replaceEmbeddedDiagram(renderMxfileToPreviewSvg(singleMxfile), singleMxfile), 'utf8');
+        } else {
+          const rendered = renderMxfileToPreviewSvg(singleMxfile);
+          svgBytes = Buffer.from(replaceEmbeddedDiagram(rendered, singleMxfile), 'utf8');
+        }
+        const dest = vscode.Uri.joinPath(outDir, `${stem}${suffix}.drawio.svg`);
+        await vscode.workspace.fs.writeFile(dest, svgBytes);
+        written.push(dest);
+      } else if (matchingSession) {
+        const res = await this.requestExport(matchingSession, 'png', {
+          border: 10,
+          scale: 2,
+          background: '#ffffff',
+          pageId: page.id,
+        });
+        if (!res.data) {
+          continue;
+        }
+        const pngBytes = decodeDataUri(res.data);
+        if (format === 'png') {
+          const dest = vscode.Uri.joinPath(outDir, `${stem}${suffix}.png`);
+          await vscode.workspace.fs.writeFile(dest, pngBytes);
+          written.push(dest);
+        } else {
+          pdfPages.push({ bytes: pngBytes, format: 'png', scale: 2 });
+        }
+      }
+    }
+
+    if (format === 'pdf' && pdfPages.length > 0) {
+      const pdfDest = vscode.Uri.joinPath(outDir, `${stem}.pdf`);
+      await vscode.workspace.fs.writeFile(pdfDest, buildPdfDocument(pdfPages));
+      written.push(pdfDest);
+    }
+
+    if (written.length > 0) {
+      void vscode.window.setStatusBarMessage(t('Exported {0} pages', written.length), 3000);
+    }
+    return written;
   }
 
   async copyActive(format: 'svg' | 'png'): Promise<void> {
@@ -1101,6 +1235,7 @@ export class DrawioEditorProvider implements vscode.CustomTextEditorProvider {
     if (!session) {
       return undefined;
     }
+    await session.flushPendingEdits();
     if (!session.isBinaryPng) {
       const openDoc = vscode.workspace.textDocuments.find((d) => d.uri.toString() === session.uri.toString());
       if (openDoc) {
@@ -1181,74 +1316,24 @@ export class DrawioEditorProvider implements vscode.CustomTextEditorProvider {
   }
 }
 
-async function loadCustomLibraries(): Promise<{ entries: Array<Record<string, unknown>>; ids: string[] }> {
-  if (!vscode.workspace.isTrusted) {
-    return { entries: [], ids: [] };
-  }
-  const configured = config().get<string[]>('drawio.customLibraries', []);
-  if (!Array.isArray(configured) || configured.length === 0) {
-    return { entries: [], ids: [] };
-  }
-  const entries: Array<Record<string, unknown>> = [];
-  const ids: string[] = [];
-  const rootFolder = vscode.workspace.workspaceFolders?.[0]?.uri;
-
-  for (let i = 0; i < configured.length; i++) {
-    const item = String(configured[i] ?? '').trim();
-    if (!item) {
-      continue;
+export async function readDrawioXmlFromUri(uri: vscode.Uri): Promise<string | undefined> {
+  const openDoc = vscode.workspace.textDocuments.find((d) => d.uri.toString() === uri.toString());
+  if (openDoc) {
+    const text = openDoc.getText();
+    if (isSvgDiagramPath(uri.path)) {
+      return extractDiagramFromSvg(text);
     }
-    const id = `drawgraph-custom-${i}`;
-    if (/^https?:\/\//i.test(item)) {
-      const title = item.split('/').pop()?.replace(/\.(xml|drawio)$/i, '') || `Library ${i + 1}`;
-      entries.push({
-        id,
-        title: { main: title },
-        desc: { main: item },
-        libs: [{ title: { main: title }, url: item }],
-      });
-      ids.push(id);
-      continue;
-    }
-    const fileUri = path.isAbsolute(item)
-      ? vscode.Uri.file(item)
-      : rootFolder
-        ? vscode.Uri.joinPath(rootFolder, item)
-        : undefined;
-    if (!fileUri) {
-      continue;
-    }
-    try {
-      const raw = Buffer.from(await vscode.workspace.fs.readFile(fileUri)).toString('utf8');
-      const parsed = parseMxLibraryXml(raw);
-      if (!parsed) {
-        continue;
-      }
-      const title = path.basename(fileUri.path).replace(/\.(xml|drawio)$/i, '') || `Library ${i + 1}`;
-      entries.push({
-        id,
-        title: { main: title },
-        desc: { main: item },
-        libs: [{ title: { main: title }, data: parsed }],
-      });
-      ids.push(id);
-    } catch {
-      // Skip unreadable library files silently so editor startup still succeeds.
-    }
+    return text.trim() ? text : undefined;
   }
-  return { entries, ids };
-}
-
-export function parseMxLibraryXml(raw: string): unknown[] | undefined {
-  const trimmed = raw.trim();
-  const match = /<mxlibrary\b[^>]*>([\s\S]*?)<\/mxlibrary>/i.exec(trimmed);
-  const jsonText = (match ? match[1] : trimmed).trim();
-  try {
-    const parsed = JSON.parse(jsonText);
-    return Array.isArray(parsed) ? parsed : undefined;
-  } catch {
-    return undefined;
+  const bytes = await vscode.workspace.fs.readFile(uri);
+  if (isPngDiagramPath(uri.path)) {
+    return extractDiagramFromPng(bytes);
   }
+  const raw = Buffer.from(bytes).toString('utf8');
+  if (isSvgDiagramPath(uri.path)) {
+    return extractDiagramFromSvg(raw);
+  }
+  return raw.trim() ? raw : undefined;
 }
 
 function svgColorOptions(): Record<string, unknown> {
@@ -1259,11 +1344,12 @@ function svgColorOptions(): Record<string, unknown> {
 const EMPTY_DIAGRAM =
   '<mxfile><diagram id="page-1" name="Page-1"><mxGraphModel><root><mxCell id="0"/><mxCell id="1" parent="0"/></root></mxGraphModel></diagram></mxfile>';
 
-function buildDrawioUrl(): URL {
+function buildDrawioUrl(explicitBaseUrl?: string): URL {
   const cfg = config();
+  const rawBase = explicitBaseUrl || cfg.get<string>('drawio.url') || 'https://embed.diagrams.net/';
   let url: URL;
   try {
-    url = new URL(cfg.get<string>('drawio.url') || 'https://embed.diagrams.net/');
+    url = new URL(rawBase);
     if (url.protocol !== 'https:' && url.protocol !== 'http:') {
       url = new URL('https://embed.diagrams.net/');
     }

@@ -1,12 +1,19 @@
 import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { navigateToCodeTarget } from '../codeLinks';
+import { buildPdfDocument } from '../export/pdfWriter';
 import { t } from '../l10n';
 import type { DiagramDiagnostics } from '../language/diagramFeatures';
 import { extractMermaidErrorLine } from '../language/symbols';
 import { countPages, pickBlock, splitDiagrams } from '../plantuml/encoder';
 import { CancelledError, extractPlantUmlError, PlantUmlRenderer, type WorkerPhase } from '../plantuml/renderer';
-import { applySettingUpdate, getSettingsSnapshot, openExtensionSettingsInVscode } from '../settingsSnapshot';
+import type { HostToPreviewMessage, PreviewToHostMessage } from '../protocol/messages';
+import {
+  applySettingUpdate,
+  getSettingsSnapshot,
+  handleSettingsDrawerAction,
+  openExtensionSettingsInVscode,
+} from '../settingsSnapshot';
 import { StateMachine, type MachineSnapshot, type TransitionRecord, type TransitionTable } from '../stateMachine';
 import { config, decodeDataUri, getNonce, isDarkTheme, resolveAutoExportUri, saveBytes, withExtension } from '../util';
 
@@ -103,20 +110,19 @@ const PREVIEW_TRANSITIONS: TransitionTable<PreviewPhase, PreviewEvent> = {
 
 const PREVIEW_SETTLED: readonly PreviewPhase[] = ['ready', 'error', 'empty', 'disposed'];
 
-/** Explicit discriminated union replacing ad-hoc `manualBlockIndex` + `suppressCursorSync` timer flags. */
 type BlockSelectionState =
   | { mode: 'cursor'; line: number | undefined }
   | { mode: 'manual'; blockIndex: number; expectedEditorLine?: number };
 
-/** What the webview last reported, exposed for diagnostics and integration tests. */
 export interface RenderStatus {
   state: 'pending' | 'rendered' | 'error' | 'empty';
   width?: number;
   height?: number;
   error?: string;
-  /** Number of status reports received so far. */
   count: number;
 }
+
+type OffscreenResult = { data?: string; width?: number; height?: number; error?: string };
 
 let previewSeq = 0;
 
@@ -125,6 +131,8 @@ class DiagramPreview {
   readonly lifecycle: StateMachine<PreviewPhase, PreviewEvent>;
   readonly renderer: PlantUmlRenderer;
   private readonly disposables: vscode.Disposable[] = [];
+  private readonly pendingOffscreen = new Map<number, (res: OffscreenResult) => void>();
+  private offscreenCounter = 0;
   private updateTimer: NodeJS.Timeout | undefined;
   private lastBlockKey: string | undefined;
   private selection: BlockSelectionState = { mode: 'cursor', line: undefined };
@@ -165,7 +173,7 @@ class DiagramPreview {
 
     this.disposables.push(
       panel.onDidDispose(() => this.dispose()),
-      panel.webview.onDidReceiveMessage((msg) => this.onMessage(msg)),
+      panel.webview.onDidReceiveMessage((msg: PreviewToHostMessage) => this.onMessage(msg)),
     );
   }
 
@@ -200,6 +208,10 @@ class DiagramPreview {
     this.post({ type: 'toggleSettings', settings: getSettingsSnapshot() });
   }
 
+  pushSettingsState(): void {
+    this.post({ type: 'settingsState', settings: getSettingsSnapshot() });
+  }
+
   private buildLocalizedLabels(): Record<string, string> {
     return {
       locked: t('Locked'),
@@ -218,9 +230,14 @@ class DiagramPreview {
       mapTitle: t('Toggle minimap (m)'),
       find: t('Find'),
       findTitle: t('Find text in diagram (Cmd/Ctrl+F or /)'),
+      present: t('Present'),
+      presentTitle: t('Presentation & Spotlight mode (p)'),
+      exitPresent: t('Exit Presentation (Esc)'),
+      laser: t('Laser'),
       lockTitle: t('Lock or unlock preview to current file'),
       exportSvgTitle: t('Export as SVG'),
       exportPngTitle: t('Export as PNG'),
+      exportPdfTitle: t('Export as PDF'),
       copySvg: t('Copy SVG'),
       copySvgTitle: t('Copy SVG to clipboard'),
       copyPng: t('Copy PNG'),
@@ -272,13 +289,11 @@ class DiagramPreview {
     }
   }
 
-  /** Called when the cursor moves in an editor showing this document (PlantUML: choose the diagram block). */
   setCursorLine(line: number) {
     if (this.kind !== 'plantuml') {
       return;
     }
     if (this.selection.mode === 'manual' && this.selection.expectedEditorLine === line) {
-      // Consume programmatic cursor sync triggered by toolbar `navigate()` without leaving manual mode.
       this.selection = { mode: 'manual', blockIndex: this.selection.blockIndex };
       return;
     }
@@ -301,8 +316,30 @@ class DiagramPreview {
     }, delay);
   }
 
-  requestSilentExport(format: 'svg' | 'png'): void {
+  requestSilentExport(format: 'svg' | 'png' | 'pdf'): void {
     this.post({ type: 'silentExport', format });
+  }
+
+  requestOffscreenMermaid(source: string, format: 'svg' | 'png'): Promise<OffscreenResult> {
+    const requestId = ++this.offscreenCounter;
+    return new Promise<OffscreenResult>((resolve) => {
+      const timer = setTimeout(() => {
+        if (this.pendingOffscreen.delete(requestId)) {
+          resolve({ error: t('Timed out rendering Mermaid diagram.') });
+        }
+      }, 20000);
+      this.pendingOffscreen.set(requestId, (res) => {
+        clearTimeout(timer);
+        resolve(res);
+      });
+      this.post({
+        type: 'renderOffscreen',
+        requestId,
+        source,
+        theme: mermaidTheme(),
+        format,
+      });
+    });
   }
 
   private currentCursorLine(): number | undefined {
@@ -469,31 +506,28 @@ class DiagramPreview {
     editor.revealRange(new vscode.Range(pos, pos), vscode.TextEditorRevealType.InCenterIfOutsideViewport);
   }
 
-  private post(message: unknown) {
+  private post(message: HostToPreviewMessage) {
     if (!this.isDisposed) {
       void this.panel.webview.postMessage(message);
     }
   }
 
-  private async onMessage(msg: {
-    type: string;
-    format?: string;
-    data?: string;
-    message?: string;
-    label?: string;
-    target?: string;
-    fallbackLabel?: string;
-    key?: string;
-    value?: unknown;
-    delta?: number;
-    line?: number;
-    state?: RenderStatus['state'];
-    width?: number;
-    height?: number;
-  }) {
+  private async onMessage(msg: PreviewToHostMessage) {
     switch (msg.type) {
+      case 'offscreenRendered': {
+        const resolve = this.pendingOffscreen.get(msg.requestId);
+        this.pendingOffscreen.delete(msg.requestId);
+        resolve?.(msg);
+        break;
+      }
       case 'status': {
-        this.status = { state: msg.state ?? 'pending', width: msg.width, height: msg.height, error: msg.message, count: this.status.count + 1 };
+        this.status = {
+          state: msg.state ?? 'pending',
+          width: msg.width,
+          height: msg.height,
+          error: msg.message,
+          count: this.status.count + 1,
+        };
         if (msg.state === 'rendered') {
           this.lifecycle.send('RENDER_OK');
         } else if (msg.state === 'empty') {
@@ -528,6 +562,11 @@ class DiagramPreview {
           await saveBytes(withExtension(this.uri, '.svg'), Buffer.from(msg.data, 'utf8'), { SVG: ['svg'] });
         } else if (msg.format === 'png') {
           await saveBytes(withExtension(this.uri, '.png'), decodeDataUri(msg.data), { PNG: ['png'] });
+        } else if (msg.format === 'pdf') {
+          const pngBytes = decodeDataUri(msg.data);
+          const scale = Math.max(1, config().get<number>('preview.pngScale', 2));
+          const pdfBytes = buildPdfDocument([{ bytes: pngBytes, format: 'png', scale }]);
+          await saveBytes(withExtension(this.uri, '.pdf'), pdfBytes, { PDF: ['pdf'] });
         }
         break;
       case 'autoExportData': {
@@ -571,6 +610,9 @@ class DiagramPreview {
           await applySettingUpdate(msg.key, msg.value);
         }
         break;
+      case 'drawerAction':
+        await handleSettingsDrawerAction(msg.action);
+        break;
       case 'openExtensionSettings':
         await openExtensionSettingsInVscode();
         break;
@@ -582,9 +624,12 @@ class DiagramPreview {
     const nonce = getNonce();
     const cfg = config();
     const media = (...p: string[]) => webview.asWebviewUri(vscode.Uri.joinPath(this.context.extensionUri, 'media', ...p));
+    const imgSrc = vscode.workspace.isTrusted
+      ? `${webview.cspSource} https: data: blob:`
+      : `${webview.cspSource} data: blob:`;
     const csp = [
       `default-src 'none'`,
-      `img-src ${webview.cspSource} https: data: blob:`,
+      `img-src ${imgSrc}`,
       `style-src ${webview.cspSource} 'unsafe-inline'`,
       `font-src ${webview.cspSource} data:`,
       `script-src 'nonce-${nonce}'`,
@@ -624,10 +669,12 @@ class DiagramPreview {
     <button id="bgToggle" title="${tr('Cycle preview background')}">${tr('Bg: Auto')}</button>
     <button id="mapToggle" title="${tr('Toggle minimap (m)')}">${tr('Map')}</button>
     <button id="findToggle" title="${tr('Find text in diagram (Cmd/Ctrl+F or /)')}">${tr('Find')}</button>
+    <button id="presentToggle" title="${tr('Presentation & Spotlight mode (p)')}">${tr('Present')}</button>
     <button id="lockToggle" title="${tr('Lock or unlock preview to current file')}">${tr('Pin')}</button>
     <span class="sep"></span>
     <button id="exportSvg" title="${tr('Export as SVG')}">SVG</button>
     <button id="exportPng" title="${tr('Export as PNG')}">PNG</button>
+    <button id="exportPdf" title="${tr('Export as PDF')}">PDF</button>
     <button id="copySvg" title="${tr('Copy SVG to clipboard')}">${tr('Copy SVG')}</button>
     <button id="copyPng" title="${tr('Copy PNG image to clipboard')}">${tr('Copy PNG')}</button>
     <span class="sep"></span>
@@ -640,6 +687,11 @@ class DiagramPreview {
   </div>
   <div id="stage">
     <div id="canvas"></div>
+    <div id="presentHud" hidden>
+      <button id="laserToggleBtn" type="button">${tr('Laser')}</button>
+      <button id="exitPresentBtn" type="button">${tr('Exit Presentation (Esc)')}</button>
+    </div>
+    <div id="laserDot" hidden></div>
     <div id="findBar" hidden>
       <input id="findInput" type="text" placeholder="${tr('Find in diagram…')}">
       <span id="findCount">0/0</span>
@@ -667,6 +719,10 @@ class DiagramPreview {
     }
     clearTimeout(this.updateTimer);
     this.updateTimer = undefined;
+    for (const resolve of this.pendingOffscreen.values()) {
+      resolve({ error: 'Preview disposed' });
+    }
+    this.pendingOffscreen.clear();
     this.lifecycle.send('DISPOSE');
     this.renderer.dispose();
     this.disposables.forEach((d) => d.dispose());
@@ -679,7 +735,7 @@ function escapeAttr(text: string): string {
   return text.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
 }
 
-function mermaidTheme(): string {
+export function mermaidTheme(): string {
   const theme = config().get<string>('mermaid.theme', 'auto');
   if (theme === 'auto') {
     return isDarkTheme() ? 'dark' : 'default';
@@ -691,6 +747,11 @@ export class PreviewManager implements vscode.WebviewPanelSerializer {
   static readonly viewType = 'drawGraph.preview';
   private readonly previews = new Map<string, DiagramPreview>();
   private readonly sharedExporter: PlantUmlRenderer;
+  private workerPanel: vscode.WebviewPanel | undefined;
+  private workerReady: Promise<void> | undefined;
+  private workerIdleTimer: NodeJS.Timeout | undefined;
+  private workerPending = new Map<number, (res: OffscreenResult) => void>();
+  private workerReqSeq = 0;
 
   constructor(
     private readonly context: vscode.ExtensionContext,
@@ -741,11 +802,16 @@ export class PreviewManager implements vscode.WebviewPanelSerializer {
       }),
       {
         dispose: () => {
+          this.disposeWorkerPanel();
           this.sharedExporter.dispose();
           this.previews.forEach((p) => p.dispose());
         },
       },
     );
+  }
+
+  broadcastSettingsState(): void {
+    this.previews.forEach((p) => p.pushSettingsState());
   }
 
   private retargetPreview(preview: DiagramPreview, newUri: vscode.Uri, kind: DiagramKind, cursorLine?: number): void {
@@ -818,7 +884,7 @@ export class PreviewManager implements vscode.WebviewPanelSerializer {
     }
   }
 
-  async renderPlantUmlBytes(source: string, format: 'svg' | 'png', baseDir?: string): Promise<Uint8Array> {
+  async renderPlantUmlBytes(source: string, format: 'svg' | 'png' | 'pdf', baseDir?: string): Promise<Uint8Array> {
     const cfg = config();
     const opts = {
       mode: cfg.get<'auto' | 'local' | 'server'>('plantuml.render', 'auto'),
@@ -836,33 +902,202 @@ export class PreviewManager implements vscode.WebviewPanelSerializer {
       }
       return Buffer.from(svg, 'utf8');
     }
-    return this.sharedExporter.renderPng(source, opts);
+    const pngBytes = await this.sharedExporter.renderPng(source, opts);
+    if (format === 'pdf') {
+      return buildPdfDocument([{ bytes: pngBytes, format: 'png', scale: 1 }]);
+    }
+    return pngBytes;
   }
 
-  async exportPlantUmlBlock(uri: vscode.Uri, blockIndex: number, format: 'svg' | 'png'): Promise<void> {
+  /**
+   * Renders Mermaid source code to `svg`, `png`, or `pdf` bytes, reusing any open Mermaid
+   * preview webview or spinning up a short-lived background worker webview when needed.
+   */
+  async renderMermaidBytes(source: string, format: 'svg' | 'png' | 'pdf'): Promise<Uint8Array> {
+    const rasterFmt = format === 'svg' ? 'svg' : 'png';
+    const openMermaid = [...this.previews.values()].find((p) => p.kind === 'mermaid');
+    const result = openMermaid
+      ? await openMermaid.requestOffscreenMermaid(source, rasterFmt)
+      : await this.runInWorkerWebview(source, rasterFmt);
+
+    if (result.error || !result.data) {
+      throw new Error(result.error ?? t('Mermaid export failed.'));
+    }
+    if (format === 'svg') {
+      return Buffer.from(result.data, 'utf8');
+    }
+    const pngBytes = decodeDataUri(result.data);
+    if (format === 'pdf') {
+      const scale = Math.max(1, config().get<number>('preview.pngScale', 2));
+      return buildPdfDocument([{ bytes: pngBytes, format: 'png', scale }]);
+    }
+    return pngBytes;
+  }
+
+  private async runInWorkerWebview(source: string, format: 'svg' | 'png'): Promise<OffscreenResult> {
+    if (this.workerIdleTimer) {
+      clearTimeout(this.workerIdleTimer);
+      this.workerIdleTimer = undefined;
+    }
+
+    if (!this.workerPanel) {
+      const media = vscode.Uri.joinPath(this.context.extensionUri, 'media');
+      const panel = vscode.window.createWebviewPanel(
+        'drawGraph.mermaidWorker',
+        t('Rendering Mermaid…'),
+        { viewColumn: vscode.ViewColumn.Beside, preserveFocus: true },
+        { enableScripts: true, localResourceRoots: [media] },
+      );
+      this.workerPanel = panel;
+      const nonce = getNonce();
+      const mermaidUri = panel.webview.asWebviewUri(vscode.Uri.joinPath(media, 'vendor', 'mermaid.min.js'));
+      const pngScale = Math.max(1, config().get<number>('preview.pngScale', 2));
+
+      this.workerReady = new Promise<void>((resolveReady) => {
+        const sub = panel.webview.onDidReceiveMessage((msg: { type: string; requestId?: number; data?: string; width?: number; height?: number; error?: string }) => {
+          if (msg.type === 'workerReady') {
+            resolveReady();
+          } else if (msg.type === 'offscreenRendered' && msg.requestId !== undefined) {
+            const cb = this.workerPending.get(msg.requestId);
+            this.workerPending.delete(msg.requestId);
+            cb?.(msg);
+          }
+        });
+        panel.onDidDispose(() => {
+          sub.dispose();
+          if (this.workerPanel === panel) {
+            this.workerPanel = undefined;
+            this.workerReady = undefined;
+          }
+          for (const cb of this.workerPending.values()) {
+            cb({ error: 'Worker closed' });
+          }
+          this.workerPending.clear();
+        });
+      });
+
+      const csp = `default-src 'none'; img-src ${panel.webview.cspSource} data: blob:; style-src 'unsafe-inline'; script-src 'nonce-${nonce}';`;
+      panel.webview.html = /* html */ `<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><meta http-equiv="Content-Security-Policy" content="${csp}"></head>
+<body>
+<script nonce="${nonce}" src="${mermaidUri}"></script>
+<script nonce="${nonce}">
+(function () {
+  const vscode = acquireVsCodeApi();
+  let seq = 0;
+  let lastTheme = '';
+  window.addEventListener('message', async (ev) => {
+    const msg = ev.data;
+    if (!msg || msg.type !== 'renderOffscreen') return;
+    try {
+      if (msg.theme !== lastTheme) {
+        window.mermaid.initialize({ startOnLoad: false, theme: msg.theme || 'default', securityLevel: 'strict', htmlLabels: false, flowchart: { htmlLabels: false } });
+        lastTheme = msg.theme;
+      }
+      const id = 'dg-worker-' + (++seq);
+      const out = await window.mermaid.render(id, msg.source);
+      document.getElementById('d' + id)?.remove();
+      const doc = new DOMParser().parseFromString(out.svg, 'image/svg+xml');
+      const svg = doc.documentElement;
+      const vb = svg.viewBox && svg.viewBox.baseVal;
+      const w = (vb && vb.width > 0 ? vb.width : parseFloat(svg.getAttribute('width') || '400')) || 400;
+      const h = (vb && vb.height > 0 ? vb.height : parseFloat(svg.getAttribute('height') || '300')) || 300;
+      svg.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+      svg.setAttribute('width', String(w));
+      svg.setAttribute('height', String(h));
+      svg.removeAttribute('style');
+      const serialized = new XMLSerializer().serializeToString(svg);
+      if (msg.format === 'svg') {
+        vscode.postMessage({ type: 'offscreenRendered', requestId: msg.requestId, data: serialized, width: w, height: h });
+        return;
+      }
+      const scale = ${pngScale};
+      const url = URL.createObjectURL(new Blob([serialized], { type: 'image/svg+xml' }));
+      const img = new Image();
+      img.onload = () => {
+        try {
+          const c = document.createElement('canvas');
+          c.width = Math.ceil(w * scale);
+          c.height = Math.ceil(h * scale);
+          const ctx = c.getContext('2d');
+          ctx.fillStyle = '#ffffff';
+          ctx.fillRect(0, 0, c.width, c.height);
+          ctx.drawImage(img, 0, 0, c.width, c.height);
+          vscode.postMessage({ type: 'offscreenRendered', requestId: msg.requestId, data: c.toDataURL('image/png'), width: w, height: h });
+        } catch (e) {
+          vscode.postMessage({ type: 'offscreenRendered', requestId: msg.requestId, error: String(e && e.message || e) });
+        } finally {
+          URL.revokeObjectURL(url);
+        }
+      };
+      img.onerror = () => {
+        URL.revokeObjectURL(url);
+        vscode.postMessage({ type: 'offscreenRendered', requestId: msg.requestId, error: 'Rasterization failed' });
+      };
+      img.src = url;
+    } catch (err) {
+      vscode.postMessage({ type: 'offscreenRendered', requestId: msg.requestId, error: String(err && err.message || err) });
+    }
+  });
+  vscode.postMessage({ type: 'workerReady' });
+})();
+</script>
+</body></html>`;
+    }
+
+    await this.workerReady;
+    const requestId = ++this.workerReqSeq;
+    const result = await new Promise<OffscreenResult>((resolve) => {
+      const timer = setTimeout(() => {
+        if (this.workerPending.delete(requestId)) {
+          resolve({ error: t('Timed out rendering Mermaid diagram.') });
+        }
+      }, 20000);
+      this.workerPending.set(requestId, (res) => {
+        clearTimeout(timer);
+        resolve(res);
+      });
+      void this.workerPanel?.webview.postMessage({
+        type: 'renderOffscreen',
+        requestId,
+        source,
+        theme: mermaidTheme(),
+        format,
+      });
+    });
+
+    this.workerIdleTimer = setTimeout(() => {
+      if (this.workerPending.size === 0) {
+        this.disposeWorkerPanel();
+      }
+    }, 1500);
+
+    return result;
+  }
+
+  private disposeWorkerPanel(): void {
+    if (this.workerIdleTimer) {
+      clearTimeout(this.workerIdleTimer);
+      this.workerIdleTimer = undefined;
+    }
+    this.workerPanel?.dispose();
+    this.workerPanel = undefined;
+    this.workerReady = undefined;
+  }
+
+  async exportPlantUmlBlock(uri: vscode.Uri, blockIndex: number, format: 'svg' | 'png' | 'pdf'): Promise<void> {
     const document = await vscode.workspace.openTextDocument(uri);
     const blocks = splitDiagrams(document.getText());
     const block = blocks[blockIndex] ?? blocks[0];
     if (!block) {
       return;
     }
-    const cfg = config();
-    const opts = {
-      mode: cfg.get<'auto' | 'local' | 'server'>('plantuml.render', 'auto'),
-      server: cfg.get('plantuml.server', 'https://www.plantuml.com/plantuml'),
-      jar: cfg.get('plantuml.jar', ''),
-      java: cfg.get('plantuml.java', 'java'),
-      dot: cfg.get('plantuml.dot', ''),
-      baseDir: document.uri.scheme === 'file' ? path.dirname(document.uri.fsPath) : undefined,
-    };
+    const baseDir = document.uri.scheme === 'file' ? path.dirname(document.uri.fsPath) : undefined;
     try {
-      if (format === 'svg') {
-        const svg = await this.sharedExporter.render(block.source, opts);
-        await saveBytes(withExtension(uri, '.svg'), Buffer.from(svg, 'utf8'), { SVG: ['svg'] });
-      } else {
-        const png = await this.sharedExporter.renderPng(block.source, opts);
-        await saveBytes(withExtension(uri, '.png'), png, { PNG: ['png'] });
-      }
+      const bytes = await this.renderPlantUmlBytes(block.source, format, baseDir);
+      const filterMap: Record<string, string[]> =
+        format === 'svg' ? { SVG: ['svg'] } : format === 'pdf' ? { PDF: ['pdf'] } : { PNG: ['png'] };
+      await saveBytes(withExtension(uri, `.${format}`), bytes, filterMap);
     } catch (err) {
       void vscode.window.showErrorMessage(t('Export failed: {0}', (err as Error).message));
     }
@@ -884,6 +1119,15 @@ export class PreviewManager implements vscode.WebviewPanelSerializer {
       const openPreview = this.previews.get(document.uri.toString());
       if (openPreview) {
         openPreview.requestSilentExport(mode);
+        return;
+      }
+      try {
+        const bytes = await this.renderMermaidBytes(document.getText(), mode);
+        const target = resolveAutoExportUri(document.uri, mode === 'svg' ? '.svg' : '.png');
+        await vscode.workspace.fs.writeFile(target, bytes);
+        void vscode.window.setStatusBarMessage(t('Exported to {0}', vscode.workspace.asRelativePath(target)), 2500);
+      } catch (err) {
+        void vscode.window.showErrorMessage(t('Export failed: {0}', (err as Error).message));
       }
       return;
     }
@@ -891,21 +1135,10 @@ export class PreviewManager implements vscode.WebviewPanelSerializer {
     if (blocks.length === 0) {
       return;
     }
-    const cfg = config();
-    const opts = {
-      mode: cfg.get<'auto' | 'local' | 'server'>('plantuml.render', 'auto'),
-      server: cfg.get('plantuml.server', 'https://www.plantuml.com/plantuml'),
-      jar: cfg.get('plantuml.jar', ''),
-      java: cfg.get('plantuml.java', 'java'),
-      dot: cfg.get('plantuml.dot', ''),
-      baseDir: document.uri.scheme === 'file' ? path.dirname(document.uri.fsPath) : undefined,
-    };
+    const baseDir = document.uri.scheme === 'file' ? path.dirname(document.uri.fsPath) : undefined;
     try {
       const target = resolveAutoExportUri(document.uri, mode === 'svg' ? '.svg' : '.png');
-      const data =
-        mode === 'svg'
-          ? Buffer.from(await this.sharedExporter.render(blocks[0].source, opts), 'utf8')
-          : await this.sharedExporter.renderPng(blocks[0].source, opts);
+      const data = await this.renderPlantUmlBytes(blocks[0].source, mode, baseDir);
       await vscode.workspace.fs.writeFile(target, data);
       void vscode.window.setStatusBarMessage(t('Exported to {0}', vscode.workspace.asRelativePath(target)), 2500);
     } catch (err) {
@@ -932,7 +1165,6 @@ export class PreviewManager implements vscode.WebviewPanelSerializer {
     }
   }
 
-  /** Snapshot of every open preview (backwards-compatible + explicit FSM metadata). */
   snapshot(): Array<{
     uri: string;
     kind: DiagramKind;

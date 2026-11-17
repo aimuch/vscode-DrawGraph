@@ -625,6 +625,258 @@ test('Settings Drawer, runtime Chinese/English switching, and Draw.io GitHub bad
   }
 });
 
+function makeMiniZip(entries) {
+  const crcTable = new Uint32Array(256);
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    crcTable[n] = c >>> 0;
+  }
+  const crc32 = (buf) => {
+    let c = 0xffffffff;
+    for (const b of buf) c = crcTable[(c ^ b) & 0xff] ^ (c >>> 8);
+    return (c ^ 0xffffffff) >>> 0;
+  };
+  const locals = [];
+  const centrals = [];
+  let offset = 0;
+  for (const e of entries) {
+    const nameBuf = Buffer.from(e.name, 'utf8');
+    const dataBuf = Buffer.from(e.content, 'utf8');
+    const crc = crc32(dataBuf);
+    const loc = Buffer.alloc(30);
+    loc.writeUInt32LE(0x04034b50, 0);
+    loc.writeUInt16LE(20, 4);
+    loc.writeUInt32LE(crc, 14);
+    loc.writeUInt32LE(dataBuf.length, 18);
+    loc.writeUInt32LE(dataBuf.length, 22);
+    loc.writeUInt16LE(nameBuf.length, 26);
+    locals.push(loc, nameBuf, dataBuf);
+    const cen = Buffer.alloc(46);
+    cen.writeUInt32LE(0x02014b50, 0);
+    cen.writeUInt16LE(20, 4);
+    cen.writeUInt16LE(20, 6);
+    cen.writeUInt32LE(crc, 16);
+    cen.writeUInt32LE(dataBuf.length, 20);
+    cen.writeUInt32LE(dataBuf.length, 24);
+    cen.writeUInt16LE(nameBuf.length, 28);
+    cen.writeUInt32LE(offset, 42);
+    centrals.push(cen, nameBuf);
+    offset += 30 + nameBuf.length + dataBuf.length;
+  }
+  const centralBuf = Buffer.concat(centrals);
+  const eocd = Buffer.alloc(22);
+  eocd.writeUInt32LE(0x06054b50, 0);
+  eocd.writeUInt16LE(entries.length, 8);
+  eocd.writeUInt16LE(entries.length, 10);
+  eocd.writeUInt32LE(centralBuf.length, 12);
+  eocd.writeUInt32LE(offset, 16);
+  return Buffer.concat([...locals, centralBuf, eocd]);
+}
+
+test('v0.3 language intelligence, converters, PDF/multi-page export, code-to-diagram, visual diff, explorer, presentation mode, and offline pack work', async () => {
+  await vscode.commands.executeCommand('workbench.action.closeAllEditors');
+
+  // 1. Language Intelligence: DocumentLinks, Rename, ColorPicker, QuickFix, SignatureHelp, Hover
+  const intelUri = file('intel-v03.puml');
+  fs.writeFileSync(
+    intelUri.fsPath,
+    [
+      '@startuml',
+      '!include <C4/C4_Container>',
+      '!include sequence.puml',
+      'skinparam backgroundColor #1e293b',
+      'Container(orderSvc, "Order Service", "Node.js")',
+      'orderSvc -> Billing : flowchart.mmd:1',
+    ].join('\n'),
+  );
+
+  try {
+    await vscode.workspace.openTextDocument(intelUri);
+    const links = await vscode.commands.executeCommand('vscode.executeLinkProvider', intelUri);
+    assert.ok(Array.isArray(links) && links.length >= 2, 'DocumentLinkProvider found !include and file:line links');
+
+    const colors = await vscode.commands.executeCommand('vscode.executeDocumentColorProvider', intelUri);
+    assert.ok(Array.isArray(colors) && colors.length === 1, 'DocumentColorProvider found #1e293b');
+
+    const sigHelp = await vscode.commands.executeCommand(
+      'vscode.executeSignatureHelpProvider',
+      intelUri,
+      new vscode.Position(4, 22),
+      ',',
+    );
+    assert.ok(sigHelp && sigHelp.signatures.length >= 1 && sigHelp.activeParameter === 1, 'C4 SignatureHelp returned');
+
+    const hovers = await vscode.commands.executeCommand(
+      'vscode.executeHoverProvider',
+      intelUri,
+      new vscode.Position(4, 4),
+    );
+    assert.ok(Array.isArray(hovers) && hovers.length >= 1, 'C4 HoverProvider returned macro documentation');
+
+    const codeActions = await vscode.commands.executeCommand(
+      'vscode.executeCodeActionProvider',
+      intelUri,
+      new vscode.Range(0, 0, 0, 5),
+    );
+    assert.ok(Array.isArray(codeActions) && codeActions.some((a) => a.title.includes('@enduml')), 'Quick Fix suggests @enduml');
+
+    const renameEdit = await vscode.commands.executeCommand(
+      'vscode.executeDocumentRenameProvider',
+      intelUri,
+      new vscode.Position(5, 3),
+      'checkoutSvc',
+    );
+    assert.ok(renameEdit && await vscode.workspace.applyEdit(renameEdit), 'RenameProvider produced valid WorkspaceEdit');
+    const renamedDoc = await vscode.workspace.openTextDocument(intelUri);
+    assert.match(renamedDoc.getText(), /Container\(checkoutSvc,/);
+    assert.match(renamedDoc.getText(), /checkoutSvc -> Billing/);
+    await vscode.commands.executeCommand('workbench.action.files.revert');
+  } finally {
+    if (fs.existsSync(intelUri.fsPath)) {
+      fs.unlinkSync(intelUri.fsPath);
+    }
+  }
+
+  // 2. PlantUML <-> Mermaid Converters & Universal PDF Export & Multi-Page Draw.io Export
+  const convMmdDoc = await vscode.commands.executeCommand('drawGraph.convert.plantumlToMermaid', file('sequence.puml'));
+  assert.ok(convMmdDoc && convMmdDoc.languageId === 'mermaid' && convMmdDoc.getText().includes('sequenceDiagram'));
+  await vscode.commands.executeCommand('workbench.action.revertAndCloseActiveEditor');
+
+  const convPumlDoc = await vscode.commands.executeCommand('drawGraph.convert.mermaidToPlantuml', file('flowchart.mmd'));
+  assert.ok(convPumlDoc && convPumlDoc.languageId === 'plantuml' && convPumlDoc.getText().includes('@startuml'));
+  await vscode.commands.executeCommand('workbench.action.revertAndCloseActiveEditor');
+
+  const pdfOut = file('flowchart-export.pdf');
+  const multiDrawio = file('multipage.drawio');
+  const multiDir = file('multipage-out');
+  fs.mkdirSync(multiDir.fsPath, { recursive: true });
+  fs.writeFileSync(
+    multiDrawio.fsPath,
+    '<mxfile>' +
+      '<diagram id="p1" name="Overview"><mxGraphModel><root><mxCell id="0"/><mxCell id="1" parent="0"/><mxCell id="a" value="Alpha" vertex="1" parent="1"><mxGeometry x="20" y="20" width="100" height="40" as="geometry"/></mxCell></root></mxGraphModel></diagram>' +
+      '<diagram id="p2" name="Detail"><mxGraphModel><root><mxCell id="0"/><mxCell id="1" parent="0"/><mxCell id="b" value="Beta" vertex="1" parent="1"><mxGeometry x="20" y="20" width="100" height="40" as="geometry"/></mxCell></root></mxGraphModel></diagram>' +
+      '</mxfile>',
+  );
+  try {
+    await vscode.commands.executeCommand('drawGraph.exportPdf', file('flowchart.mmd'), pdfOut);
+    const pdfBytes = fs.readFileSync(pdfOut.fsPath);
+    assert.ok(pdfBytes.subarray(0, 8).toString('latin1').startsWith('%PDF-1.4'), 'valid PDF 1.4 exported from Mermaid');
+
+    const pageFiles = await vscode.commands.executeCommand('drawGraph.drawio.exportAllPages', multiDrawio, 'svg', multiDir);
+    assert.equal(pageFiles.length, 2, 'exported 2 Draw.io pages');
+    assert.match(fs.readFileSync(pageFiles[0].fsPath, 'utf8'), /Alpha/);
+    assert.match(fs.readFileSync(pageFiles[1].fsPath, 'utf8'), /Beta/);
+
+    // 3. Diagram Explorer TreeView indexes workspace diagrams + multi-page children
+    api.diagnostics.diagramExplorer && await vscode.commands.executeCommand('drawGraph.diagramExplorer.refresh');
+    const treeEntries = await api.diagnostics.diagramExplorer();
+    assert.ok(treeEntries.some((e) => e.label === 'multipage.drawio' && e.childCount === 2), 'Explorer indexed multipage.drawio with 2 pages');
+    assert.ok(treeEntries.some((e) => e.label === 'notes.md' && e.childCount >= 1), 'Explorer indexed Markdown diagram fences');
+  } finally {
+    if (fs.existsSync(pdfOut.fsPath)) fs.unlinkSync(pdfOut.fsPath);
+    if (fs.existsSync(multiDrawio.fsPath)) fs.unlinkSync(multiDrawio.fsPath);
+    fs.rmSync(multiDir.fsPath, { recursive: true, force: true });
+  }
+
+  // 4. Code-to-Diagram Generator & Markdown Fence Export / Extract to .drawio.svg
+  const sampleTs = file('sampleService.ts');
+  const helperTs = file('sampleHelper.ts');
+  const mdTemp = file('extract-demo.md');
+  const extractedSvg = file('extract-demo-1.drawio.svg');
+  const fenceSvg = file('fence-out.svg');
+  fs.writeFileSync(helperTs.fsPath, 'export interface Store { save(id: string): void; }\n');
+  fs.writeFileSync(
+    sampleTs.fsPath,
+    'import { Store } from "./sampleHelper";\nexport class MemoryStore implements Store {\n  items: string[] = [];\n  save(id: string): void {}\n}\n',
+  );
+  fs.writeFileSync(mdTemp.fsPath, '# Architecture\n\n```mermaid\nflowchart LR\n  Client --> Server\n```\n');
+  try {
+    const genClsDoc = await vscode.commands.executeCommand('drawGraph.generateClassDiagram', sampleTs, 'mermaid');
+    assert.ok(genClsDoc && genClsDoc.getText().includes('MemoryStore'), 'generated Mermaid class diagram from TypeScript');
+    await vscode.commands.executeCommand('workbench.action.revertAndCloseActiveEditor');
+
+    const genDepDoc = await vscode.commands.executeCommand('drawGraph.generateDependencyDiagram', sampleTs, 'mermaid');
+    assert.ok(genDepDoc && genDepDoc.getText().includes('sampleService.ts') && genDepDoc.getText().includes('sampleHelper.ts'));
+    await vscode.commands.executeCommand('workbench.action.revertAndCloseActiveEditor');
+
+    await vscode.commands.executeCommand('drawGraph.markdown.exportFence', mdTemp, 0, 'svg', fenceSvg);
+    assert.match(fs.readFileSync(fenceSvg.fsPath, 'utf8'), /^<svg/);
+
+    await vscode.commands.executeCommand('drawGraph.markdown.extractToDrawioSvg', mdTemp, 0, extractedSvg);
+    assert.match(fs.readFileSync(extractedSvg.fsPath, 'utf8'), /content="&lt;mxfile/);
+    const updatedMd = await vscode.workspace.openTextDocument(mdTemp);
+    assert.match(updatedMd.getText(), /!\[diagram\]\(\.\/extract-demo-1\.drawio\.svg\)/);
+    await vscode.commands.executeCommand('workbench.action.files.revert');
+  } finally {
+    for (const f of [sampleTs, helperTs, mdTemp, extractedSvg, fenceSvg]) {
+      if (fs.existsSync(f.fsPath)) fs.unlinkSync(f.fsPath);
+    }
+  }
+
+  // 5. Visual Diagram Diff + Presentation Mode + Offline Pack ZIP Import & Loopback Server
+  const diffV2 = file('arch-v2.drawio');
+  fs.writeFileSync(
+    diffV2.fsPath,
+    fs.readFileSync(file('architecture.drawio').fsPath, 'utf8').replace('Webview', 'Webview v2'),
+  );
+  const packZip = file('mini-drawio-pack.zip');
+  fs.writeFileSync(
+    packZip.fsPath,
+    makeMiniZip([
+      { name: 'webapp/index.html', content: '<!doctype html><title>Offline Draw.io Pack</title>' },
+      { name: 'webapp/js/app.js', content: 'window.__OFFLINE_PACK__ = true;' },
+    ]),
+  );
+  try {
+    await vscode.commands.executeCommand('drawGraph.visualDiffFiles', file('architecture.drawio'), diffV2);
+    await waitFor('visual diff webview ready', () => api.diagnostics.visualDiffs().some((d) => d.ready), 15000);
+
+    // Presentation mode toggle in Mermaid preview
+    const mmdDoc = await vscode.workspace.openTextDocument(file('flowchart.mmd'));
+    await vscode.window.showTextDocument(mmdDoc, vscode.ViewColumn.One);
+    await vscode.commands.executeCommand('drawGraph.preview.openToSide');
+    await waitFor('flowchart preview ready', () => previewOf(file('flowchart.mmd'))?.status.state === 'rendered');
+    const toggledPresent = await waitFor(
+      'presentation mode toggled in preview webview',
+      async () => {
+        const targets = await (await fetch('http://127.0.0.1:9339/json')).json();
+        for (const t of targets.filter((x) => /vscode-webview/.test(x.url || '') && x.webSocketDebuggerUrl)) {
+          const ok = await evalInTarget(
+            (cand) => cand.id === t.id,
+            `(() => {
+              const doc = (document.querySelector('#active-frame') && document.querySelector('#active-frame').contentDocument) || document;
+              const btn = doc.querySelector('#presentToggle');
+              if (!btn) return false;
+              btn.click();
+              return doc.body.classList.contains('presentation-mode');
+            })()`,
+          );
+          if (ok === true) return true;
+        }
+        return false;
+      },
+      10000,
+    );
+    assert.equal(toggledPresent, true);
+
+    // Offline pack import -> loopback HTTP server serves index.html -> remove cleans up
+    const imported = await vscode.commands.executeCommand('drawGraph.drawio.importOfflinePack', packZip);
+    assert.equal(imported, true);
+    const packState = api.diagnostics.offlinePack();
+    assert.equal(packState.installed, true);
+    assert.ok(packState.serverOrigin && packState.serverOrigin.startsWith('http://127.0.0.1:'));
+    const servedHtml = await (await fetch(`${packState.serverOrigin}/index.html`)).text();
+    assert.match(servedHtml, /Offline Draw\.io Pack/);
+    await vscode.commands.executeCommand('drawGraph.drawio.removeOfflinePack');
+    assert.equal(api.diagnostics.offlinePack().installed, false);
+  } finally {
+    if (fs.existsSync(diffV2.fsPath)) fs.unlinkSync(diffV2.fsPath);
+    if (fs.existsSync(packZip.fsPath)) fs.unlinkSync(packZip.fsPath);
+    await vscode.commands.executeCommand('workbench.action.closeAllEditors');
+  }
+});
+
 exports.run = async function run() {
   const failures = [];
   for (const { name, fn } of tests) {

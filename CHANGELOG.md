@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.3.0
+
+- **Git Visual Diagram Diff (`DrawGraph: Visual Diagram Diff vs Git HEAD` & `Compare Two Diagram Files Visually…`)**: Interactive visual diff viewer for `.drawio`, `.drawio.svg`, `.drawio.png`, `.mmd`, and `.puml` files directly from the Source Control (SCM) context menu or editor toolbar, featuring synchronized **Side-by-Side** pan/zoom, draggable **Swipe** curtain, and **Onion-Skin + RGBA Pixel Diff** highlighting.
+- **Code-to-Diagram Generators (`DrawGraph: Generate Class Diagram from Code…` & `Generate Module Dependency Diagram…`)**: Reverse-engineer workspace source files and folders into **Mermaid**, **PlantUML**, or editable **Draw.io** class and module-import graphs.
+- **Workspace Diagram Explorer (`drawGraph.diagramExplorer`)**: Dedicated Explorer sidebar tree indexing all `.drawio*`, `.mmd`, `.puml`, and diagram-bearing `.md` files with expandable Draw.io pages, PlantUML blocks, and Markdown fences.
+- **On-Demand Offline Draw.io Engine Pack (`drawGraph.drawio.offlineMode`)**: Keep the default VSIX lightweight while allowing one-click download or `.war`/`.zip` import of the Draw.io webapp into `globalStorageUri`, served via an ephemeral `127.0.0.1` loopback server for 100% air-gapped editing.
+- **Multi-Page Export & Zero-Dependency PDF 1.4 Export**: Export Draw.io, Mermaid, and PlantUML diagrams directly to `.pdf`, and batch-export multi-page Draw.io `<diagram>` tabs (`DrawGraph: Export All Draw.io Pages…`).
+- **Expanded Diagram Conversions**: Structured `classDiagram`, `erDiagram`, and `mindmap` layout engines in Mermaid-to-Draw.io conversion, plus bidirectional **PlantUML ↔ Mermaid** converters (`DrawGraph: Convert PlantUML to Mermaid` / `Convert Mermaid to PlantUML`).
+- **Markdown Diagram Workflows & Offscreen Mermaid Export**: Enriched Markdown fence CodeLens (`Export as SVG`, `Export as PNG`, `Open in Draw.io`, `Extract to .drawio.svg`) and background Mermaid worker rendering so unopened `.mmd` `exportOnSave` and `.md` batch export produce `.svg`/`.png`/`.pdf` images directly.
+- **Presentation & Spotlight Mode (`p` / `Present`)**: Distraction-free presentation view in Diagram Preview with click-to-spotlight node highlighting and interactive **Laser Pointer**.
+- **Deep Language Intelligence for Mermaid & PlantUML**: Added `DocumentLinkProvider` (clickable `!include`, URLs, `#Symbol`, and `file:line` targets), `HoverProvider` (C4 macro docs and inline hover image thumbnails for local diagram paths), `RenameProvider` (`F2` block-scoped identifier rename), `DocumentColorProvider` (inline hex color picker), `CodeActionProvider` (`Quick Fix` for common syntax errors), and PlantUML Stdlib (`<C4/...>`, `<awslib/...>`, `<azure/...>`, `<kubernetes/...>`) completions + C4 `SignatureHelpProvider`.
+- **Architecture, Performance & Security Hardening**: FIFO local PlantUML pipe queue eliminating multi-block Markdown self-cancellation, prefix/suffix minimal range `WorkspaceEdit` on Draw.io saves, `flushPendingEdits()` synchronization, shared protocol discriminated unions, unified host-injected Settings Drawer i18n dictionary, untrusted-workspace CSP/code-link boundary guards, and zero-`innerHTML` Settings Drawer DOM rendering.
+
 ## 0.2.0
 
 - Slide-in Settings Drawer (`DrawGraph: Open DrawGraph Settings Drawer`, `⚙` toolbar button in Draw.io and Diagram Preview) with one-click `中 | EN` display language toggle (`drawGraph.language`: `Auto` / `Simplified Chinese` / `English`) that switches DrawGraph UI, CodeLens, preview toolbars, and the embedded Draw.io editor language live without restarting VS Code.

@@ -20,10 +20,10 @@ DrawGraph 是一个 VS Code 插件，把三种常用的图表格式放进同一�
 然后在 VS Code 扩展视图右上角的 `…` 菜单中选择「从 VSIX 安装…」，或者在终端运行：
 
 ```bash
-code --install-extension drawgraph-0.2.0.vsix
+code --install-extension drawgraph-0.3.0.vsix
 ```
 
-安装包是离线的（Mermaid 已打包在内），但 draw.io 编辑器默认仍从 embed.diagrams.net 加载，见下文“渲染方式与隐私”。
+安装包默认保持超轻量（约 1.7 MB，已内嵌 Mermaid）；如需在无外网环境下使用 draw.io，可在设置抽屉中一键**下载或导入官方 `draw.war` / `.zip` 离线引擎包**（由本地 `127.0.0.1` 服务加载），见下文“渲染方式与隐私”。
 
 ## 功能
 
@@ -39,6 +39,12 @@ code --install-extension drawgraph-0.2.0.vsix
 - **自定义图形库**：通过 `drawGraph.drawio.customLibraries` 配置工作区内的 `<mxlibrary>` `.xml` 文件或 HTTPS 地址，打开编辑器时自动挂载到左侧元件栏。
 - **纯净界面（默认隐藏右下角 GitHub 图标）**：默认隐藏 draw.io 界面右下角的 GitHub 徽标小图标，需要时可在设置抽屉或 `drawGraph.drawio.hideGithubIcon` 中随时开关。
 - **架构与代码双向链接（Code Links）**：在 draw.io 节点标签或链接中写入 `#类名`、`#函数名` 或 `src/path/file.ts:42`，即可通过状态栏 `$(link) 代码链接` 或 `DrawGraph: 跳转 Draw.io 代码链接…` 直接跳转到工作区源码定义；也可使用 `DrawGraph: 向 Draw.io 插入工作区代码符号…` 搜索并将工作区符号一键插入画布。
+- **按需离线引擎包（Offline Pack）与多页/PDF 导出**：支持在设置抽屉中一键下载或导入本地 `.war` / `.zip` 离线引擎包（`drawGraph.drawio.offlineMode`），完全断网也能流畅编辑；支持直接导出零依赖矢量尺寸对齐的 **PDF**（`DrawGraph: 将 Draw.io 图表导出为 PDF`）以及多页 `<diagram>` 批量导出（`DrawGraph: 批量导出 Draw.io 所有页面…`）。
+
+### Git 图表视觉对比（Visual Diagram Diff）与代码反向建模
+- **Git 视觉对比面板（`DrawGraph: 与 Git HEAD 进行图表视觉对比`）**：在源代码管理（SCM）变更列表右键 `.drawio`、`.drawio.svg`、`.drawio.png`、`.mmd`、`.puml` 文件（或通过快捷菜单），即可打开交互式视觉对比视图，支持**并排同步缩放平移（Side-by-Side）**、**拉帘滑动对比（Swipe）**以及**半透明叠影 + 像素级差异高亮（Onion / Pixel Diff）**，也可通过 `DrawGraph: 对比两个图表文件…` 对比任意两份图表。
+- **从工作区代码反向生成架构图**：右键源码文件或目录执行 `DrawGraph: 从源码生成类图…` 或 `DrawGraph: 从源码生成模块依赖图…`，自动解析类、接口、方法、继承实现与模块导入关系，一键生成 **Mermaid**、**PlantUML** 或可拖拽的 **Draw.io** 图表。
+- **工作区图表导航树（Diagram Explorer）**：在资源管理器侧边栏展开「工作区图表（Diagrams）」面板，集中索引工作区内所有 `.drawio*`、`.mmd`、`.puml` 及包含图表代码块的 `.md` 文档，并支持直接展开多页 Draw.io、多块 PlantUML 与 Markdown 代码块定位跳转。
 
 ### Mermaid 与 PlantUML 实时预览与编辑智能
 - 用 `Cmd/Ctrl+K V`、`Alt+D`（在侧边打开）或 `Cmd/Ctrl+Shift+V` 打开预览，也可以点击编辑器右上角按钮或图表上方的 **CodeLens 快捷操作**。
@@ -51,8 +57,9 @@ code --install-extension drawgraph-0.2.0.vsix
 - **批量导出与可分享链接**：支持一键批量导出多图 `.puml` 或 `.md` 文档中的所有图表（`DrawGraph: 批量导出文档中的所有图表…`），以及为 PlantUML 生成可分享的服务器 SVG/PNG URL 或 Markdown 图片代码（`DrawGraph: 生成可分享的 PlantUML 链接…`）；超长 PlantUML 图表在服务器模式下自动回退为 HTTP `POST` 避免 URL 长度限制。
 - **从图片逆向提取源码**：在资源管理器右键 `.svg` / `.png` 图片（或通过右上角菜单）执行 `DrawGraph: 提取图片中内嵌的图表源码`，即可解码还原内嵌的 Draw.io XML 或 PlantUML 源码（`<!--SRC=[...]-->`）。
 - 一个 PlantUML 文件包含多个 `@startuml … @enduml` 块或 `newpage` 多页时，预览自动跟随光标所在块，也可通过工具栏 `◀` / `▶`（或 `[` / `]` 键）翻页切换。
-- 提供语法高亮、**上下文智能补全（IntelliSense：关键字、`!theme` 主题、`skinparam` 属性及当前已声明的节点/参与者 ID）**、**一键代码格式化（`Shift+Alt+F`）**、**代码片段补全（Snippets）**、**文档大纲（Outline / Breadcrumbs）**、注释切换、括号匹配和代码折叠。
-- **Mermaid 转 Draw.io**：点击编辑器标题栏或 CodeLens 的「在 Draw.io 中打开」，可将 Mermaid 代码直接转换为可拖拽编辑的 draw.io 图表。
+- 提供语法高亮、**上下文智能补全（IntelliSense：关键字、`!theme` 主题、`skinparam` 属性、PlantUML `<C4/...>` / `<awslib/...>` 标准库及已声明节点 ID）**、**C4 宏参数签名提示（Signature Help）与悬停文档/缩略图预览（Hover）**、**`F2` 作用域安全重命名（Rename Symbol）**、**内联取色器（Color Picker）**、**语法错误一键快速修复（Quick Fix）**、**可点击 `!include` / 代码路径链接（Document Links）**、**一键代码格式化（`Shift+Alt+F`）**、**代码片段补全（Snippets）**与**文档大纲（Outline / Breadcrumbs）**。
+- **全屏演示与聚光灯模式（Presentation & Spotlight）**：在预览窗口点击「演示（Present）」或按 `p` 键进入无干扰演示视图，点击任意节点/子图即可聚光灯高亮并压暗周围元素，配合**激光笔（Laser / Shift 键）**轻松开展架构评审。
+- **多格式双向互转与 PDF 导出**：不仅支持将 Mermaid（流程图、时序图、状态图、类图 `classDiagram`、ER 图 `erDiagram`、思维导图 `mindmap`）转为原生可编辑的 Draw.io 图表，还支持 **PlantUML ↔ Mermaid 双向互转**（`DrawGraph: 将 PlantUML 转换为 Mermaid` / `将 Mermaid 转换为 PlantUML`）以及一键 **PDF 导出**。
 - 重新打开 VS Code 后，预览窗口会自动恢复。
 
 ### Markdown 中的 Mermaid 与 PlantUML
