@@ -82,11 +82,11 @@ jobs:
       - name: Run integration tests
         run: xvfb-run -a npm run test:integration
 
-  # Every push to main replaces the rolling "nightly" pre-release with the new VSIX.
+  # Every push (or manual dispatch) on main replaces the rolling "nightly" pre-release with the new VSIX.
   nightly:
     name: Publish nightly build
     needs: build
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -159,7 +159,14 @@ jobs:
           if [[ ! -s notes.md ]]; then
             echo "Release ${VERSION}" > notes.md
           fi
-          gh release create "$GITHUB_REF_NAME" "$FILE" \
-            --verify-tag \
-            --title "DrawGraph ${GITHUB_REF_NAME}" \
-            --notes-file notes.md
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" "$FILE" --clobber
+            gh release edit "$GITHUB_REF_NAME" \
+              --title "DrawGraph ${GITHUB_REF_NAME}" \
+              --notes-file notes.md
+          else
+            gh release create "$GITHUB_REF_NAME" "$FILE" \
+              --verify-tag \
+              --title "DrawGraph ${GITHUB_REF_NAME}" \
+              --notes-file notes.md
+          fi

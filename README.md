@@ -20,7 +20,7 @@ DrawGraph 是一个 VS Code 插件，把三种常用的图表格式放进同一�
 然后在 VS Code 扩展视图右上角的 `…` 菜单中选择「从 VSIX 安装…」，或者在终端运行：
 
 ```bash
-code --install-extension drawgraph-0.1.0.vsix
+code --install-extension drawgraph-0.2.0.vsix
 ```
 
 安装包是离线的（Mermaid 已打包在内），但 draw.io 编辑器默认仍从 embed.diagrams.net 加载，见下文“渲染方式与隐私”。

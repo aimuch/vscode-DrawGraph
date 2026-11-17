@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.0
 
 - Slide-in Settings Drawer (`DrawGraph: Open DrawGraph Settings Drawer`, `⚙` toolbar button in Draw.io and Diagram Preview) with one-click `中 | EN` display language toggle (`drawGraph.language`: `Auto` / `Simplified Chinese` / `English`) that switches DrawGraph UI, CodeLens, preview toolbars, and the embedded Draw.io editor language live without restarting VS Code.
 - Hide the bottom-right GitHub badge/icon inside the embedded Draw.io editor by default (`drawGraph.drawio.hideGithubIcon`).
