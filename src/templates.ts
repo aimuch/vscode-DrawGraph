@@ -37,9 +37,45 @@ DrawGraph --> User : live preview
 @enduml
 `;
 
+export const DOT_TEMPLATE = `digraph Architecture {
+  rankdir=LR;
+  node [shape=box, style="rounded,filled", fillcolor="#f8fafc"];
+
+  subgraph cluster_core {
+    label="Core Engine";
+    Gateway -> Service [label="gRPC"];
+    Service -> Cache [style=dashed];
+  }
+
+  DB [label="Primary DB", shape=cylinder, fillcolor="#dbeafe"];
+  Service -> DB;
+}
+`;
+
+export const WAVEDROM_TEMPLATE = `{
+  "signal": [
+    { "name": "CLK",  "wave": "p......." },
+    { "name": "CS_N", "wave": "10.....1" },
+    { "name": "DATA", "wave": "x3.4.5.x", "data": ["CMD", "ADDR", "PAYLOAD"] }
+  ],
+  "head": { "text": "Bus Timing Diagram", "tick": 0 }
+}
+`;
+
+export const WAVEDROM_REG_TEMPLATE = `{
+  "reg": [
+    { "bits": 1, "name": "EN", "attr": "RW", "type": 4 },
+    { "bits": 3, "name": "PRESCALE", "attr": "RW", "type": 5 },
+    { "bits": 4 },
+    { "bits": 8, "name": "TX_FIFO", "attr": "WO", "type": 3 }
+  ],
+  "config": { "bits": 16, "lanes": 1 }
+}
+`;
+
 export interface DiagramTemplate {
   id: string;
-  kind: 'mermaid' | 'plantuml' | 'drawio';
+  kind: 'mermaid' | 'plantuml' | 'drawio' | 'dot' | 'wavedrom';
   label: string;
   detail: string;
   content: string;
@@ -228,5 +264,26 @@ stop
     label: 'Draw.io: Flowchart (.drawio / .drawio.svg / .drawio.png)',
     detail: 'Editable visual canvas diagram',
     content: DRAWIO_TEMPLATE,
+  },
+  {
+    id: 'dot-digraph',
+    kind: 'dot',
+    label: 'Graphviz DOT: Directed Architecture Graph',
+    detail: 'Clustered DAG rendered offline or via Graphviz dot',
+    content: DOT_TEMPLATE,
+  },
+  {
+    id: 'wavedrom-timing',
+    kind: 'wavedrom',
+    label: 'WaveDrom: Digital Timing Waveform',
+    detail: 'Clock, chip-select, and data bus timing diagram',
+    content: WAVEDROM_TEMPLATE,
+  },
+  {
+    id: 'wavedrom-register',
+    kind: 'wavedrom',
+    label: 'WaveDrom: Hardware Register BitField',
+    detail: '16/32-bit register bit-field layout table',
+    content: WAVEDROM_REG_TEMPLATE,
   },
 ];

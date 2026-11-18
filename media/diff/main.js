@@ -26,6 +26,8 @@
   const diffStats = $('diffStats');
   const zoomResetBtn = $('zoomResetBtn');
   const gitRefBtn = $('gitRefBtn');
+  const fileQueueWrap = $('fileQueueWrap');
+  const fileQueueSelect = /** @type {HTMLSelectElement} */ ($('fileQueueSelect'));
   const pageSelect = /** @type {HTMLSelectElement} */ ($('pageSelect'));
 
   /** @type {'side' | 'swipe' | 'onion'} */
@@ -279,6 +281,15 @@
   });
 
   gitRefBtn.addEventListener('click', () => vscode.postMessage({ type: 'pickGitRef' }));
+  $('prevFileBtn')?.addEventListener('click', () => {
+    vscode.postMessage({ type: 'selectReviewFile', reviewIndex: (Number(fileQueueSelect.value) || 0) - 1 });
+  });
+  $('nextFileBtn')?.addEventListener('click', () => {
+    vscode.postMessage({ type: 'selectReviewFile', reviewIndex: (Number(fileQueueSelect.value) || 0) + 1 });
+  });
+  fileQueueSelect?.addEventListener('change', () => {
+    vscode.postMessage({ type: 'selectReviewFile', reviewIndex: Number(fileQueueSelect.value) || 0 });
+  });
   pageSelect.addEventListener('change', () => {
     vscode.postMessage({ type: 'selectPage', pageIndex: Number(pageSelect.value) || 0 });
   });
@@ -404,6 +415,23 @@
     gitRefBtn.hidden = !msg.isGit;
     if (msg.isGit && msg.gitRef) {
       gitRefBtn.textContent = `${msg.gitRef} ▾`;
+    }
+
+    if (fileQueueWrap && fileQueueSelect) {
+      if (Array.isArray(msg.reviewFiles) && msg.reviewFiles.length > 1) {
+        fileQueueWrap.hidden = false;
+        fileQueueSelect.replaceChildren(
+          ...msg.reviewFiles.map((rel, idx) => {
+            const opt = document.createElement('option');
+            opt.value = String(idx);
+            opt.textContent = `${idx + 1}/${msg.reviewFiles.length}: ${rel}`;
+            opt.selected = idx === msg.reviewIndex;
+            return opt;
+          }),
+        );
+      } else {
+        fileQueueWrap.hidden = true;
+      }
     }
 
     if (Array.isArray(msg.pages) && msg.pages.length > 1) {

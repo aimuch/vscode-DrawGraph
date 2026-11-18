@@ -1,13 +1,16 @@
 import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { navigateToCodeTarget } from '../codeLinks';
+import { buildInteractiveHtmlBundle } from '../export/htmlExporter';
 import { buildPdfDocument } from '../export/pdfWriter';
-import { t } from '../l10n';
+import { getLanguage, t } from '../l10n';
 import type { DiagramDiagnostics } from '../language/diagramFeatures';
 import { extractMermaidErrorLine } from '../language/symbols';
 import { countPages, pickBlock, splitDiagrams } from '../plantuml/encoder';
 import { CancelledError, extractPlantUmlError, PlantUmlRenderer, type WorkerPhase } from '../plantuml/renderer';
 import type { HostToPreviewMessage, PreviewToHostMessage } from '../protocol/messages';
+import { renderDotSvg } from '../renderers/dotRenderer';
+import { renderWaveDromToSvg } from '../renderers/wavedromRenderer';
 import {
   applySettingUpdate,
   getSettingsSnapshot,
@@ -17,18 +20,33 @@ import {
 import { StateMachine, type MachineSnapshot, type TransitionRecord, type TransitionTable } from '../stateMachine';
 import { config, decodeDataUri, getNonce, isDarkTheme, resolveAutoExportUri, saveBytes, withExtension } from '../util';
 
-export type DiagramKind = 'mermaid' | 'plantuml';
+export type DiagramKind = 'mermaid' | 'plantuml' | 'dot' | 'wavedrom';
 
 export function diagramKind(document: vscode.TextDocument): DiagramKind | undefined {
-  if (document.languageId === 'mermaid' || document.languageId === 'plantuml') {
+  if (
+    document.languageId === 'mermaid' ||
+    document.languageId === 'plantuml' ||
+    document.languageId === 'dot' ||
+    document.languageId === 'wavedrom'
+  ) {
     return document.languageId;
   }
-  const ext = path.extname(document.uri.path).toLowerCase();
+  const lower = document.uri.path.toLowerCase();
+  if (lower.endsWith('.wave.json')) {
+    return 'wavedrom';
+  }
+  const ext = path.extname(lower);
   if (ext === '.mmd' || ext === '.mermaid') {
     return 'mermaid';
   }
   if (['.puml', '.plantuml', '.pu', '.iuml', '.wsd'].includes(ext)) {
     return 'plantuml';
+  }
+  if (ext === '.dot' || ext === '.gv') {
+    return 'dot';
+  }
+  if (ext === '.wavedrom') {
+    return 'wavedrom';
   }
   return undefined;
 }
@@ -230,6 +248,10 @@ class DiagramPreview {
     this.post({ type: 'settingsState', settings: getSettingsSnapshot() });
   }
 
+  highlightCode(candidates: string[]): void {
+    this.post({ type: 'highlightCode', candidates });
+  }
+
   private buildLocalizedLabels(): Record<string, string> {
     return {
       locked: t('Locked'),
@@ -261,6 +283,8 @@ class DiagramPreview {
       exportPngTitle: t('Export as PNG'),
       exportPdf: t('Export as PDF'),
       exportPdfTitle: t('Export as PDF'),
+      exportHtml: t('Export as Interactive HTML'),
+      exportHtmlTitle: t('Export standalone interactive HTML presentation'),
       copySvg: t('Copy SVG'),
       copySvgTitle: t('Copy SVG to clipboard'),
       copyPng: t('Copy PNG'),
@@ -389,6 +413,41 @@ class DiagramPreview {
     if (this.kind === 'mermaid') {
       this.lifecycle.send('START_RENDER');
       this.post({ type: 'mermaid', source: text, theme: mermaidTheme() });
+      return;
+    }
+
+    if (this.kind === 'dot' || this.kind === 'wavedrom') {
+      if (!text.trim()) {
+        this.lastBlockKey = undefined;
+        this.diagnostics?.clear(this.uri);
+        this.lifecycle.send('RENDER_EMPTY');
+        this.post({ type: 'empty' });
+        return;
+      }
+      if (!force && text === this.lastBlockKey) {
+        if (this.lifecycle.state === 'debouncing') {
+          this.lifecycle.send('RENDER_OK', 'unchanged');
+        }
+        return;
+      }
+      this.lastBlockKey = text;
+      this.lifecycle.send('START_RENDER');
+      this.post({ type: 'loading' });
+      try {
+        const svg =
+          this.kind === 'dot'
+            ? await renderDotSvg(text, config().get('plantuml.dot', ''), vscode.workspace.isTrusted)
+            : renderWaveDromToSvg(text);
+        this.diagnostics?.clear(this.uri);
+        this.post({ type: 'svg', svg, info: '', canNav: false });
+      } catch (err) {
+        this.lastBlockKey = undefined;
+        const msg = (err as Error).message;
+        const lineMatch = /line\s+(\d+)/i.exec(msg);
+        this.diagnostics?.setError(document, lineMatch ? Math.max(0, parseInt(lineMatch[1], 10) - 1) : 0, msg);
+        this.lifecycle.send('RENDER_ERROR');
+        this.post({ type: 'error', message: msg });
+      }
       return;
     }
 
@@ -593,6 +652,14 @@ class DiagramPreview {
           const scale = Math.max(1, config().get<number>('preview.pngScale', 2));
           const pdfBytes = buildPdfDocument([{ bytes: pngBytes, format: 'png', scale }]);
           await saveBytes(withExtension(this.uri, '.pdf'), pdfBytes, { PDF: ['pdf'] });
+        } else if (msg.format === 'html') {
+          const html = buildInteractiveHtmlBundle({
+            title: path.basename(this.uri.path),
+            pages: [{ name: path.basename(this.uri.path), svg: msg.data }],
+            lang: getLanguage(),
+            defaultTheme: isDarkTheme() ? 'dark' : 'light',
+          });
+          await saveBytes(withExtension(this.uri, '.html'), Buffer.from(html, 'utf8'), { HTML: ['html'] });
         }
         break;
       case 'autoExportData': {
@@ -713,6 +780,7 @@ class DiagramPreview {
         <button id="exportSvg" role="menuitem" title="${tr('Export as SVG')}">${tr('Export as SVG')}</button>
         <button id="exportPng" role="menuitem" title="${tr('Export as PNG')}">${tr('Export as PNG')}</button>
         <button id="exportPdf" role="menuitem" title="${tr('Export as PDF')}">${tr('Export as PDF')}</button>
+        <button id="exportHtml" role="menuitem" title="${tr('Export standalone interactive HTML presentation')}">${tr('Export as Interactive HTML')}</button>
         <div class="menu-divider"></div>
         <button id="copySvg" role="menuitem" title="${tr('Copy SVG to clipboard')}">${tr('Copy SVG')}</button>
         <button id="copyPng" role="menuitem" title="${tr('Copy PNG image to clipboard')}">${tr('Copy PNG')}</button>
@@ -853,6 +921,17 @@ export class PreviewManager implements vscode.WebviewPanelSerializer {
     this.previews.forEach((p) => p.pushSettingsState());
   }
 
+  highlightCodeTargets(candidates: string[]): void {
+    if (candidates.length === 0) {
+      return;
+    }
+    for (const p of this.previews.values()) {
+      if (p.panel.visible) {
+        p.highlightCode(candidates);
+      }
+    }
+  }
+
   private retargetPreview(preview: DiagramPreview, newUri: vscode.Uri, kind: DiagramKind, cursorLine?: number): void {
     this.previews.delete(preview.uri.toString());
     preview.retarget(newUri, kind, cursorLine);
@@ -977,6 +1056,32 @@ export class PreviewManager implements vscode.WebviewPanelSerializer {
       return Buffer.from(result.data, 'utf8');
     }
     const pngBytes = decodeDataUri(result.data);
+    if (format === 'pdf') {
+      const scale = Math.max(1, config().get<number>('preview.pngScale', 2));
+      return buildPdfDocument([{ bytes: pngBytes, format: 'png', scale }]);
+    }
+    return pngBytes;
+  }
+
+  async renderDotBytes(source: string, format: 'svg' | 'png' | 'pdf'): Promise<Uint8Array> {
+    const svg = await renderDotSvg(source, config().get('plantuml.dot', ''), vscode.workspace.isTrusted);
+    if (format === 'svg') {
+      return Buffer.from(svg, 'utf8');
+    }
+    const pngBytes = await this.rasterizeSvgToPngBytes(svg);
+    if (format === 'pdf') {
+      const scale = Math.max(1, config().get<number>('preview.pngScale', 2));
+      return buildPdfDocument([{ bytes: pngBytes, format: 'png', scale }]);
+    }
+    return pngBytes;
+  }
+
+  async renderWaveDromBytes(source: string, format: 'svg' | 'png' | 'pdf'): Promise<Uint8Array> {
+    const svg = renderWaveDromToSvg(source);
+    if (format === 'svg') {
+      return Buffer.from(svg, 'utf8');
+    }
+    const pngBytes = await this.rasterizeSvgToPngBytes(svg);
     if (format === 'pdf') {
       const scale = Math.max(1, config().get<number>('preview.pngScale', 2));
       return buildPdfDocument([{ bytes: pngBytes, format: 'png', scale }]);
@@ -1208,6 +1313,20 @@ export class PreviewManager implements vscode.WebviewPanelSerializer {
         const bytes = await this.renderMermaidBytes(document.getText(), mode);
         const target = resolveAutoExportUri(document.uri, ext);
         await vscode.workspace.fs.writeFile(target, bytes);
+        void vscode.window.setStatusBarMessage(t('Exported to {0}', vscode.workspace.asRelativePath(target)), 2500);
+      } catch (err) {
+        void vscode.window.showErrorMessage(t('Export failed: {0}', (err as Error).message));
+      }
+      return;
+    }
+    if (kind === 'dot' || kind === 'wavedrom') {
+      try {
+        const target = resolveAutoExportUri(document.uri, ext);
+        const data =
+          kind === 'dot'
+            ? await this.renderDotBytes(document.getText(), mode)
+            : await this.renderWaveDromBytes(document.getText(), mode);
+        await vscode.workspace.fs.writeFile(target, data);
         void vscode.window.setStatusBarMessage(t('Exported to {0}', vscode.workspace.asRelativePath(target)), 2500);
       } catch (err) {
         void vscode.window.showErrorMessage(t('Export failed: {0}', (err as Error).message));

@@ -904,6 +904,117 @@ test('v0.3 language intelligence, converters, PDF/multi-page export, code-to-dia
   }
 });
 
+test('v0.4 DOT & WaveDrom previews, broken-link audit & rename sync, Draw.io->Mermaid/PlantUML, interactive HTML export, spec/infra generators, hover preview, and branch review work', async () => {
+  await vscode.commands.executeCommand('workbench.action.closeAllEditors');
+
+  const dotUri = file('topology.dot');
+  const waveUri = file('spi.wavedrom');
+  const htmlOut = file('architecture-bundle.html');
+  const libUri = vscode.Uri.joinPath(vscode.Uri.file(workspace), '.vscode', 'drawgraph-library.xml');
+  const movedSrcOld = file('oldModule.ts');
+  const movedSrcNew = file('renamedModule.ts');
+  const linkedMmd = file('linked-arch.mmd');
+
+  fs.writeFileSync(dotUri.fsPath, 'digraph G { rankdir=LR; Gateway -> Auth [label="RPC"]; Auth [shape=cylinder]; }\n');
+  fs.writeFileSync(
+    waveUri.fsPath,
+    '{ signal: [{ name: "CLK", wave: "p...." }, { name: "DATA", wave: "x3..x", data: ["0x5A"] }] }\n',
+  );
+  fs.writeFileSync(movedSrcOld.fsPath, '// @see architecture.drawio\nexport class OldController {}\n');
+  fs.writeFileSync(linkedMmd.fsPath, 'flowchart LR\n  A[Node] --> B[Missing]\n  click A "oldModule.ts:2"\n  click B "nonExistentTarget.ts:9"\n');
+
+  try {
+    // 1. Native Graphviz DOT & WaveDrom live previews + Document Symbols
+    await vscode.commands.executeCommand('drawGraph.preview.open', dotUri);
+    await waitFor(
+      'DOT preview rendered',
+      () => previewOf(dotUri)?.status.state === 'rendered' && previewOf(dotUri)?.status.width > 50,
+      10000,
+    );
+    const dotSyms = await vscode.commands.executeCommand('vscode.executeDocumentSymbolProvider', dotUri);
+    assert.ok(Array.isArray(dotSyms) && dotSyms.length >= 1, 'DOT DocumentSymbolProvider returned outline');
+
+    await vscode.commands.executeCommand('drawGraph.preview.open', waveUri);
+    await waitFor(
+      'WaveDrom preview rendered',
+      () => previewOf(waveUri)?.status.state === 'rendered' && previewOf(waveUri)?.status.width > 50,
+      10000,
+    );
+
+    // 2. Markdown preview plugin renders ```dot and ```wavedrom blocks
+    const mdRendered = await vscode.commands.executeCommand(
+      'markdown.api.render',
+      '```dot\ndigraph X { A -> B }\n```\n\n```wavedrom\n{"reg":[{"bits":8,"name":"CTRL"}]}\n```',
+    );
+    assert.match(mdRendered, /drawgraph-dot/, 'Markdown rendered DOT block');
+    assert.match(mdRendered, /drawgraph-wavedrom/, 'Markdown rendered WaveDrom block');
+
+    // 3. Broken Code-Link warning diagnostic + Workspace Audit + File-Rename Auto-Sync
+    await vscode.workspace.openTextDocument(linkedMmd);
+    await waitFor(
+      'Broken code-link warning reported on nonExistentTarget.ts',
+      () => vscode.languages.getDiagnostics(linkedMmd).some((d) => d.code === 'broken-code-link'),
+      5000,
+    );
+    const brokenList = await vscode.commands.executeCommand('drawGraph.checkCodeLinks', false);
+    assert.ok(Array.isArray(brokenList) && brokenList.some((b) => b.target.includes('nonExistentTarget.ts')));
+
+    const renameEdit = new vscode.WorkspaceEdit();
+    renameEdit.renameFile(movedSrcOld, movedSrcNew);
+    await vscode.workspace.applyEdit(renameEdit);
+    await waitFor(
+      'Diagram file path auto-updated after workspace renameFile',
+      async () => (await vscode.workspace.openTextDocument(linkedMmd)).getText().includes('renamedModule.ts:2'),
+      6000,
+    );
+
+    // 4. Source code comment Hover thumbnail preview (`// @see architecture.drawio`)
+    const commentHovers = await vscode.commands.executeCommand(
+      'vscode.executeHoverProvider',
+      movedSrcNew,
+      new vscode.Position(0, 12),
+    );
+    assert.ok(
+      Array.isArray(commentHovers) &&
+        commentHovers.some((h) => h.contents.some((c) => String(c.value || c).includes('data:image/svg+xml;base64,'))),
+      'Source comment hover rendered inline Draw.io SVG thumbnail',
+    );
+
+    // 5. Draw.io -> Mermaid & PlantUML reverse conversion + Standalone Interactive HTML export
+    const revMmdDoc = await vscode.commands.executeCommand('drawGraph.convert.drawioToMermaid', file('architecture.drawio'));
+    assert.ok(revMmdDoc && revMmdDoc.languageId === 'mermaid' && revMmdDoc.getText().includes('flowchart'));
+    await vscode.commands.executeCommand('workbench.action.revertAndCloseActiveEditor');
+
+    await vscode.commands.executeCommand('drawGraph.exportHtml', file('architecture.drawio'), htmlOut);
+    assert.match(fs.readFileSync(htmlOut.fsPath, 'utf8'), /<!DOCTYPE html>/);
+
+    // 6. Spec (Prisma) & Infra (Docker Compose) generators + Workspace Library Scaffolder
+    const prismaDoc = await vscode.commands.executeCommand(
+      'drawGraph.generateFromSpec',
+      'model Account { id Int @id\n sessions Session[] }\nmodel Session { id Int @id\n accountId Int\n account Account @relation(fields: [accountId], references: [id]) }',
+      'mermaid',
+    );
+    assert.ok(prismaDoc && prismaDoc.getText().includes('erDiagram') && prismaDoc.getText().includes('Account'));
+    await vscode.commands.executeCommand('workbench.action.revertAndCloseActiveEditor');
+
+    const composeDoc = await vscode.commands.executeCommand(
+      'drawGraph.generateInfraDiagram',
+      'services:\n  web:\n    image: nginx\n    depends_on: [redis]\n  redis:\n    image: redis:7\n',
+      'mermaid',
+    );
+    assert.ok(composeDoc && composeDoc.getText().includes('SVC_redis'));
+    await vscode.commands.executeCommand('workbench.action.revertAndCloseActiveEditor');
+
+    const createdLib = await vscode.commands.executeCommand('drawGraph.drawio.createWorkspaceLibrary', libUri);
+    assert.ok(createdLib && fs.existsSync(libUri.fsPath), 'Created .vscode/drawgraph-library.xml');
+  } finally {
+    for (const u of [dotUri, waveUri, htmlOut, libUri, movedSrcOld, movedSrcNew, linkedMmd]) {
+      if (fs.existsSync(u.fsPath)) fs.unlinkSync(u.fsPath);
+    }
+    await vscode.commands.executeCommand('workbench.action.closeAllEditors');
+  }
+});
+
 exports.run = async function run() {
   const failures = [];
   for (const { name, fn } of tests) {

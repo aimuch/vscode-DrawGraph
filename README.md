@@ -1,14 +1,16 @@
-# DrawGraph — 在 VS Code 中预览和编辑 Draw.io / Mermaid / PlantUML
+# DrawGraph — 在 VS Code 中预览、对比与编辑 Draw.io / Mermaid / PlantUML / Graphviz DOT / WaveDrom
 
 [![CI](https://github.com/aimuch/vscode-DrawGraph/actions/workflows/ci.yml/badge.svg)](https://github.com/aimuch/vscode-DrawGraph/actions/workflows/ci.yml)
 
-DrawGraph 是一个 VS Code 插件，把三种常用的图表格式放进同一个编辑器里：
+DrawGraph 是一个全功能工程架构与硬件图表 VS Code 插件，把五种常用的工程图表放进同一个编辑器里：
 
 | 格式 | 文件扩展名 | 编辑方式 |
 | --- | --- | --- |
-| **draw.io** | `.drawio` `.dio` `.drawio.xml` `.dio.xml` `.drawio.svg` `.dio.svg` `.drawio.png` `.dio.png` | 可视化编辑器（内嵌 draw.io），直接拖拽编辑 |
-| **Mermaid** | `.mmd` `.mermaid`，以及 Markdown 中的 ```` ```mermaid ```` 代码块 | 文本编辑 + 实时预览 + 一键转 draw.io |
-| **PlantUML** | `.puml` `.plantuml` `.pu` `.iuml` `.wsd`，以及 Markdown 中的 ```` ```plantuml ```` / ```` ```puml ```` 代码块 | 文本编辑 + 实时预览 |
+| **draw.io** | `.drawio` `.dio` `.drawio.xml` `.dio.xml` `.drawio.svg` `.dio.svg` `.drawio.png` `.dio.png` | 可视化编辑器（内嵌 draw.io），直接拖拽编辑 + 与 Mermaid/PlantUML 双向互转 |
+| **Mermaid** | `.mmd` `.mermaid`，以及 Markdown 中的 ```` ```mermaid ```` 代码块 | 文本编辑 + 实时预览 + 与 Draw.io / PlantUML 双向互转 |
+| **PlantUML** | `.puml` `.plantuml` `.pu` `.iuml` `.wsd`，以及 Markdown 中的 ```` ```plantuml ```` / ```` ```puml ```` 代码块 | 文本编辑 + 实时预览 + 与 Mermaid 双向互转 |
+| **Graphviz DOT** | `.dot` `.gv`，以及 Markdown 中的 ```` ```dot ```` / ```` ```graphviz ```` 代码块 | 内置零依赖离线布局渲染 + 可选本地 `dot` 引擎 |
+| **WaveDrom** | `.wavedrom` `.wave.json`，以及 Markdown 中的 ```` ```wavedrom ```` / ```` ```bitfield ```` 代码块 | 硬件数字时序波形图（`signal`）与芯片寄存器位域表（`reg`）纯离线预览 |
 
 ## 安装
 
@@ -20,7 +22,7 @@ DrawGraph 是一个 VS Code 插件，把三种常用的图表格式放进同一�
 然后在 VS Code 扩展视图右上角的 `…` 菜单中选择「从 VSIX 安装…」，或者在终端运行：
 
 ```bash
-code --install-extension drawgraph-0.3.0.vsix
+code --install-extension drawgraph-0.4.0.vsix
 ```
 
 安装包默认保持超轻量（约 1.7 MB，已内嵌 Mermaid）；如需在无外网环境下使用 draw.io，可在设置抽屉中一键**下载或导入官方 `draw.war` / `.zip` 离线引擎包**（由本地 `127.0.0.1` 服务加载），见下文“渲染方式与隐私”。
@@ -42,9 +44,11 @@ code --install-extension drawgraph-0.3.0.vsix
 - **按需离线引擎包（Offline Pack）与多页/PDF 导出**：支持在设置抽屉中一键下载或导入本地 `.war` / `.zip` 离线引擎包（`drawGraph.drawio.offlineMode`），完全断网也能流畅编辑；支持直接导出零依赖矢量尺寸对齐的 **PDF**（`DrawGraph: 将 Draw.io 图表导出为 PDF`）以及多页 `<diagram>` 批量导出（`DrawGraph: 批量导出 Draw.io 所有页面…`）。
 
 ### Git 图表视觉对比（Visual Diagram Diff）与代码反向建模
-- **Git 视觉对比面板（`DrawGraph: 与 Git HEAD 进行图表视觉对比`）**：在源代码管理（SCM）变更列表右键 `.drawio`、`.drawio.svg`、`.drawio.png`、`.mmd`、`.puml` 文件（或通过快捷菜单），即可打开交互式视觉对比视图，支持**切换历史基准提交（`HEAD` / `HEAD~1` / 历史 Commit）**、**多页 Draw.io 页签切换与联合坐标对齐**、**并排同步光标缩放平移（Side-by-Side）**、**拉帘滑动对比（Swipe，支持键盘微调）**以及**半透明叠影 + 像素级差异高亮（Onion / Pixel Diff）**，也可通过 `DrawGraph: 对比两个图表文件…` 对比任意两份图表。
-- **从工作区代码及 SQL / JSON 反向生成架构图**：右键源码文件或目录执行 `DrawGraph: 从源码生成类图…` 或 `DrawGraph: 从源码生成模块依赖图…`，或对 `.sql` / `.json` 文件（及剪贴板文本）执行 `DrawGraph: 从 SQL / JSON 生成图表…`，一键生成 **Mermaid**、**PlantUML** 或可拖拽的 **Draw.io** 类图、ER 图或思维导图。
-- **工作区图表导航树（Diagram Explorer）**：在资源管理器侧边栏展开「工作区图表（Diagrams）」面板，集中索引工作区内所有 `.drawio*`、`.mmd`、`.puml` 及包含图表代码块的 `.md` 文档，并支持直接展开多页 Draw.io、多块 PlantUML 与 Markdown 代码块定位跳转。
+- **Git 视觉对比与分支级批量审阅（`DrawGraph: 与 Git HEAD 进行图表视觉对比` / `分支级批量图表视觉审阅…`）**：在源代码管理（SCM）右键图表文件或通过侧边栏「工作区图表」顶部的分支对比按钮，即可对比 `HEAD`、`HEAD~1` 或任意分支（如 `main`），支持**分支修改队列逐张审阅**、**多页 Draw.io 页签切换与联合坐标对齐**、**并排同步光标缩放平移（Side-by-Side）**、**拉帘滑动对比（Swipe）**以及**半透明叠影 + 像素级差异高亮（Onion / Pixel Diff）**。
+- **架构防腐化：死链巡检、文件重命名同步与实时代码光标/断点联动**：自动检测图表中失效的本地文件路径并在「问题」面板提供一键修复（也可执行 `DrawGraph: 巡检工作区图表失效代码链接`）；重命名或移动源码文件时自动同步更新图表引用路径；在阅读源码或单步调试暂停时，已打开的图表预览自动联动高亮对应的架构节点。
+- **全场景工程反向建模（代码 / SQL / JSON / OpenAPI / Protobuf / Prisma / Docker Compose / GitHub Actions）**：支持从源码生成类图与模块依赖图，从 `.sql` / `.json` 生成 ER 图或思维导图，从 `openapi.yaml` / `.proto` / `schema.prisma` 生成接口与数据关系图，以及从 `docker-compose.yml` / `.github/workflows/*.yml` 生成容器部署拓扑与流水线依赖图。
+- **Draw.io 反向导出与单文件可交互 HTML 演示包**：支持将 `.drawio` 画布反向转换为 Mermaid 或 PlantUML 文本；支持一键导出**零外部依赖的单文件 `.html` 交互式演示包**（内置多页切换、滚轮缩放平移、鹰眼小地图、全文搜索与激光笔聚光灯模式）。
+- **工作区图表导航树、悬浮缩略预览与拖拽插入**：侧边栏集中索引全部五种图表格式及多页/多块子项，支持直接从侧边栏将图表拖入 `.md` 自动生成相对引用；在源码注释（如 `@see arch.drawio`）或 Markdown 链接上悬停鼠标即可直接查看渲染缩略图；自动识别并挂载工作区 `.vscode/drawgraph-library.xml` 共享组件库。
 
 ### Mermaid 与 PlantUML 实时预览与编辑智能
 - 用 `Cmd/Ctrl+K V`、`Alt+D`（在侧边打开）或 `Cmd/Ctrl+Shift+V` 打开预览，也可以点击编辑器右上角按钮或图表上方的 **CodeLens 快捷操作**。

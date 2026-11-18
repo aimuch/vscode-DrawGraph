@@ -6,6 +6,7 @@ import { DrawioEditorProvider } from './drawio/drawioEditorProvider';
 import { OfflinePackManager } from './drawio/offlinePackManager';
 import { DiagramExplorerProvider } from './explorer/diagramTreeView';
 import { initL10n } from './l10n';
+import { CodeLinkMaintenanceService, registerLiveCodeSync } from './language/codeLinkMaintenance';
 import { registerLanguageFeatures } from './language/diagramFeatures';
 import { disposeMarkdownPlantUml, mermaidMarkdownPlugin } from './markdown/markdownIt';
 import { PreviewManager } from './preview/previewManager';
@@ -31,12 +32,24 @@ export function activate(context: vscode.ExtensionContext) {
   const settingsPanel = new SettingsPanelManager(context);
   const visualDiff = new VisualDiffManager(context, previews);
   const explorer = new DiagramExplorerProvider();
+  const codeLinkMaintenance = new CodeLinkMaintenanceService();
+  const treeView = vscode.window.createTreeView('drawGraph.diagramExplorer', {
+    treeDataProvider: explorer,
+    dragAndDropController: explorer,
+    canSelectMany: false,
+  });
+
+  registerLiveCodeSync(context, (candidates) => {
+    previews.highlightCodeTargets(candidates);
+    void drawio.highlightCodeTargets(candidates);
+  });
 
   context.subscriptions.push(
     offlinePack,
     visualDiff,
     explorer,
-    vscode.window.registerTreeDataProvider('drawGraph.diagramExplorer', explorer),
+    codeLinkMaintenance,
+    treeView,
     {
       dispose: () => {
         setOfflinePackStatusProvider(undefined);
@@ -54,6 +67,7 @@ export function activate(context: vscode.ExtensionContext) {
     offlinePack,
     explorer,
     settingsPanel,
+    codeLinkMaintenance,
   });
 
   // Returned API is picked up by the built-in Markdown preview ("markdown.markdownItPlugins").

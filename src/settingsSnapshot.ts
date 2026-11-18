@@ -20,6 +20,7 @@ export interface SettingsSnapshot {
     offlineServerOrigin?: string;
     hideGithubIcon: boolean;
     vscodeShortcuts: boolean;
+    autoLoadWorkspaceLibrary: boolean;
     url: string;
   };
   preview: {
@@ -27,6 +28,9 @@ export interface SettingsSnapshot {
     pngScale: number;
     pngTransparent: boolean;
     followActiveEditor: boolean;
+    syncWithCodeCursor: boolean;
+    checkBrokenLinks: boolean;
+    syncOnFileRename: boolean;
     debounce: number;
     codeLens: boolean;
     showQuickMenu: boolean;
@@ -39,6 +43,8 @@ export interface SettingsSnapshot {
     exportOnSaveOutDir: string;
     markdownMermaid: boolean;
     markdownPlantuml: boolean;
+    markdownDot: boolean;
+    markdownWavedrom: boolean;
   };
 }
 
@@ -65,11 +71,15 @@ const ALLOWED_SETTINGS = new Set([
   'drawio.offlineMode',
   'drawio.hideGithubIcon',
   'drawio.vscodeShortcuts',
+  'drawio.autoLoadWorkspaceLibrary',
   'drawio.url',
   'mermaid.theme',
   'preview.pngScale',
   'preview.pngTransparent',
   'preview.followActiveEditor',
+  'preview.syncWithCodeCursor',
+  'codeLinks.checkBrokenLinks',
+  'codeLinks.syncOnFileRename',
   'preview.debounce',
   'editor.codeLens',
   'toolbar.showQuickMenu',
@@ -80,6 +90,8 @@ const ALLOWED_SETTINGS = new Set([
   'exportOnSaveOutDir',
   'markdown.mermaid',
   'markdown.plantuml',
+  'markdown.dot',
+  'markdown.wavedrom',
 ]);
 
 export function getSettingsSnapshot(): SettingsSnapshot {
@@ -101,6 +113,7 @@ export function getSettingsSnapshot(): SettingsSnapshot {
       offlineServerOrigin: offline.serverOrigin,
       hideGithubIcon: cfg.get<boolean>('drawio.hideGithubIcon', true),
       vscodeShortcuts: cfg.get<boolean>('drawio.vscodeShortcuts', true),
+      autoLoadWorkspaceLibrary: cfg.get<boolean>('drawio.autoLoadWorkspaceLibrary', true),
       url: cfg.get<string>('drawio.url', 'https://embed.diagrams.net/'),
     },
     preview: {
@@ -108,6 +121,9 @@ export function getSettingsSnapshot(): SettingsSnapshot {
       pngScale: cfg.get<number>('preview.pngScale', 2),
       pngTransparent: cfg.get<boolean>('preview.pngTransparent', false),
       followActiveEditor: cfg.get<boolean>('preview.followActiveEditor', true),
+      syncWithCodeCursor: cfg.get<boolean>('preview.syncWithCodeCursor', true),
+      checkBrokenLinks: cfg.get<boolean>('codeLinks.checkBrokenLinks', true),
+      syncOnFileRename: cfg.get<boolean>('codeLinks.syncOnFileRename', true),
       debounce: cfg.get<number>('preview.debounce', 400),
       codeLens: cfg.get<boolean>('editor.codeLens', true),
       showQuickMenu: cfg.get<boolean>('toolbar.showQuickMenu', true),
@@ -120,6 +136,8 @@ export function getSettingsSnapshot(): SettingsSnapshot {
       exportOnSaveOutDir: cfg.get<string>('exportOnSaveOutDir', ''),
       markdownMermaid: cfg.get<boolean>('markdown.mermaid', true),
       markdownPlantuml: cfg.get<boolean>('markdown.plantuml', true),
+      markdownDot: cfg.get<boolean>('markdown.dot', true),
+      markdownWavedrom: cfg.get<boolean>('markdown.wavedrom', true),
     },
   };
 }

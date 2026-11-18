@@ -10,7 +10,14 @@ import { findMarkdownDiagramFences } from '../language/symbols';
 import { encodePlantUml, extractPlantUmlSourceFromSvg, pickBlock, splitDiagrams } from '../plantuml/encoder';
 import { diagramKind, type PreviewManager } from '../preview/previewManager';
 import type { SettingsPanelManager } from '../settingsPanel';
-import { DIAGRAM_TEMPLATES, DRAWIO_TEMPLATE, MERMAID_TEMPLATE, PLANTUML_TEMPLATE } from '../templates';
+import {
+  DIAGRAM_TEMPLATES,
+  DOT_TEMPLATE,
+  DRAWIO_TEMPLATE,
+  MERMAID_TEMPLATE,
+  PLANTUML_TEMPLATE,
+  WAVEDROM_TEMPLATE,
+} from '../templates';
 import { config, withExtension } from '../util';
 
 export function normalizeDrawioTarget(target: vscode.Uri): vscode.Uri {
@@ -87,7 +94,7 @@ export function registerCoreCommands({ context, drawio, previews, settingsPanel 
     context.subscriptions.push(vscode.commands.registerCommand(id, fn));
   const asUri = (arg: unknown) => (arg instanceof vscode.Uri ? arg : undefined);
 
-  const newTextDiagram = async (language: 'mermaid' | 'plantuml', content: string) => {
+  const newTextDiagram = async (language: 'mermaid' | 'plantuml' | 'dot' | 'wavedrom', content: string) => {
     const document = await vscode.workspace.openTextDocument({ language, content });
     await vscode.window.showTextDocument(document);
     await previews.open(document.uri, true);
@@ -244,6 +251,22 @@ export function registerCoreCommands({ context, drawio, previews, settingsPanel 
             run: () => previews.renderMermaidBytes(doc.getText(), format),
           });
         }
+      } else if (kind === 'dot') {
+        if (doc.getText().trim()) {
+          tasks.push({
+            suffix: '',
+            ext: `.${format}`,
+            run: () => previews.renderDotBytes(doc.getText(), format),
+          });
+        }
+      } else if (kind === 'wavedrom') {
+        if (doc.getText().trim()) {
+          tasks.push({
+            suffix: '',
+            ext: `.${format}`,
+            run: () => previews.renderWaveDromBytes(doc.getText(), format),
+          });
+        }
       } else if (isMarkdown) {
         const fences = findMarkdownDiagramFences(doc.getText());
         let counter = 0;
@@ -263,6 +286,20 @@ export function registerCoreCommands({ context, drawio, previews, settingsPanel 
               suffix: `-${counter}`,
               ext: `.${format}`,
               run: () => previews.renderMermaidBytes(fence.content, format),
+            });
+          } else if (fence.kind === 'dot' && fence.content.trim()) {
+            counter++;
+            tasks.push({
+              suffix: `-${counter}`,
+              ext: `.${format}`,
+              run: () => previews.renderDotBytes(fence.content, format),
+            });
+          } else if (fence.kind === 'wavedrom' && fence.content.trim()) {
+            counter++;
+            tasks.push({
+              suffix: `-${counter}`,
+              ext: `.${format}`,
+              run: () => previews.renderWaveDromBytes(fence.content, format),
             });
           }
         }
@@ -446,6 +483,8 @@ export function registerCoreCommands({ context, drawio, previews, settingsPanel 
 
   register('drawGraph.mermaid.new', () => newTextDiagram('mermaid', MERMAID_TEMPLATE));
   register('drawGraph.plantuml.new', () => newTextDiagram('plantuml', PLANTUML_TEMPLATE));
+  register('drawGraph.dot.new', () => newTextDiagram('dot', DOT_TEMPLATE));
+  register('drawGraph.wavedrom.new', () => newTextDiagram('wavedrom', WAVEDROM_TEMPLATE));
 
   register('drawGraph.diagram.newFromTemplate', async (templateId?: unknown) => {
     const chosen =
@@ -551,6 +590,21 @@ export function registerCoreCommands({ context, drawio, previews, settingsPanel 
           run: () => drawio.exportActivePdf(),
         },
         {
+          id: 'exportHtml',
+          label: `$(globe) ${t('Export as Interactive HTML')}`,
+          run: () => vscode.commands.executeCommand('drawGraph.exportHtml', targetUri),
+        },
+        {
+          id: 'drawioToMermaid',
+          label: `$(arrow-swap) ${t('Convert Draw.io to Mermaid')}`,
+          run: () => vscode.commands.executeCommand('drawGraph.convert.drawioToMermaid', targetUri),
+        },
+        {
+          id: 'drawioToPlantuml',
+          label: `$(arrow-swap) ${t('Convert Draw.io to PlantUML')}`,
+          run: () => vscode.commands.executeCommand('drawGraph.convert.drawioToPlantuml', targetUri),
+        },
+        {
           id: 'exportAllPages',
           label: `$(files) ${t('Export All Pages…')}`,
           run: () => vscode.commands.executeCommand('drawGraph.drawio.exportAllPages', targetUri),
@@ -576,7 +630,7 @@ export function registerCoreCommands({ context, drawio, previews, settingsPanel 
     } else if (targetUri) {
       const openDoc = vscode.workspace.textDocuments.find((d) => d.uri.toString() === targetUri.toString());
       const kind = openDoc ? diagramKind(openDoc) : undefined;
-      if (kind === 'mermaid' || kind === 'plantuml') {
+      if (kind === 'mermaid' || kind === 'plantuml' || kind === 'dot' || kind === 'wavedrom') {
         contextual.push(
           {
             id: 'previewSide',
@@ -592,6 +646,11 @@ export function registerCoreCommands({ context, drawio, previews, settingsPanel 
             id: 'exportPdf',
             label: `$(file-pdf) ${t('Export as PDF')}`,
             run: () => vscode.commands.executeCommand('drawGraph.exportPdf', targetUri),
+          },
+          {
+            id: 'exportHtml',
+            label: `$(globe) ${t('Export as Interactive HTML')}`,
+            run: () => vscode.commands.executeCommand('drawGraph.exportHtml', targetUri),
           },
         );
         if (kind === 'mermaid') {
@@ -656,6 +715,18 @@ export function registerCoreCommands({ context, drawio, previews, settingsPanel 
             run: () => vscode.commands.executeCommand('drawGraph.extractSource', targetUri),
           });
         }
+      } else if (/\.(?:proto|prisma)$/i.test(targetUri.path) || /(?:openapi|swagger).*\.(?:ya?ml|json)$/i.test(targetUri.path)) {
+        contextual.push({
+          id: 'generateFromSpec',
+          label: `$(symbol-interface) ${t('Generate Diagram from OpenAPI / Proto / Prisma…')}`,
+          run: () => vscode.commands.executeCommand('drawGraph.generateFromSpec', targetUri),
+        });
+      } else if (/(?:docker-compose|compose).*\.(?:ya?ml)$|\.github\/workflows\/.*\.(?:ya?ml)$/i.test(targetUri.path)) {
+        contextual.push({
+          id: 'generateInfraDiagram',
+          label: `$(server-process) ${t('Generate Topology from Compose / GitHub Actions…')}`,
+          run: () => vscode.commands.executeCommand('drawGraph.generateInfraDiagram', targetUri),
+        });
       } else if (/\.(?:sql|json)$/i.test(targetUri.path)) {
         contextual.push({
           id: 'generateFromData',
@@ -720,6 +791,30 @@ export function registerCoreCommands({ context, drawio, previews, settingsPanel 
         label: `$(database) ${t('Generate Diagram from SQL / JSON…')}`,
         detail: t('Convert SQL CREATE TABLE or JSON into ER / Mindmap diagrams'),
         run: () => vscode.commands.executeCommand('drawGraph.generateFromData', targetUri),
+      },
+      {
+        id: 'specDiagram',
+        label: `$(symbol-interface) ${t('Generate Diagram from OpenAPI / Proto / Prisma…')}`,
+        detail: t('Visualize REST endpoints, gRPC services, or Prisma relations'),
+        run: () => vscode.commands.executeCommand('drawGraph.generateFromSpec', targetUri),
+      },
+      {
+        id: 'infraDiagram',
+        label: `$(server-process) ${t('Generate Topology from Compose / GitHub Actions…')}`,
+        detail: t('Visualize Docker Compose services or CI/CD job pipelines'),
+        run: () => vscode.commands.executeCommand('drawGraph.generateInfraDiagram', targetUri),
+      },
+      {
+        id: 'branchReview',
+        label: `$(git-compare) ${t('Review All Modified Diagrams vs Branch…')}`,
+        detail: t('Batch visual review of changed diagrams against main / HEAD'),
+        run: () => vscode.commands.executeCommand('drawGraph.visualDiffBranch'),
+      },
+      {
+        id: 'checkCodeLinks',
+        label: `$(check-all) ${t('Audit Broken Diagram Code Links')}`,
+        detail: t('Scan workspace diagrams for missing file references'),
+        run: () => vscode.commands.executeCommand('drawGraph.checkCodeLinks'),
       },
       { label: '', kind: vscode.QuickPickItemKind.Separator },
       {

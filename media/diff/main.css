@@ -52,7 +52,8 @@ body {
   outline-offset: 1px;
 }
 
-#pageSelect {
+#pageSelect,
+#fileQueueSelect {
   height: 25px;
   padding: 0 6px;
   border-radius: 4px;
@@ -61,6 +62,15 @@ body {
   color: var(--vscode-dropdown-foreground, var(--vscode-foreground));
   font: inherit;
   font-size: 12px;
+}
+
+#fileQueueWrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+#fileQueueWrap[hidden] {
+  display: none !important;
 }
 
 .diffModes {

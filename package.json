@@ -2,7 +2,7 @@
   "name": "drawgraph",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "publisher": "drawgraph",
   "icon": "media/icons/icon.png",
   "license": "UNLICENSED",
@@ -30,7 +30,13 @@
     "plantuml",
     "uml",
     "diagram",
-    "preview"
+    "preview",
+    "graphviz",
+    "dot",
+    "wavedrom",
+    "openapi",
+    "protobuf",
+    "prisma"
   ],
   "main": "./dist/extension.js",
   "l10n": "./l10n",
@@ -53,17 +59,25 @@
   "activationEvents": [
     "onLanguage:mermaid",
     "onLanguage:plantuml",
+    "onLanguage:dot",
+    "onLanguage:wavedrom",
     "onLanguage:markdown",
     "onView:drawGraph.diagramExplorer",
     "onWebviewPanel:drawGraph.preview",
     "onCommand:drawGraph.quickMenu",
     "onCommand:drawGraph.openSettings",
     "onCommand:drawGraph.extractSource",
+    "onCommand:drawGraph.exportHtml",
     "onCommand:drawGraph.visualDiff",
+    "onCommand:drawGraph.visualDiffBranch",
     "onCommand:drawGraph.visualDiffFiles",
     "onCommand:drawGraph.generateClassDiagram",
     "onCommand:drawGraph.generateDependencyDiagram",
-    "onCommand:drawGraph.generateFromData"
+    "onCommand:drawGraph.generateFromData",
+    "onCommand:drawGraph.generateFromSpec",
+    "onCommand:drawGraph.generateInfraDiagram",
+    "onCommand:drawGraph.checkCodeLinks",
+    "onCommand:drawGraph.drawio.createWorkspaceLibrary"
   ],
   "contributes": {
     "views": {
@@ -108,6 +122,30 @@
           ".wsd"
         ],
         "configuration": "./language-configuration/plantuml.json"
+      },
+      {
+        "id": "dot",
+        "aliases": [
+          "Graphviz (DOT)",
+          "DOT",
+          "dot"
+        ],
+        "extensions": [
+          ".dot",
+          ".gv"
+        ],
+        "configuration": "./language-configuration/dot.json"
+      },
+      {
+        "id": "wavedrom",
+        "aliases": [
+          "WaveDrom",
+          "wavedrom"
+        ],
+        "extensions": [
+          ".wavedrom",
+          ".wave.json"
+        ]
       }
     ],
     "grammars": [
@@ -120,6 +158,16 @@
         "language": "plantuml",
         "scopeName": "source.plantuml",
         "path": "./syntaxes/plantuml.tmLanguage.json"
+      },
+      {
+        "language": "dot",
+        "scopeName": "source.dot",
+        "path": "./syntaxes/dot.tmLanguage.json"
+      },
+      {
+        "language": "wavedrom",
+        "scopeName": "source.wavedrom",
+        "path": "./syntaxes/wavedrom.tmLanguage.json"
       },
       {
         "scopeName": "markdown.mermaid.codeblock",
@@ -140,6 +188,26 @@
         "embeddedLanguages": {
           "meta.embedded.block.plantuml": "plantuml"
         }
+      },
+      {
+        "scopeName": "markdown.dot.codeblock",
+        "path": "./syntaxes/dot.markdown.tmLanguage.json",
+        "injectTo": [
+          "text.html.markdown"
+        ],
+        "embeddedLanguages": {
+          "meta.embedded.block.dot": "dot"
+        }
+      },
+      {
+        "scopeName": "markdown.wavedrom.codeblock",
+        "path": "./syntaxes/wavedrom.markdown.tmLanguage.json",
+        "injectTo": [
+          "text.html.markdown"
+        ],
+        "embeddedLanguages": {
+          "meta.embedded.block.wavedrom": "json"
+        }
       }
     ],
     "snippets": [
@@ -150,6 +218,14 @@
       {
         "language": "plantuml",
         "path": "./snippets/plantuml.json"
+      },
+      {
+        "language": "dot",
+        "path": "./snippets/dot.json"
+      },
+      {
+        "language": "wavedrom",
+        "path": "./snippets/wavedrom.json"
       }
     ],
     "customEditors": [
@@ -249,6 +325,16 @@
         "category": "DrawGraph"
       },
       {
+        "command": "drawGraph.dot.new",
+        "title": "%command.dot.new%",
+        "category": "DrawGraph"
+      },
+      {
+        "command": "drawGraph.wavedrom.new",
+        "title": "%command.wavedrom.new%",
+        "category": "DrawGraph"
+      },
+      {
         "command": "drawGraph.diagram.newFromTemplate",
         "title": "%command.diagram.newFromTemplate%",
         "category": "DrawGraph",
@@ -327,6 +413,12 @@
         "icon": "$(diff)"
       },
       {
+        "command": "drawGraph.visualDiffBranch",
+        "title": "%command.visualDiffBranch%",
+        "category": "DrawGraph",
+        "icon": "$(git-compare)"
+      },
+      {
         "command": "drawGraph.visualDiffFiles",
         "title": "%command.visualDiffFiles%",
         "category": "DrawGraph",
@@ -337,6 +429,12 @@
         "title": "%command.exportPdf%",
         "category": "DrawGraph",
         "icon": "$(file-pdf)"
+      },
+      {
+        "command": "drawGraph.exportHtml",
+        "title": "%command.exportHtml%",
+        "category": "DrawGraph",
+        "icon": "$(globe)"
       },
       {
         "command": "drawGraph.drawio.exportPdf",
@@ -359,6 +457,18 @@
       {
         "command": "drawGraph.convert.mermaidToPlantuml",
         "title": "%command.convert.mermaidToPlantuml%",
+        "category": "DrawGraph",
+        "icon": "$(arrow-swap)"
+      },
+      {
+        "command": "drawGraph.convert.drawioToMermaid",
+        "title": "%command.convert.drawioToMermaid%",
+        "category": "DrawGraph",
+        "icon": "$(arrow-swap)"
+      },
+      {
+        "command": "drawGraph.convert.drawioToPlantuml",
+        "title": "%command.convert.drawioToPlantuml%",
         "category": "DrawGraph",
         "icon": "$(arrow-swap)"
       },
@@ -390,6 +500,30 @@
         "title": "%command.generateFromData%",
         "category": "DrawGraph",
         "icon": "$(database)"
+      },
+      {
+        "command": "drawGraph.generateFromSpec",
+        "title": "%command.generateFromSpec%",
+        "category": "DrawGraph",
+        "icon": "$(symbol-interface)"
+      },
+      {
+        "command": "drawGraph.generateInfraDiagram",
+        "title": "%command.generateInfraDiagram%",
+        "category": "DrawGraph",
+        "icon": "$(server-process)"
+      },
+      {
+        "command": "drawGraph.checkCodeLinks",
+        "title": "%command.checkCodeLinks%",
+        "category": "DrawGraph",
+        "icon": "$(check-all)"
+      },
+      {
+        "command": "drawGraph.drawio.createWorkspaceLibrary",
+        "title": "%command.drawio.createWorkspaceLibrary%",
+        "category": "DrawGraph",
+        "icon": "$(library)"
       },
       {
         "command": "drawGraph.drawio.downloadOfflinePack",
@@ -435,7 +569,7 @@
         },
         {
           "command": "drawGraph.preview.openToSide",
-          "when": "editorLangId == mermaid || editorLangId == plantuml",
+          "when": "editorLangId == mermaid || editorLangId == plantuml || editorLangId == dot || editorLangId == wavedrom",
           "group": "navigation@11"
         },
         {
@@ -505,60 +639,100 @@
         },
         {
           "command": "drawGraph.visualDiff",
-          "when": "activeCustomEditorId == drawGraph.drawio || activeCustomEditorId == drawGraph.drawioPng || editorLangId == mermaid || editorLangId == plantuml",
+          "when": "activeCustomEditorId == drawGraph.drawio || activeCustomEditorId == drawGraph.drawioPng || editorLangId == mermaid || editorLangId == plantuml || editorLangId == dot || editorLangId == wavedrom",
           "group": "1_drawgraph@6"
+        },
+        {
+          "command": "drawGraph.exportHtml",
+          "when": "activeCustomEditorId == drawGraph.drawio || activeCustomEditorId == drawGraph.drawioPng || editorLangId == mermaid || editorLangId == plantuml || editorLangId == dot || editorLangId == wavedrom",
+          "group": "1_drawgraph@8"
+        },
+        {
+          "command": "drawGraph.convert.drawioToMermaid",
+          "when": "activeCustomEditorId == drawGraph.drawio || activeCustomEditorId == drawGraph.drawioPng",
+          "group": "1_drawgraph@9"
+        },
+        {
+          "command": "drawGraph.convert.drawioToPlantuml",
+          "when": "activeCustomEditorId == drawGraph.drawio || activeCustomEditorId == drawGraph.drawioPng",
+          "group": "1_drawgraph@10"
         }
       ],
       "view/title": [
         {
+          "command": "drawGraph.visualDiffBranch",
+          "when": "view == drawGraph.diagramExplorer",
+          "group": "navigation@1"
+        },
+        {
+          "command": "drawGraph.checkCodeLinks",
+          "when": "view == drawGraph.diagramExplorer",
+          "group": "navigation@2"
+        },
+        {
           "command": "drawGraph.diagramExplorer.refresh",
           "when": "view == drawGraph.diagramExplorer",
-          "group": "navigation"
+          "group": "navigation@3"
         }
       ],
       "view/item/context": [
         {
           "command": "drawGraph.visualDiff",
-          "when": "view == drawGraph.diagramExplorer && viewItem =~ /^diagramFile\\.(drawio|mermaid|plantuml)$/",
+          "when": "view == drawGraph.diagramExplorer && viewItem =~ /^diagramFile\\.(drawio|mermaid|plantuml|dot|wavedrom)$/",
           "group": "inline@1"
         },
         {
           "command": "drawGraph.visualDiff",
-          "when": "view == drawGraph.diagramExplorer && viewItem =~ /^diagramFile\\.(drawio|mermaid|plantuml)$/",
+          "when": "view == drawGraph.diagramExplorer && viewItem =~ /^diagramFile\\.(drawio|mermaid|plantuml|dot|wavedrom)$/",
           "group": "1_actions@1"
         },
         {
           "command": "drawGraph.exportPdf",
-          "when": "view == drawGraph.diagramExplorer && viewItem =~ /^diagramFile\\.(drawio|mermaid|plantuml)$/",
+          "when": "view == drawGraph.diagramExplorer && viewItem =~ /^diagramFile\\.(drawio|mermaid|plantuml|dot|wavedrom)$/",
           "group": "1_actions@2"
+        },
+        {
+          "command": "drawGraph.exportHtml",
+          "when": "view == drawGraph.diagramExplorer && viewItem =~ /^diagramFile\\.(drawio|mermaid|plantuml|dot|wavedrom)$/",
+          "group": "1_actions@3"
         },
         {
           "command": "drawGraph.mermaid.openInDrawio",
           "when": "view == drawGraph.diagramExplorer && viewItem == diagramFile.mermaid",
-          "group": "1_actions@3"
+          "group": "1_actions@4"
+        },
+        {
+          "command": "drawGraph.convert.drawioToMermaid",
+          "when": "view == drawGraph.diagramExplorer && viewItem == diagramFile.drawio",
+          "group": "1_actions@5"
+        },
+        {
+          "command": "drawGraph.convert.drawioToPlantuml",
+          "when": "view == drawGraph.diagramExplorer && viewItem == diagramFile.drawio",
+          "group": "1_actions@6"
         },
         {
           "command": "drawGraph.drawio.exportAllPages",
           "when": "view == drawGraph.diagramExplorer && viewItem == diagramFile.drawio",
-          "group": "1_actions@4"
+          "group": "1_actions@7"
         }
       ],
       "scm/resourceState/context": [
         {
           "command": "drawGraph.visualDiff",
-          "when": "resourceFilename =~ /\\.(drawio|dio|mmd|mermaid|puml|plantuml|pu|iuml|wsd|svg|png)$/i",
+          "when": "resourceFilename =~ /\\.(drawio|dio|mmd|mermaid|puml|plantuml|pu|iuml|wsd|dot|gv|wavedrom|svg|png)$/i",
           "group": "inline"
         },
         {
           "command": "drawGraph.visualDiff",
-          "when": "resourceFilename =~ /\\.(drawio|dio|mmd|mermaid|puml|plantuml|pu|iuml|wsd|svg|png)$/i",
+          "when": "resourceFilename =~ /\\.(drawio|dio|mmd|mermaid|puml|plantuml|pu|iuml|wsd|dot|gv|wavedrom|svg|png)$/i",
           "group": "navigation"
         }
       ],
       "explorer/context": [
         {
           "command": "drawGraph.preview.open",
-          "when": "resourceLangId == mermaid || resourceLangId == plantuml",
+          "when": "resourceLangId == mermaid || resourceLangId == plantuml || resourceLangId == dot || resourceLangId == wavedrom",
           "group": "navigation"
         },
         {
@@ -578,7 +752,7 @@
         },
         {
           "command": "drawGraph.visualDiff",
-          "when": "resourceFilename =~ /\\.(drawio|dio|mmd|mermaid|puml|plantuml|pu|iuml|wsd)$/i",
+          "when": "resourceFilename =~ /\\.(drawio|dio|mmd|mermaid|puml|plantuml|pu|iuml|wsd|dot|gv|wavedrom)$/i",
           "group": "navigation"
         },
         {
@@ -595,16 +769,26 @@
           "command": "drawGraph.generateFromData",
           "when": "resourceExtname == .sql || resourceExtname == .json",
           "group": "7_modification@3"
+        },
+        {
+          "command": "drawGraph.generateFromSpec",
+          "when": "resourceExtname == .proto || resourceExtname == .prisma || resourceFilename =~ /(openapi|swagger).*\\.(ya?ml|json)$/i",
+          "group": "7_modification@4"
+        },
+        {
+          "command": "drawGraph.generateInfraDiagram",
+          "when": "resourceFilename =~ /(docker-compose|compose).*\\.ya?ml$/i || resourcePath =~ /\\.github\\/workflows\\/.*\\.ya?ml$/i",
+          "group": "7_modification@5"
         }
       ],
       "commandPalette": [
         {
           "command": "drawGraph.preview.open",
-          "when": "editorLangId == mermaid || editorLangId == plantuml"
+          "when": "editorLangId == mermaid || editorLangId == plantuml || editorLangId == dot || editorLangId == wavedrom"
         },
         {
           "command": "drawGraph.preview.openToSide",
-          "when": "editorLangId == mermaid || editorLangId == plantuml"
+          "when": "editorLangId == mermaid || editorLangId == plantuml || editorLangId == dot || editorLangId == wavedrom"
         },
         {
           "command": "drawGraph.preview.toggleLock",
@@ -701,18 +885,18 @@
         "command": "drawGraph.preview.openToSide",
         "key": "ctrl+k v",
         "mac": "cmd+k v",
-        "when": "editorLangId == mermaid || editorLangId == plantuml"
+        "when": "editorLangId == mermaid || editorLangId == plantuml || editorLangId == dot || editorLangId == wavedrom"
       },
       {
         "command": "drawGraph.preview.openToSide",
         "key": "alt+d",
-        "when": "editorLangId == mermaid || editorLangId == plantuml"
+        "when": "editorLangId == mermaid || editorLangId == plantuml || editorLangId == dot || editorLangId == wavedrom"
       },
       {
         "command": "drawGraph.preview.open",
         "key": "ctrl+shift+v",
         "mac": "cmd+shift+v",
-        "when": "editorLangId == mermaid || editorLangId == plantuml"
+        "when": "editorLangId == mermaid || editorLangId == plantuml || editorLangId == dot || editorLangId == wavedrom"
       }
     ],
     "configuration": {
@@ -813,6 +997,11 @@
           "default": true,
           "markdownDescription": "%config.drawio.vscodeShortcuts%"
         },
+        "drawGraph.drawio.autoLoadWorkspaceLibrary": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "%config.drawio.autoLoadWorkspaceLibrary%"
+        },
         "drawGraph.mermaid.theme": {
           "type": "string",
           "enum": [
@@ -835,6 +1024,16 @@
           "type": "boolean",
           "default": true,
           "markdownDescription": "%config.markdown.plantuml%"
+        },
+        "drawGraph.markdown.dot": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "%config.markdown.dot%"
+        },
+        "drawGraph.markdown.wavedrom": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "%config.markdown.wavedrom%"
         },
         "drawGraph.plantuml.render": {
           "type": "string",
@@ -884,6 +1083,21 @@
           "type": "boolean",
           "default": true,
           "markdownDescription": "%config.preview.followActiveEditor%"
+        },
+        "drawGraph.preview.syncWithCodeCursor": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "%config.preview.syncWithCodeCursor%"
+        },
+        "drawGraph.codeLinks.checkBrokenLinks": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "%config.codeLinks.checkBrokenLinks%"
+        },
+        "drawGraph.codeLinks.syncOnFileRename": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "%config.codeLinks.syncOnFileRename%"
         },
         "drawGraph.preview.pngScale": {
           "type": "number",

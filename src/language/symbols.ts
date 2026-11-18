@@ -1,4 +1,6 @@
 import { splitDiagrams, stripBlockComments } from '../plantuml/encoder';
+import { parseDotGraph } from '../renderers/dotRenderer';
+import { parseWaveJson } from '../renderers/wavedromRenderer';
 
 export type OutlineKind = 'diagram' | 'container' | 'class' | 'interface' | 'enum' | 'actor' | 'participant' | 'state' | 'section';
 
@@ -13,7 +15,7 @@ export interface OutlineNode {
 }
 
 export interface MarkdownDiagramFence {
-  kind: 'mermaid' | 'plantuml';
+  kind: 'mermaid' | 'plantuml' | 'dot' | 'wavedrom';
   startLine: number;
   endLine: number;
   content: string;
@@ -247,20 +249,28 @@ export function parsePlantUmlOutline(text: string): OutlineNode[] {
   return result;
 }
 
-/** Finds ```mermaid and ```plantuml / ```puml fenced code blocks in Markdown text. */
+/** Finds ```mermaid, ```plantuml / ```puml, ```dot / ```graphviz, and ```wavedrom / ```bitfield fences in Markdown. */
 export function findMarkdownDiagramFences(text: string): MarkdownDiagramFence[] {
   const lines = text.split(/\r?\n/);
   const fences: MarkdownDiagramFence[] = [];
-  let active: { kind: 'mermaid' | 'plantuml'; marker: string; startLine: number } | undefined;
+  let active: { kind: MarkdownDiagramFence['kind']; marker: string; startLine: number } | undefined;
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
     if (!active) {
-      const open = /^\s*(`{3,}|~{3,})\s*(mermaid|plantuml|puml)(?:\s+.*)?$/i.exec(line);
+      const open = /^\s*(`{3,}|~{3,})\s*(mermaid|plantuml|puml|dot|graphviz|wavedrom|bitfield)(?:\s+.*)?$/i.exec(line);
       if (open) {
         const lang = open[2].toLowerCase();
+        const kind: MarkdownDiagramFence['kind'] =
+          lang === 'mermaid'
+            ? 'mermaid'
+            : lang === 'dot' || lang === 'graphviz'
+              ? 'dot'
+              : lang === 'wavedrom' || lang === 'bitfield'
+                ? 'wavedrom'
+                : 'plantuml';
         active = {
-          kind: lang === 'mermaid' ? 'mermaid' : 'plantuml',
+          kind,
           marker: open[1],
           startLine: i,
         };
@@ -280,6 +290,147 @@ export function findMarkdownDiagramFences(text: string): MarkdownDiagramFence[] 
     }
   }
   return fences;
+}
+
+export function parseDotOutline(text: string): OutlineNode[] {
+  try {
+    const g = parseDotGraph(text);
+    const totalLines = Math.max(0, text.split(/\r?\n/).length - 1);
+    const root: OutlineNode = {
+      name: g.id,
+      detail: g.directed ? `digraph (${g.rankdir})` : `graph (${g.rankdir})`,
+      kind: 'diagram',
+      startLine: 0,
+      endLine: totalLines,
+      selectionLine: 0,
+      children: [],
+    };
+    const clustered = new Set<string>();
+    for (const cl of g.clusters) {
+      const cNode: OutlineNode = {
+        name: cl.label || cl.id,
+        detail: 'cluster',
+        kind: 'container',
+        startLine: cl.line,
+        endLine: cl.line,
+        selectionLine: cl.line,
+        children: [],
+      };
+      for (const nid of cl.nodeIds) {
+        const nd = g.nodes.get(nid);
+        if (nd) {
+          clustered.add(nid);
+          cNode.children.push({
+            name: nd.label || nd.id,
+            detail: nd.shape,
+            kind: 'participant',
+            startLine: nd.line,
+            endLine: nd.line,
+            selectionLine: nd.line,
+            children: [],
+          });
+        }
+      }
+      root.children.push(cNode);
+    }
+    for (const nd of g.nodes.values()) {
+      if (!clustered.has(nd.id)) {
+        root.children.push({
+          name: nd.label || nd.id,
+          detail: nd.shape,
+          kind: 'participant',
+          startLine: nd.line,
+          endLine: nd.line,
+          selectionLine: nd.line,
+          children: [],
+        });
+      }
+    }
+    return [root];
+  } catch {
+    return [];
+  }
+}
+
+export function parseWaveDromOutline(text: string): OutlineNode[] {
+  try {
+    const doc = parseWaveJson(text);
+    const totalLines = Math.max(0, text.split(/\r?\n/).length - 1);
+    if (Array.isArray(doc.reg)) {
+      return [
+        {
+          name: doc.head?.text || 'Register BitField',
+          detail: 'reg',
+          kind: 'diagram',
+          startLine: 0,
+          endLine: totalLines,
+          selectionLine: 0,
+          children: doc.reg
+            .filter((r) => r.name !== undefined)
+            .map((r) => ({
+              name: String(r.name),
+              detail: `${r.bits}b${r.attr ? ` (${Array.isArray(r.attr) ? r.attr.join(',') : r.attr})` : ''}`,
+              kind: 'participant',
+              startLine: 0,
+              endLine: 0,
+              selectionLine: 0,
+              children: [],
+            })),
+        },
+      ];
+    }
+    if (Array.isArray(doc.signal)) {
+      const children: OutlineNode[] = [];
+      for (const item of doc.signal) {
+        if (Array.isArray(item)) {
+          const [grp, ...rest] = item;
+          children.push({
+            name: String(grp),
+            detail: 'group',
+            kind: 'container',
+            startLine: 0,
+            endLine: 0,
+            selectionLine: 0,
+            children: rest
+              .filter((s): s is { name?: string; wave?: string } => !Array.isArray(s) && Boolean(s?.name))
+              .map((s) => ({
+                name: String(s.name),
+                detail: s.wave || '',
+                kind: 'participant',
+                startLine: 0,
+                endLine: 0,
+                selectionLine: 0,
+                children: [],
+              })),
+          });
+        } else if (item && 'name' in item && item.name) {
+          children.push({
+            name: String(item.name),
+            detail: item.wave || '',
+            kind: 'participant',
+            startLine: 0,
+            endLine: 0,
+            selectionLine: 0,
+            children: [],
+          });
+        }
+      }
+      return [
+        {
+          name: doc.head?.text || 'Timing Waveform',
+          detail: 'signal',
+          kind: 'diagram',
+          startLine: 0,
+          endLine: totalLines,
+          selectionLine: 0,
+          children,
+        },
+      ];
+    }
+    return [];
+  } catch {
+    return [];
+  }
 }
 
 /** Extracts a 1-based line number from a Mermaid parser error message. */

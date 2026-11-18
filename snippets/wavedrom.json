@@ -1,0 +1,31 @@
+{
+  "SPI Timing Waveform": {
+    "prefix": "signal",
+    "body": [
+      "{",
+      "  \"signal\": [",
+      "    { \"name\": \"SCLK\", \"wave\": \"p.......\" },",
+      "    { \"name\": \"CS_N\", \"wave\": \"10.....1\" },",
+      "    { \"name\": \"MOSI\", \"wave\": \"x3.4.5.x\", \"data\": [\"CMD\", \"ADDR\", \"DATA\"] }",
+      "  ],",
+      "  \"head\": { \"text\": \"${1:SPI Transfer}\", \"tick\": 0 }",
+      "}"
+    ],
+    "description": "WaveDrom digital timing waveform"
+  },
+  "Hardware Register BitField": {
+    "prefix": "reg",
+    "body": [
+      "{",
+      "  \"reg\": [",
+      "    { \"bits\": 1, \"name\": \"EN\", \"attr\": \"RW\", \"type\": 4 },",
+      "    { \"bits\": 3, \"name\": \"MODE\", \"attr\": \"RW\", \"type\": 5 },",
+      "    { \"bits\": 4 },",
+      "    { \"bits\": 8, \"name\": \"DATA\", \"attr\": \"RO\", \"type\": 3 }",
+      "  ],",
+      "  \"config\": { \"bits\": 16, \"lanes\": 1 }",
+      "}"
+    ],
+    "description": "WaveDrom BitField hardware register layout"
+  }
+}

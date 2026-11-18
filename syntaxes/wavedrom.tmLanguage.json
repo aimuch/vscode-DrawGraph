@@ -1,0 +1,11 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "WaveDrom",
+  "scopeName": "source.wavedrom",
+  "patterns": [
+    { "name": "comment.line.double-slash.wavedrom", "match": "//.*$" },
+    { "name": "comment.block.wavedrom", "begin": "/\\*", "end": "\\*/" },
+    { "name": "string.quoted.single.wavedrom", "begin": "'", "end": "'", "patterns": [{ "name": "constant.character.escape.wavedrom", "match": "\\\\." }] },
+    { "include": "source.json" }
+  ]
+}

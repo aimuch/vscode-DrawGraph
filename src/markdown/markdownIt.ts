@@ -4,6 +4,8 @@ import * as vscode from 'vscode';
 import { t } from '../l10n';
 import { encodePlantUml, splitDiagrams } from '../plantuml/encoder';
 import { PlantUmlRenderer } from '../plantuml/renderer';
+import { renderDotToSvgOffline } from '../renderers/dotRenderer';
+import { renderWaveDromToSvg } from '../renderers/wavedromRenderer';
 import { config } from '../util';
 
 const asyncPlantUmlCache = new Map<string, string>();
@@ -166,6 +168,24 @@ export function mermaidMarkdownPlugin(md: MarkdownIt): MarkdownIt {
     }
     if ((lang === 'plantuml' || lang === 'puml') && cfg.get<boolean>('markdown.plantuml', true)) {
       return renderPlantUmlFence(md, token.content, line, resolveMarkdownBaseDir(env));
+    }
+    if ((lang === 'dot' || lang === 'graphviz') && cfg.get<boolean>('markdown.dot', true)) {
+      try {
+        const svg = renderDotToSvgOffline(token.content);
+        const b64 = Buffer.from(svg, 'utf8').toString('base64');
+        return `<div class="drawgraph-plantuml drawgraph-dot code-line"${line}><img src="data:image/svg+xml;base64,${b64}" alt="Graphviz DOT diagram"></div>\n`;
+      } catch (err) {
+        return `<div class="drawgraph-plantuml code-line"${line}><pre class="drawgraph-error">${md.utils.escapeHtml((err as Error).message)}</pre></div>\n`;
+      }
+    }
+    if ((lang === 'wavedrom' || lang === 'bitfield') && cfg.get<boolean>('markdown.wavedrom', true)) {
+      try {
+        const svg = renderWaveDromToSvg(token.content);
+        const b64 = Buffer.from(svg, 'utf8').toString('base64');
+        return `<div class="drawgraph-plantuml drawgraph-wavedrom code-line"${line}><img src="data:image/svg+xml;base64,${b64}" alt="WaveDrom diagram"></div>\n`;
+      } catch (err) {
+        return `<div class="drawgraph-plantuml code-line"${line}><pre class="drawgraph-error">${md.utils.escapeHtml((err as Error).message)}</pre></div>\n`;
+      }
     }
     return fallback(tokens, idx, options, env, self);
   };

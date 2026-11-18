@@ -8,6 +8,8 @@ import { measureMxfileBounds, renderMxfileToPreviewSvg, unionMxfileBounds } from
 import { t } from '../l10n';
 import { splitDiagrams } from '../plantuml/encoder';
 import { mermaidTheme, type PreviewManager } from '../preview/previewManager';
+import { renderDotToSvgOffline } from '../renderers/dotRenderer';
+import { renderWaveDromToSvg } from '../renderers/wavedromRenderer';
 import { getNonce } from '../util';
 
 const execFileAsync = promisify(execFile);
@@ -24,6 +26,7 @@ export interface DiffSnapshot {
   gitRef?: string;
   pageIndex: number;
   pageCount: number;
+  reviewCount: number;
   ready: boolean;
   beforeEmpty: boolean;
   afterEmpty: boolean;
@@ -36,6 +39,8 @@ interface DiffSession {
   gitRef: string;
   pageIndex: number;
   pages: string[];
+  reviewQueue?: vscode.Uri[];
+  reviewIndex: number;
   panel: vscode.WebviewPanel;
   ready: boolean;
   beforeEmpty: boolean;
@@ -174,6 +179,7 @@ export class VisualDiffManager implements vscode.Disposable {
       gitRef: s.mode === 'git' ? s.gitRef : undefined,
       pageIndex: s.pageIndex,
       pageCount: s.pages.length,
+      reviewCount: s.reviewQueue?.length ?? 1,
       ready: s.ready,
       beforeEmpty: s.beforeEmpty,
       afterEmpty: s.afterEmpty,
@@ -186,11 +192,104 @@ export class VisualDiffManager implements vscode.Disposable {
     return true;
   }
 
+  /**
+   * Finds all diagram files modified against `baseRefArg` (or a user-selected branch/ref)
+   * and opens an interactive multi-file Branch Visual Review session.
+   */
+  async openBranchReview(baseRefArg?: string): Promise<number> {
+    if (!vscode.workspace.isTrusted) {
+      void vscode.window.showWarningMessage(t('Branch visual review requires a trusted workspace.'));
+      return 0;
+    }
+    const wsFolder = vscode.workspace.workspaceFolders?.[0];
+    if (!wsFolder || wsFolder.uri.scheme !== 'file') {
+      return 0;
+    }
+    const repoRoot = await resolveGitRepoRoot(wsFolder.uri);
+    if (!repoRoot) {
+      void vscode.window.showWarningMessage(t('Current workspace is not inside a Git repository.'));
+      return 0;
+    }
+
+    let baseRef = baseRefArg?.trim();
+    if (!baseRef) {
+      const candidates: Array<{ label: string; description: string; ref: string }> = [
+        { label: '$(git-branch) HEAD', description: t('Uncommitted working tree changes vs HEAD'), ref: 'HEAD' },
+        { label: '$(git-commit) HEAD~1', description: t('Previous commit (HEAD~1)'), ref: 'HEAD~1' },
+      ];
+      try {
+        const { stdout } = await execFileAsync(
+          'git',
+          ['-c', 'core.fsmonitor=false', 'branch', '-a', '--format=%(refname:short)'],
+          { cwd: repoRoot },
+        );
+        for (const br of stdout.split(/\r?\n/).map((s) => s.trim()).filter(Boolean)) {
+          if (!candidates.some((c) => c.ref === br)) {
+            candidates.push({ label: `$(git-branch) ${br}`, description: t('Compare working tree against {0}', br), ref: br });
+          }
+        }
+      } catch {
+        // Ignore branch listing errors
+      }
+      const picked = await vscode.window.showQuickPick(candidates, {
+        placeHolder: t('Select base branch or commit for visual diagram review'),
+      });
+      if (!picked) {
+        return 0;
+      }
+      baseRef = picked.ref;
+    }
+
+    const diagramExtRe = /\.(?:drawio|dio|drawio\.svg|drawio\.png|dio\.svg|dio\.png|mmd|mermaid|puml|plantuml|pu|iuml|wsd|dot|gv|wavedrom|wave\.json)$/i;
+    const relPaths = new Set<string>();
+    try {
+      const { stdout } = await execFileAsync('git', ['-c', 'core.fsmonitor=false', 'diff', '--name-only', baseRef], {
+        cwd: repoRoot,
+      });
+      for (const ln of stdout.split(/\r?\n/).map((s) => s.trim()).filter(Boolean)) {
+        if (diagramExtRe.test(ln)) relPaths.add(ln);
+      }
+    } catch {
+      // Ignore if ref does not exist
+    }
+    try {
+      const { stdout: untracked } = await execFileAsync(
+        'git',
+        ['-c', 'core.fsmonitor=false', 'ls-files', '--others', '--exclude-standard'],
+        { cwd: repoRoot },
+      );
+      for (const ln of untracked.split(/\r?\n/).map((s) => s.trim()).filter(Boolean)) {
+        if (diagramExtRe.test(ln)) relPaths.add(ln);
+      }
+    } catch {
+      // Ignore
+    }
+
+    const uris = [...relPaths].sort().map((rel) => vscode.Uri.file(path.join(repoRoot, rel)));
+    if (uris.length === 0) {
+      if (!baseRefArg) {
+        void vscode.window.showInformationMessage(t('No modified diagrams found compared to {0}.', baseRef));
+      }
+      return 0;
+    }
+
+    const session = this.createPanelSession(
+      'git',
+      uris[0],
+      `${t('Branch Diagram Review')} (${uris.length})`,
+      baseRef,
+      undefined,
+      uris,
+    );
+    await this.refreshSession(session);
+    return uris.length;
+  }
+
   async openFileComparison(beforeUri?: vscode.Uri, afterUri?: vscode.Uri): Promise<boolean> {
     let left = beforeUri;
     let right = afterUri;
     const filters = {
-      Diagrams: ['drawio', 'dio', 'svg', 'png', 'mmd', 'mermaid', 'puml', 'plantuml', 'pu', 'iuml', 'wsd'],
+      Diagrams: ['drawio', 'dio', 'svg', 'png', 'mmd', 'mermaid', 'puml', 'plantuml', 'pu', 'iuml', 'wsd', 'dot', 'gv', 'wavedrom'],
     };
     if (!left) {
       const picked = await vscode.window.showOpenDialog({
@@ -328,6 +427,8 @@ export class VisualDiffManager implements vscode.Disposable {
       gitRef: session.gitRef,
       pages: session.pages,
       pageIndex: session.pageIndex,
+      reviewFiles: session.reviewQueue ? session.reviewQueue.map((u) => vscode.workspace.asRelativePath(u, false)) : [],
+      reviewIndex: session.reviewIndex,
       mermaidTheme: mermaidTheme(),
       labels: this.buildUiLabels(),
       emptyText: t('Empty / Not Present'),
@@ -374,6 +475,22 @@ export class VisualDiffManager implements vscode.Disposable {
     if (/\.(?:mmd|mermaid)$/i.test(lower)) {
       return { label, empty: false, renderKind: 'mermaid', payload: text };
     }
+    if (/\.(?:dot|gv)$/i.test(lower)) {
+      try {
+        return { label, empty: false, renderKind: 'svg', payload: renderDotToSvgOffline(text) };
+      } catch (err) {
+        const errSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="420" height="80"><rect width="100%" height="100%" fill="#fff5f5"/><text x="16" y="44" fill="#c53030" font-family="sans-serif" font-size="13">${escapeXml((err as Error).message)}</text></svg>`;
+        return { label, empty: false, renderKind: 'svg', payload: errSvg };
+      }
+    }
+    if (/\.(?:wavedrom|wave\.json)$/i.test(lower)) {
+      try {
+        return { label, empty: false, renderKind: 'svg', payload: renderWaveDromToSvg(text) };
+      } catch (err) {
+        const errSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="420" height="80"><rect width="100%" height="100%" fill="#fff5f5"/><text x="16" y="44" fill="#c53030" font-family="sans-serif" font-size="13">${escapeXml((err as Error).message)}</text></svg>`;
+        return { label, empty: false, renderKind: 'svg', payload: errSvg };
+      }
+    }
     if (/\.(?:puml|plantuml|pu|iuml|wsd)$/i.test(lower)) {
       try {
         const blocks = splitDiagrams(text);
@@ -394,6 +511,7 @@ export class VisualDiffManager implements vscode.Disposable {
     title: string,
     gitRef: string,
     leftUri?: vscode.Uri,
+    reviewQueue?: vscode.Uri[],
   ): DiffSession {
     const mediaRoot = vscode.Uri.joinPath(this.context.extensionUri, 'media');
     const panel = vscode.window.createWebviewPanel(
@@ -411,6 +529,8 @@ export class VisualDiffManager implements vscode.Disposable {
       gitRef,
       pageIndex: 0,
       pages: [],
+      reviewQueue,
+      reviewIndex: 0,
       panel,
       ready: false,
       beforeEmpty: false,
@@ -421,7 +541,10 @@ export class VisualDiffManager implements vscode.Disposable {
     const webview = panel.webview;
     const nonce = getNonce();
     const media = (...p: string[]) => webview.asWebviewUri(vscode.Uri.joinPath(mediaRoot, ...p));
-    const needMermaid = /\.(?:mmd|mermaid)$/i.test(targetUri.path) || (leftUri ? /\.(?:mmd|mermaid)$/i.test(leftUri.path) : false);
+    const needMermaid =
+      Boolean(reviewQueue?.some((u) => /\.(?:mmd|mermaid)$/i.test(u.path))) ||
+      /\.(?:mmd|mermaid)$/i.test(targetUri.path) ||
+      (leftUri ? /\.(?:mmd|mermaid)$/i.test(leftUri.path) : false);
     const imgSrc = vscode.workspace.isTrusted
       ? `${webview.cspSource} https: data: blob:`
       : `${webview.cspSource} data: blob:`;
@@ -451,6 +574,11 @@ export class VisualDiffManager implements vscode.Disposable {
       <button type="button" data-mode="onion">${tr('Onion / Pixel Diff')}</button>
     </div>
     <button id="gitRefBtn" type="button" hidden title="${tr('Select baseline Git commit or branch')}">HEAD ▾</button>
+    <div id="fileQueueWrap" hidden>
+      <button id="prevFileBtn" type="button" title="${tr('Previous modified diagram')}">◀</button>
+      <select id="fileQueueSelect" aria-label="Modified diagrams"></select>
+      <button id="nextFileBtn" type="button" title="${tr('Next modified diagram')}">▶</button>
+    </div>
     <select id="pageSelect" hidden aria-label="Diagram page"></select>
     <span class="sep"></span>
     <button id="zoomOutBtn" type="button" title="${tr('Zoom out')}">−</button>
@@ -488,13 +616,21 @@ export class VisualDiffManager implements vscode.Disposable {
 </body>
 </html>`;
 
-    const sub = webview.onDidReceiveMessage(async (msg: { type: string; pageIndex?: number }) => {
+    const sub = webview.onDidReceiveMessage(async (msg: { type: string; pageIndex?: number; reviewIndex?: number }) => {
       if (msg.type === 'ready') {
         session.ready = true;
         await this.refreshSession(session);
       } else if (msg.type === 'selectPage' && typeof msg.pageIndex === 'number') {
         session.pageIndex = Math.max(0, msg.pageIndex);
         await this.refreshSession(session);
+      } else if (msg.type === 'selectReviewFile' && session.reviewQueue && typeof msg.reviewIndex === 'number') {
+        const len = session.reviewQueue.length;
+        if (len > 0) {
+          session.reviewIndex = ((msg.reviewIndex % len) + len) % len;
+          session.targetUri = session.reviewQueue[session.reviewIndex];
+          session.pageIndex = 0;
+          await this.refreshSession(session);
+        }
       } else if (msg.type === 'pickGitRef' && session.mode === 'git') {
         const refs = await listGitRefsForFile(session.targetUri);
         const picked = await vscode.window.showQuickPick(

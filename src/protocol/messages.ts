@@ -15,7 +15,7 @@ export type PreviewToHostMessage =
     }
   | { type: 'toggleLock' }
   | { type: 'navigate'; delta: number }
-  | { type: 'export'; format: 'svg' | 'png' | 'pdf'; data: string; width?: number; height?: number }
+  | { type: 'export'; format: 'svg' | 'png' | 'pdf' | 'html'; data: string; width?: number; height?: number }
   | { type: 'autoExportData'; format: 'svg' | 'png' | 'pdf'; data: string }
   | { type: 'offscreenRendered'; requestId: number; data?: string; width?: number; height?: number; error?: string }
   | { type: 'copy'; data: string }
@@ -47,7 +47,8 @@ export type HostToPreviewMessage =
   | { type: 'empty' }
   | { type: 'error'; message: string }
   | { type: 'settingsState'; settings: SettingsSnapshot }
-  | { type: 'toggleSettings'; open?: boolean; settings?: SettingsSnapshot };
+  | { type: 'toggleSettings'; open?: boolean; settings?: SettingsSnapshot }
+  | { type: 'highlightCode'; candidates: string[] };
 
 /** Discriminated union of messages sent from the Draw.io bridge webview to the Extension Host. */
 export type DrawioToHostMessage =

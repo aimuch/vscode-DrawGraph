@@ -1,0 +1,26 @@
+{
+  "Directed Graph (LR)": {
+    "prefix": "digraph",
+    "body": [
+      "digraph ${1:Architecture} {",
+      "  rankdir=LR;",
+      "  node [shape=box, style=rounded];",
+      "",
+      "  ${2:Client} -> ${3:Gateway} -> ${4:Database};",
+      "  ${4:Database} [shape=cylinder];",
+      "}"
+    ],
+    "description": "Graphviz directed graph with left-to-right layout"
+  },
+  "Subgraph Cluster": {
+    "prefix": "cluster",
+    "body": [
+      "subgraph cluster_${1:backend} {",
+      "  label=\"${2:Backend Services}\";",
+      "  style=rounded;",
+      "  ${3:API} -> ${4:Worker};",
+      "}"
+    ],
+    "description": "Graphviz cluster box"
+  }
+}

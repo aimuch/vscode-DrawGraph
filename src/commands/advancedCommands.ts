@@ -2,13 +2,17 @@ import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { navigateToCodeTarget } from '../codeLinks';
 import { convertMermaidToPlantUml, convertPlantUmlToMermaid } from '../converters/diagramConverters';
+import { convertDrawioToMermaid, convertDrawioToPlantUml } from '../converters/drawioToText';
 import { extractResourceUri, type VisualDiffManager } from '../diff/visualDiffPanel';
-import { DrawioEditorProvider } from '../drawio/drawioEditorProvider';
+import { extractDrawioPages } from '../drawio/codeLinksXml';
+import { STARTER_WORKSPACE_LIBRARY_XML } from '../drawio/customLibraryLoader';
+import { DrawioEditorProvider, readDrawioXmlFromUri } from '../drawio/drawioEditorProvider';
 import { replaceEmbeddedDiagram } from '../drawio/drawioSvg';
 import { convertMermaidToDrawioXml } from '../drawio/mermaidToDrawio';
 import { renderMxfileToPreviewSvg } from '../drawio/mxfileToSvg';
 import type { OfflinePackManager } from '../drawio/offlinePackManager';
 import type { DiagramExplorerProvider } from '../explorer/diagramTreeView';
+import { buildInteractiveHtmlBundle } from '../export/htmlExporter';
 import {
   extractFallbackCodeSymbols,
   extractLocalImports,
@@ -19,12 +23,19 @@ import {
   type ModuleDependencyEdge,
 } from '../generators/codeToDiagram';
 import { convertJsonToDiagram, convertSqlToDiagram } from '../generators/dataToDiagram';
-import { t } from '../l10n';
+import { convertInfraToDiagram } from '../generators/infraToDiagram';
+import {
+  convertOpenApiToDiagram,
+  convertPrismaToDiagram,
+  convertProtoToDiagram,
+} from '../generators/specToDiagram';
+import { getLanguage, t } from '../l10n';
+import type { CodeLinkMaintenanceService } from '../language/codeLinkMaintenance';
 import { findMarkdownDiagramFences } from '../language/symbols';
 import { pickBlock, splitDiagrams } from '../plantuml/encoder';
 import { diagramKind, type PreviewManager } from '../preview/previewManager';
 import type { SettingsPanelManager } from '../settingsPanel';
-import { saveBytes, withExtension } from '../util';
+import { isDarkTheme, saveBytes, withExtension } from '../util';
 import { activeTabContext } from './coreCommands';
 
 export interface AdvancedCommandDeps {
@@ -35,6 +46,7 @@ export interface AdvancedCommandDeps {
   offlinePack: OfflinePackManager;
   explorer: DiagramExplorerProvider;
   settingsPanel: SettingsPanelManager;
+  codeLinkMaintenance: CodeLinkMaintenanceService;
 }
 
 function mapVscodeSymbolKind(kind: vscode.SymbolKind): CodeSymbolNode['kind'] | undefined {
@@ -107,6 +119,7 @@ export function registerAdvancedCommands({
   offlinePack,
   explorer,
   settingsPanel,
+  codeLinkMaintenance,
 }: AdvancedCommandDeps): void {
   const register = (id: string, fn: (...args: unknown[]) => unknown) =>
     context.subscriptions.push(vscode.commands.registerCommand(id, fn));
@@ -139,7 +152,12 @@ export function registerAdvancedCommands({
     const pos = new vscode.Position(safeLine, 0);
     editor.selection = new vscode.Selection(pos, pos);
     editor.revealRange(new vscode.Range(pos, pos), vscode.TextEditorRevealType.InCenterIfOutsideViewport);
-    if (dtypeArg === 'mermaid' || dtypeArg === 'plantuml') {
+    if (
+      dtypeArg === 'mermaid' ||
+      dtypeArg === 'plantuml' ||
+      dtypeArg === 'dot' ||
+      dtypeArg === 'wavedrom'
+    ) {
       if (doc.languageId === 'markdown') {
         await vscode.commands.executeCommand('markdown.showPreviewToSide', uri);
       } else {
@@ -148,7 +166,7 @@ export function registerAdvancedCommands({
     }
   });
 
-  // F1: Git Visual Diagram Diff
+  // F1: Git Visual Diagram Diff & Branch Diagram Review
   register('drawGraph.visualDiff', async (arg?: unknown, refArg?: unknown) => {
     const target = extractResourceUri(arg) ?? activeTabContext().uri;
     if (!target) {
@@ -159,11 +177,15 @@ export function registerAdvancedCommands({
     return visualDiff.openGitDiff(target, gitRef);
   });
 
+  register('drawGraph.visualDiffBranch', async (baseRefArg?: unknown) => {
+    return visualDiff.openBranchReview(typeof baseRefArg === 'string' ? baseRefArg : undefined);
+  });
+
   register('drawGraph.visualDiffFiles', async (leftArg?: unknown, rightArg?: unknown) => {
     return visualDiff.openFileComparison(asUri(leftArg), asUri(rightArg));
   });
 
-  // F3: Universal PDF Export
+  // F3: Universal PDF Export & Standalone Interactive HTML Export
   register('drawGraph.exportPdf', async (uriArg?: unknown, destArg?: unknown): Promise<vscode.Uri | undefined> => {
     const tabCtx = activeTabContext();
     const isDrawio =
@@ -175,6 +197,25 @@ export function registerAdvancedCommands({
     if (!targetUri) {
       return undefined;
     }
+    if (/\.(?:drawio|dio)(?:\.(?:svg|png|xml))?$/i.test(targetUri.path)) {
+      const dest = asUri(destArg) ?? withExtension(targetUri, '.pdf');
+      if (destArg instanceof vscode.Uri) {
+        const xml = await readDrawioXmlFromUri(targetUri);
+        if (xml) {
+          const pages = extractDrawioPages(xml);
+          const pngPages = [];
+          for (let i = 0; i < Math.max(1, pages.length); i++) {
+            const svg = renderMxfileToPreviewSvg(xml, i);
+            const pngBytes = await previews.rasterizeSvgToPngBytes(svg);
+            pngPages.push({ bytes: pngBytes, format: 'png' as const, scale: 2 });
+          }
+          const { buildPdfDocument } = await import('../export/pdfWriter');
+          await vscode.workspace.fs.writeFile(dest, buildPdfDocument(pngPages));
+          return dest;
+        }
+      }
+      return drawio.exportActivePdf(asUri(destArg));
+    }
     const doc = await vscode.workspace.openTextDocument(targetUri);
     const kind = diagramKind(doc);
     if (!kind) {
@@ -185,7 +226,11 @@ export function registerAdvancedCommands({
     const pdfBytes =
       kind === 'mermaid'
         ? await previews.renderMermaidBytes(doc.getText(), 'pdf')
-        : await previews.renderPlantUmlBytes(splitDiagrams(doc.getText())[0]?.source ?? doc.getText(), 'pdf', baseDir);
+        : kind === 'dot'
+          ? await previews.renderDotBytes(doc.getText(), 'pdf')
+          : kind === 'wavedrom'
+            ? await previews.renderWaveDromBytes(doc.getText(), 'pdf')
+            : await previews.renderPlantUmlBytes(splitDiagrams(doc.getText())[0]?.source ?? doc.getText(), 'pdf', baseDir);
 
     if (dest) {
       await vscode.workspace.fs.writeFile(dest, pdfBytes);
@@ -194,6 +239,99 @@ export function registerAdvancedCommands({
     await saveBytes(withExtension(targetUri, '.pdf'), pdfBytes, { PDF: ['pdf'] });
     return withExtension(targetUri, '.pdf');
   });
+
+  register('drawGraph.exportHtml', async (uriArg?: unknown, destArg?: unknown): Promise<vscode.Uri | undefined> => {
+    const tabCtx = activeTabContext();
+    const targetUri = asUri(uriArg) ?? tabCtx.uri;
+    if (!targetUri) {
+      void vscode.window.showWarningMessage(t('Open or select a diagram file first.'));
+      return undefined;
+    }
+
+    const pages: Array<{ name: string; svg: string }> = [];
+    if (
+      /\.(?:drawio|dio)(?:\.(?:svg|png|xml))?$/i.test(targetUri.path) ||
+      tabCtx.viewType === DrawioEditorProvider.viewType ||
+      tabCtx.viewType === DrawioEditorProvider.pngViewType
+    ) {
+      const xml = (await readDrawioXmlFromUri(targetUri)) ?? (await drawio.getActiveDiagramXml())?.xml;
+      if (!xml) {
+        return undefined;
+      }
+      const rawPages = extractDrawioPages(xml);
+      const count = Math.max(1, rawPages.length);
+      for (let i = 0; i < count; i++) {
+        pages.push({
+          name: rawPages[i]?.name || `Page ${i + 1}`,
+          svg: renderMxfileToPreviewSvg(xml, i),
+        });
+      }
+    } else {
+      const doc = await vscode.workspace.openTextDocument(targetUri);
+      const kind = diagramKind(doc);
+      const baseDir = targetUri.scheme === 'file' ? path.dirname(targetUri.fsPath) : undefined;
+      if (kind === 'mermaid') {
+        const svgBytes = await previews.renderMermaidBytes(doc.getText(), 'svg');
+        pages.push({ name: path.basename(targetUri.path), svg: Buffer.from(svgBytes).toString('utf8') });
+      } else if (kind === 'plantuml') {
+        const blocks = splitDiagrams(doc.getText());
+        for (let i = 0; i < blocks.length; i++) {
+          const svgBytes = await previews.renderPlantUmlBytes(blocks[i].source, 'svg', baseDir);
+          pages.push({
+            name: blocks[i].title || `Diagram ${i + 1}`,
+            svg: Buffer.from(svgBytes).toString('utf8'),
+          });
+        }
+      } else if (kind === 'dot') {
+        const svgBytes = await previews.renderDotBytes(doc.getText(), 'svg');
+        pages.push({ name: path.basename(targetUri.path), svg: Buffer.from(svgBytes).toString('utf8') });
+      } else if (kind === 'wavedrom') {
+        const svgBytes = await previews.renderWaveDromBytes(doc.getText(), 'svg');
+        pages.push({ name: path.basename(targetUri.path), svg: Buffer.from(svgBytes).toString('utf8') });
+      }
+    }
+
+    if (pages.length === 0) {
+      return undefined;
+    }
+
+    const html = buildInteractiveHtmlBundle({
+      title: path.basename(targetUri.path),
+      pages,
+      lang: getLanguage(),
+      defaultTheme: isDarkTheme() ? 'dark' : 'light',
+    });
+    const htmlBytes = Buffer.from(html, 'utf8');
+    const dest = asUri(destArg);
+    if (dest) {
+      await vscode.workspace.fs.writeFile(dest, htmlBytes);
+      return dest;
+    }
+    const defaultOut = withExtension(targetUri, '.html');
+    await saveBytes(defaultOut, htmlBytes, { HTML: ['html'] });
+    return defaultOut;
+  });
+
+  // Draw.io -> Mermaid / PlantUML reverse conversion
+  const convertDrawioHelper = async (
+    uriArg: unknown,
+    targetLang: 'mermaid' | 'plantuml',
+  ): Promise<vscode.TextDocument | undefined> => {
+    const uri = asUri(uriArg) ?? activeTabContext().uri;
+    const xml = (uri ? await readDrawioXmlFromUri(uri) : undefined) ?? (await drawio.getActiveDiagramXml())?.xml;
+    if (!xml) {
+      void vscode.window.showWarningMessage(t('Open or select a Draw.io diagram first.'));
+      return undefined;
+    }
+    const outText = targetLang === 'mermaid' ? convertDrawioToMermaid(xml) : convertDrawioToPlantUml(xml);
+    const outDoc = await vscode.workspace.openTextDocument({ language: targetLang, content: outText });
+    await vscode.window.showTextDocument(outDoc, { viewColumn: vscode.ViewColumn.Beside });
+    await previews.open(outDoc.uri, true);
+    return outDoc;
+  };
+
+  register('drawGraph.convert.drawioToMermaid', (uriArg?: unknown) => convertDrawioHelper(uriArg, 'mermaid'));
+  register('drawGraph.convert.drawioToPlantuml', (uriArg?: unknown) => convertDrawioHelper(uriArg, 'plantuml'));
 
   // F6.2: Bidirectional PlantUML <-> Mermaid Conversion
   register(
@@ -258,7 +396,11 @@ export function registerAdvancedCommands({
       const bytes =
         fence.kind === 'mermaid'
           ? await previews.renderMermaidBytes(fence.content, format)
-          : await previews.renderPlantUmlBytes(splitDiagrams(fence.content)[0]?.source ?? fence.content, format, baseDir);
+          : fence.kind === 'dot'
+            ? await previews.renderDotBytes(fence.content, format)
+            : fence.kind === 'wavedrom'
+              ? await previews.renderWaveDromBytes(fence.content, format)
+              : await previews.renderPlantUmlBytes(splitDiagrams(fence.content)[0]?.source ?? fence.content, format, baseDir);
 
       const dest = asUri(destArg);
       if (dest) {
@@ -638,4 +780,175 @@ export function registerAdvancedCommands({
       return doc;
     },
   );
+
+  // OpenAPI / Protobuf / Prisma Schema -> Diagram Generator
+  register(
+    'drawGraph.generateFromSpec',
+    async (
+      uriOrTextArg?: unknown,
+      formatArg?: unknown,
+      destArg?: unknown,
+    ): Promise<vscode.TextDocument | vscode.Uri | undefined> => {
+      let rawText: string | undefined;
+      let specKind: 'openapi' | 'proto' | 'prisma' | undefined;
+      let baseFolder = vscode.workspace.workspaceFolders?.[0]?.uri;
+
+      if (typeof uriOrTextArg === 'string' && uriOrTextArg.trim()) {
+        rawText = uriOrTextArg;
+      } else {
+        const targetUri = asUri(uriOrTextArg) ?? vscode.window.activeTextEditor?.document.uri;
+        if (targetUri) {
+          const doc = await vscode.workspace.openTextDocument(targetUri);
+          rawText = doc.getText();
+          if (targetUri.scheme === 'file') {
+            baseFolder = vscode.Uri.joinPath(targetUri, '..');
+          }
+          if (/\.proto$/i.test(targetUri.path)) {
+            specKind = 'proto';
+          } else if (/\.prisma$/i.test(targetUri.path)) {
+            specKind = 'prisma';
+          } else if (/(?:openapi|swagger)/i.test(targetUri.path)) {
+            specKind = 'openapi';
+          }
+        }
+      }
+
+      if (!rawText || !rawText.trim()) {
+        void vscode.window.showWarningMessage(t('Open an OpenAPI, .proto, or .prisma file first.'));
+        return undefined;
+      }
+      const trimmed = rawText.trim();
+      if (!specKind) {
+        if (/\b(?:syntax\s*=\s*"proto|service\s+\w+\s*\{|message\s+\w+\s*\{)/.test(trimmed)) {
+          specKind = 'proto';
+        } else if (/\bmodel\s+\w+\s*\{[\s\S]*?@id\b/.test(trimmed)) {
+          specKind = 'prisma';
+        } else {
+          specKind = 'openapi';
+        }
+      }
+
+      const format = await promptDiagramOutputFormat(formatArg);
+      if (!format) {
+        return undefined;
+      }
+
+      let output: string;
+      try {
+        output =
+          specKind === 'proto'
+            ? convertProtoToDiagram(trimmed, format)
+            : specKind === 'prisma'
+              ? convertPrismaToDiagram(trimmed, format)
+              : convertOpenApiToDiagram(trimmed, format);
+      } catch (err) {
+        void vscode.window.showErrorMessage(t('Failed to parse {0}: {1}', specKind.toUpperCase(), (err as Error).message));
+        return undefined;
+      }
+
+      if (format === 'drawio') {
+        const dest =
+          asUri(destArg) ??
+          (await vscode.window.showSaveDialog({
+            defaultUri: baseFolder ? vscode.Uri.joinPath(baseFolder, `${specKind}-diagram.drawio`) : undefined,
+            filters: { 'draw.io': ['drawio'] },
+          }));
+        if (!dest) return undefined;
+        await vscode.workspace.fs.writeFile(dest, Buffer.from(output, 'utf8'));
+        await vscode.commands.executeCommand('vscode.openWith', dest, DrawioEditorProvider.viewType);
+        return dest;
+      }
+
+      const doc = await vscode.workspace.openTextDocument({ language: format, content: output });
+      await vscode.window.showTextDocument(doc, { viewColumn: vscode.ViewColumn.Beside });
+      await previews.open(doc.uri, true);
+      return doc;
+    },
+  );
+
+  // Docker Compose / GitHub Actions Workflow -> Topology Generator
+  register(
+    'drawGraph.generateInfraDiagram',
+    async (
+      uriOrTextArg?: unknown,
+      formatArg?: unknown,
+      destArg?: unknown,
+    ): Promise<vscode.TextDocument | vscode.Uri | undefined> => {
+      let rawText: string | undefined;
+      let fileHint = '';
+      let baseFolder = vscode.workspace.workspaceFolders?.[0]?.uri;
+
+      if (typeof uriOrTextArg === 'string' && uriOrTextArg.trim()) {
+        rawText = uriOrTextArg;
+      } else {
+        const targetUri = asUri(uriOrTextArg) ?? vscode.window.activeTextEditor?.document.uri;
+        if (targetUri) {
+          const doc = await vscode.workspace.openTextDocument(targetUri);
+          rawText = doc.getText();
+          fileHint = targetUri.path;
+          if (targetUri.scheme === 'file') {
+            baseFolder = vscode.Uri.joinPath(targetUri, '..');
+          }
+        }
+      }
+
+      if (!rawText || !rawText.trim()) {
+        void vscode.window.showWarningMessage(t('Open a docker-compose.yml or GitHub Actions workflow file first.'));
+        return undefined;
+      }
+
+      const format = await promptDiagramOutputFormat(formatArg);
+      if (!format) {
+        return undefined;
+      }
+
+      let output: string;
+      try {
+        output = convertInfraToDiagram(rawText.trim(), format, fileHint);
+      } catch (err) {
+        void vscode.window.showErrorMessage(t('Failed to parse {0}: {1}', 'YAML', (err as Error).message));
+        return undefined;
+      }
+
+      if (format === 'drawio') {
+        const dest =
+          asUri(destArg) ??
+          (await vscode.window.showSaveDialog({
+            defaultUri: baseFolder ? vscode.Uri.joinPath(baseFolder, 'infra-topology.drawio') : undefined,
+            filters: { 'draw.io': ['drawio'] },
+          }));
+        if (!dest) return undefined;
+        await vscode.workspace.fs.writeFile(dest, Buffer.from(output, 'utf8'));
+        await vscode.commands.executeCommand('vscode.openWith', dest, DrawioEditorProvider.viewType);
+        return dest;
+      }
+
+      const doc = await vscode.workspace.openTextDocument({ language: format, content: output });
+      await vscode.window.showTextDocument(doc, { viewColumn: vscode.ViewColumn.Beside });
+      await previews.open(doc.uri, true);
+      return doc;
+    },
+  );
+
+  // Broken Code-Link Auditor & Workspace Shape Library Scaffolder
+  register('drawGraph.checkCodeLinks', async (interactiveArg?: unknown) => {
+    return codeLinkMaintenance.auditWorkspace(interactiveArg !== false);
+  });
+
+  register('drawGraph.drawio.createWorkspaceLibrary', async (destArg?: unknown): Promise<vscode.Uri | undefined> => {
+    const folder = vscode.workspace.workspaceFolders?.[0]?.uri;
+    if (!folder && !(destArg instanceof vscode.Uri)) {
+      return undefined;
+    }
+    const dest = asUri(destArg) ?? vscode.Uri.joinPath(folder!, '.vscode', 'drawgraph-library.xml');
+    try {
+      await vscode.workspace.fs.stat(dest);
+    } catch {
+      await vscode.workspace.fs.writeFile(dest, Buffer.from(STARTER_WORKSPACE_LIBRARY_XML, 'utf8'));
+    }
+    await drawio.reloadWorkspaceLibraries();
+    const doc = await vscode.workspace.openTextDocument(dest);
+    await vscode.window.showTextDocument(doc);
+    return dest;
+  });
 }

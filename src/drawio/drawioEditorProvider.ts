@@ -18,8 +18,8 @@ import {
   type TransitionTable,
 } from '../stateMachine';
 import { config, decodeDataUri, getNonce, isDarkTheme, resolveAutoExportUri, saveBytes, withExtension } from '../util';
-import { buildCodeSymbolMergeXml, extractDrawioPages } from './codeLinksXml';
-import { loadCustomLibraries, parseMxLibraryXml } from './customLibraryLoader';
+import { buildCodeSymbolMergeXml, extractCodeLinksFromDrawioXml, extractDrawioPages } from './codeLinksXml';
+import { discoverWorkspaceLibraryFsPathsSync, loadCustomLibraries, parseMxLibraryXml } from './customLibraryLoader';
 import { extractDiagramFromPng, isPngDiagramPath, pngBytesToDataUri } from './drawioPng';
 import { extractDiagramFromSvg, isSvgDiagramPath, replaceEmbeddedDiagram } from './drawioSvg';
 import { computeMinimalTextChange } from './minimalEdit';
@@ -228,6 +228,7 @@ export class DrawioEditorProvider implements vscode.CustomTextEditorProvider {
           e.affectsConfiguration('drawGraph.drawio.config') ||
           e.affectsConfiguration('drawGraph.drawio.vscodeShortcuts') ||
           e.affectsConfiguration('drawGraph.drawio.customLibraries') ||
+          e.affectsConfiguration('drawGraph.drawio.autoLoadWorkspaceLibrary') ||
           e.affectsConfiguration('drawGraph.drawio.hideGithubIcon')
         ) {
           void provider.broadcastSetup();
@@ -381,7 +382,11 @@ export class DrawioEditorProvider implements vscode.CustomTextEditorProvider {
 
     const forwardShortcuts = cfg.get<boolean>('drawio.vscodeShortcuts', true);
     const configuredLibs = cfg.get<string[]>('drawio.customLibraries', []);
-    if (!vscode.workspace.isTrusted || !Array.isArray(configuredLibs) || configuredLibs.length === 0) {
+    const autoLibs = discoverWorkspaceLibraryFsPathsSync();
+    if (
+      !vscode.workspace.isTrusted ||
+      ((!Array.isArray(configuredLibs) || configuredLibs.length === 0) && autoLibs.length === 0)
+    ) {
       return { type: 'setup', drawioConfig: baseConfig, forwardShortcuts };
     }
     return loadCustomLibraries().then((customLibs) => {
@@ -1297,6 +1302,41 @@ export class DrawioEditorProvider implements vscode.CustomTextEditorProvider {
       }
     }
     return undefined;
+  }
+
+  async reloadWorkspaceLibraries(): Promise<void> {
+    await this.broadcastSetup();
+  }
+
+  async highlightCodeTargets(candidates: string[]): Promise<void> {
+    if (this.sessions.size === 0 || candidates.length === 0) {
+      return;
+    }
+    const needles = candidates.map((s) => s.trim().toLowerCase()).filter((s) => s.length >= 2);
+    for (const s of this.sessions) {
+      if (!s.panel.visible) continue;
+      try {
+        const xml = await readDrawioXmlFromUri(s.uri);
+        if (!xml) continue;
+        const links = extractCodeLinksFromDrawioXml(xml);
+        const hit = links.find((lk) => {
+          const tgt = lk.target.toLowerCase();
+          const lbl = lk.label.toLowerCase();
+          return needles.some((nd) => {
+            const bare = nd.startsWith('#') ? nd.slice(1) : nd;
+            return tgt.includes(nd) || tgt.includes(bare) || lbl === bare;
+          });
+        });
+        if (hit) {
+          this.codeLinksStatusBar.text = `$(target) ${hit.label}`;
+          this.codeLinksStatusBar.show();
+          return;
+        }
+      } catch {
+        // Ignore
+      }
+    }
+    this.refreshStatusBarText();
   }
 
   /** Merges a code-linked `#Symbol` or `file:line` node into the active draw.io editor. */

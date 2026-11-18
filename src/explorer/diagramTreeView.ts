@@ -4,26 +4,29 @@ import { extractDrawioPages } from '../drawio/codeLinksXml';
 import { DrawioEditorProvider, readDrawioXmlFromUri } from '../drawio/drawioEditorProvider';
 import { isPngDiagramPath } from '../drawio/drawioPng';
 import { t } from '../l10n';
+import { DIAGRAM_TREE_MIME } from '../language/diagramFeatures';
 import { findMarkdownDiagramFences } from '../language/symbols';
 import { splitDiagrams } from '../plantuml/encoder';
+
+export type ExplorerDiagramType = 'drawio' | 'mermaid' | 'plantuml' | 'dot' | 'wavedrom' | 'markdown';
 
 export interface DiagramTreeNode {
   kind: 'file' | 'subdiagram';
   uri: vscode.Uri;
   label: string;
   description?: string;
-  diagramType: 'drawio' | 'mermaid' | 'plantuml' | 'markdown';
+  diagramType: ExplorerDiagramType;
   line?: number;
   pageId?: string;
   children?: DiagramTreeNode[];
 }
 
-const PRIMARY_DIAGRAM_GLOB = '**/*.{drawio,dio,mmd,mermaid,puml,plantuml,pu,iuml,wsd}';
-const SECONDARY_DIAGRAM_GLOB = '**/*.{drawio.svg,drawio.png,drawio.xml,dio.svg,dio.png,dio.xml,md}';
-const WATCHER_GLOB = '**/*.{drawio,dio,mmd,mermaid,puml,plantuml,pu,iuml,wsd,md,svg,png,xml}';
+const PRIMARY_DIAGRAM_GLOB = '**/*.{drawio,dio,mmd,mermaid,puml,plantuml,pu,iuml,wsd,dot,gv,wavedrom}';
+const SECONDARY_DIAGRAM_GLOB = '**/*.{drawio.svg,drawio.png,drawio.xml,dio.svg,dio.png,dio.xml,wave.json,md}';
+const WATCHER_GLOB = '**/*.{drawio,dio,mmd,mermaid,puml,plantuml,pu,iuml,wsd,dot,gv,wavedrom,json,md,svg,png,xml}';
 const EXCLUDE_GLOB = '**/{node_modules,.git,dist,out,build,.vscode-test}/**';
 
-function classifyDiagramUri(uri: vscode.Uri): 'drawio' | 'mermaid' | 'plantuml' | 'markdown' | undefined {
+function classifyDiagramUri(uri: vscode.Uri): ExplorerDiagramType | undefined {
   const lower = uri.path.toLowerCase();
   if (/\.(?:drawio|dio)(?:\.(?:svg|png|xml))?$/i.test(lower)) {
     return 'drawio';
@@ -34,13 +37,23 @@ function classifyDiagramUri(uri: vscode.Uri): 'drawio' | 'mermaid' | 'plantuml' 
   if (/\.(?:puml|plantuml|pu|iuml|wsd)$/i.test(lower)) {
     return 'plantuml';
   }
+  if (/\.(?:dot|gv)$/i.test(lower)) {
+    return 'dot';
+  }
+  if (/\.(?:wavedrom|wave\.json)$/i.test(lower)) {
+    return 'wavedrom';
+  }
   if (lower.endsWith('.md')) {
     return 'markdown';
   }
   return undefined;
 }
 
-export class DiagramExplorerProvider implements vscode.TreeDataProvider<DiagramTreeNode>, vscode.Disposable {
+export class DiagramExplorerProvider
+  implements vscode.TreeDataProvider<DiagramTreeNode>, vscode.TreeDragAndDropController<DiagramTreeNode>, vscode.Disposable
+{
+  readonly dragMimeTypes = [DIAGRAM_TREE_MIME, 'text/uri-list'];
+  readonly dropMimeTypes: readonly string[] = [];
   private readonly emitter = new vscode.EventEmitter<DiagramTreeNode | undefined | void>();
   readonly onDidChangeTreeData = this.emitter.event;
   private readonly disposables: vscode.Disposable[] = [];
@@ -126,7 +139,15 @@ export class DiagramExplorerProvider implements vscode.TreeDataProvider<DiagramT
         arguments: [element.uri, element.line, element.diagramType],
       };
     } else {
-      item.iconPath = new vscode.ThemeIcon(element.diagramType === 'mermaid' ? 'git-merge' : 'type-hierarchy-sub');
+      const iconId =
+        element.diagramType === 'mermaid'
+          ? 'git-merge'
+          : element.diagramType === 'wavedrom'
+            ? 'pulse'
+            : element.diagramType === 'dot'
+              ? 'graph-scatter'
+              : 'type-hierarchy-sub';
+      item.iconPath = new vscode.ThemeIcon(iconId);
       item.command = {
         command: 'drawGraph.explorer.openEntry',
         title: t('Open Diagram'),
@@ -135,6 +156,22 @@ export class DiagramExplorerProvider implements vscode.TreeDataProvider<DiagramT
     }
 
     return item;
+  }
+
+  handleDrag(source: readonly DiagramTreeNode[], dataTransfer: vscode.DataTransfer): void {
+    if (source.length === 0) {
+      return;
+    }
+    const payload = source.map((s) => ({
+      uri: s.uri.toString(),
+      diagramType: s.diagramType,
+      line: s.line,
+    }));
+    dataTransfer.set(DIAGRAM_TREE_MIME, new vscode.DataTransferItem(JSON.stringify(payload)));
+    dataTransfer.set(
+      'text/uri-list',
+      new vscode.DataTransferItem(source.map((s) => s.uri.toString()).join('\r\n')),
+    );
   }
 
   async getChildren(element?: DiagramTreeNode): Promise<DiagramTreeNode[]> {
@@ -274,7 +311,7 @@ export class DiagramExplorerProvider implements vscode.TreeDataProvider<DiagramT
         uri,
         label: path.basename(uri.path),
         description: dirDesc,
-        diagramType: 'mermaid',
+        diagramType: dtype,
       });
     }
 

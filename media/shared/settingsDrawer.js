@@ -152,6 +152,12 @@
         state.preview.pngTransparent = Boolean(value);
       } else if (key === 'preview.followActiveEditor') {
         state.preview.followActiveEditor = Boolean(value);
+      } else if (key === 'preview.syncWithCodeCursor') {
+        state.preview.syncWithCodeCursor = Boolean(value);
+      } else if (key === 'codeLinks.checkBrokenLinks') {
+        state.preview.checkBrokenLinks = Boolean(value);
+      } else if (key === 'codeLinks.syncOnFileRename') {
+        state.preview.syncOnFileRename = Boolean(value);
       } else if (key === 'preview.debounce') {
         state.preview.debounce = Math.max(0, Math.round(Number(value) || 0));
       } else if (key === 'editor.codeLens') {
@@ -172,6 +178,10 @@
         state.plantuml.markdownMermaid = Boolean(value);
       } else if (key === 'markdown.plantuml') {
         state.plantuml.markdownPlantuml = Boolean(value);
+      } else if (key === 'markdown.dot') {
+        state.plantuml.markdownDot = Boolean(value);
+      } else if (key === 'markdown.wavedrom') {
+        state.plantuml.markdownWavedrom = Boolean(value);
       }
       opts.postMessage({ type: 'updateSetting', key, value });
       renderPreservingFocus();
@@ -449,6 +459,7 @@
           { className: 'settingsCheckboxes' },
           buildCheckbox('drawio.hideGithubIcon', tr('chkHideGh'), state.drawio.hideGithubIcon),
           buildCheckbox('drawio.vscodeShortcuts', tr('chkShortcuts'), state.drawio.vscodeShortcuts),
+          buildCheckbox('drawio.autoLoadWorkspaceLibrary', tr('chkAutoWorkspaceLib'), state.drawio.autoLoadWorkspaceLibrary),
         ),
         offlineCard,
       );
@@ -493,6 +504,9 @@
           'div',
           { className: 'settingsCheckboxes' },
           buildCheckbox('preview.followActiveEditor', tr('chkFollow'), state.preview.followActiveEditor),
+          buildCheckbox('preview.syncWithCodeCursor', tr('chkSyncCursor'), state.preview.syncWithCodeCursor),
+          buildCheckbox('codeLinks.checkBrokenLinks', tr('chkCheckLinks'), state.preview.checkBrokenLinks),
+          buildCheckbox('codeLinks.syncOnFileRename', tr('chkRenameSync'), state.preview.syncOnFileRename),
           buildCheckbox('preview.pngTransparent', tr('chkTransparent'), state.preview.pngTransparent),
           buildCheckbox('editor.codeLens', tr('chkCodeLens'), state.preview.codeLens),
           buildCheckbox('toolbar.showQuickMenu', tr('chkQuickMenu'), state.preview.showQuickMenu),
@@ -548,6 +562,8 @@
           { className: 'settingsCheckboxes' },
           buildCheckbox('markdown.mermaid', tr('chkMdMermaid'), state.plantuml.markdownMermaid),
           buildCheckbox('markdown.plantuml', tr('chkMdPlantuml'), state.plantuml.markdownPlantuml),
+          buildCheckbox('markdown.dot', tr('chkMdDot'), state.plantuml.markdownDot),
+          buildCheckbox('markdown.wavedrom', tr('chkMdWaveDrom'), state.plantuml.markdownWavedrom),
         ),
         h(
           'div',

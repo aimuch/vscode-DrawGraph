@@ -605,8 +605,8 @@
     }
     const clone = /** @type {SVGSVGElement} */ (currentSvg.cloneNode(true));
     clone.removeAttribute('style');
-    clone.querySelectorAll('.drawgraph-search-match, .drawgraph-search-active, .drawgraph-spotlight-target').forEach((el) => {
-      el.classList.remove('drawgraph-search-match', 'drawgraph-search-active', 'drawgraph-spotlight-target');
+    clone.querySelectorAll('.drawgraph-search-match, .drawgraph-search-active, .drawgraph-spotlight-target, .drawgraph-code-sync').forEach((el) => {
+      el.classList.remove('drawgraph-search-match', 'drawgraph-search-active', 'drawgraph-spotlight-target', 'drawgraph-code-sync');
       if (el.className && typeof el.getAttribute('class') === 'string' && !el.getAttribute('class')?.trim()) {
         el.removeAttribute('class');
       }
@@ -921,6 +921,13 @@
     closeExportDropdown();
     void exportPdf(false);
   });
+  $('exportHtml')?.addEventListener('click', () => {
+    closeExportDropdown();
+    const data = serializeSvg();
+    if (data) {
+      vscode.postMessage({ type: 'export', format: 'html', data });
+    }
+  });
   $('copySvg').addEventListener('click', () => {
     closeExportDropdown();
     const data = serializeSvg();
@@ -1186,6 +1193,8 @@
           $('exportPng').title = L.exportPngTitle;
           if (L.exportPdf) $('exportPdf').textContent = L.exportPdf;
           if (L.exportPdfTitle) $('exportPdf').title = L.exportPdfTitle;
+          if (L.exportHtml && $('exportHtml')) $('exportHtml').textContent = L.exportHtml;
+          if (L.exportHtmlTitle && $('exportHtml')) $('exportHtml').title = L.exportHtmlTitle;
           $('copySvg').textContent = L.copySvg;
           $('copySvg').title = L.copySvgTitle;
           $('copyPng').textContent = L.copyPng;
@@ -1221,6 +1230,50 @@
           settingsDrawer?.toggle();
         }
         break;
+      case 'highlightCode': {
+        if (!currentSvg || !Array.isArray(msg.candidates)) {
+          break;
+        }
+        currentSvg.querySelectorAll('.drawgraph-code-sync').forEach((el) => el.classList.remove('drawgraph-code-sync'));
+        const needles = msg.candidates.map((s) => String(s || '').trim().toLowerCase()).filter((s) => s.length >= 2);
+        if (needles.length === 0) {
+          break;
+        }
+        const candidatesEls = currentSvg.querySelectorAll('g.node, g.classGroup, g.elem, g[id^="elem_"], g.actor, a');
+        let firstHit = null;
+        for (const el of candidatesEls) {
+          const txt = (el.textContent || '').trim().toLowerCase();
+          const href = (el.getAttribute('href') || el.getAttribute('xlink:href') || '').trim().toLowerCase();
+          const matched = needles.some((nd) => {
+            const bare = nd.startsWith('#') ? nd.slice(1) : nd;
+            return (
+              (href && (href.includes(nd) || href.includes(bare))) ||
+              txt === bare ||
+              txt.includes(nd) ||
+              new RegExp(`\\b${bare.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`).test(txt)
+            );
+          });
+          if (matched) {
+            el.classList.add('drawgraph-code-sync');
+            if (!firstHit) firstHit = el;
+          }
+        }
+        if (firstHit && pointerGesture.phase === 'idle' && firstHit instanceof SVGGraphicsElement) {
+          try {
+            const bbox = firstHit.getBBox();
+            const cx = view.x + (bbox.x + bbox.width / 2) * view.zoom;
+            const cy = view.y + (bbox.y + bbox.height / 2) * view.zoom;
+            if (cx < 40 || cy < 40 || cx > stage.clientWidth - 40 || cy > stage.clientHeight - 40) {
+              view.x = stage.clientWidth / 2 - (bbox.x + bbox.width / 2) * view.zoom;
+              view.y = stage.clientHeight / 2 - (bbox.y + bbox.height / 2) * view.zoom;
+              applyView(true);
+            }
+          } catch {
+            // Ignore getBBox errors on hidden nodes
+          }
+        }
+        break;
+      }
       case 'silentExport':
         if (msg.format === 'svg') {
           exportSvg(true);

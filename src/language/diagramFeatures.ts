@@ -3,6 +3,8 @@ import * as vscode from 'vscode';
 import { renderMxfileToPreviewSvg } from '../drawio/mxfileToSvg';
 import { t } from '../l10n';
 import { splitDiagrams } from '../plantuml/encoder';
+import { renderDotToSvgOffline, validateDotSyntaxStatic } from '../renderers/dotRenderer';
+import { renderWaveDromToSvg, validateWaveDromSyntaxStatic } from '../renderers/wavedromRenderer';
 import { config } from '../util';
 import {
   C4_MACRO_SIGNATURES,
@@ -15,6 +17,10 @@ import {
   validateDiagramSyntaxStatic,
 } from './advancedFeatures';
 import {
+  collectBrokenLinkDiagnosticsForDocument,
+  provideBrokenLinkQuickFixes,
+} from './codeLinkMaintenance';
+import {
   collectMermaidCompletions,
   collectPlantUmlCompletions,
   formatMermaidSource,
@@ -23,8 +29,10 @@ import {
 } from './completionsAndFormat';
 import {
   findMarkdownDiagramFences,
+  parseDotOutline,
   parseMermaidOutline,
   parsePlantUmlOutline,
+  parseWaveDromOutline,
   type OutlineKind,
   type OutlineNode,
 } from './symbols';
@@ -56,7 +64,8 @@ export class DiagramDiagnostics implements vscode.Disposable {
   }
 
   private scheduleStaticLint(document: vscode.TextDocument, delayMs: number): void {
-    if (document.languageId !== 'mermaid' && document.languageId !== 'plantuml') {
+    const lang = document.languageId;
+    if (lang !== 'mermaid' && lang !== 'plantuml' && lang !== 'dot' && lang !== 'wavedrom') {
       return;
     }
     const key = document.uri.toString();
@@ -71,12 +80,13 @@ export class DiagramDiagnostics implements vscode.Disposable {
         if (this.liveErrorUris.has(key)) {
           return;
         }
-        const issues = validateDiagramSyntaxStatic(document.getText(), document.languageId as 'mermaid' | 'plantuml');
-        if (issues.length === 0) {
-          this.collection.delete(document.uri);
-          return;
-        }
-        const diags = issues.map((iss) => {
+        const issues =
+          lang === 'dot'
+            ? validateDotSyntaxStatic(document.getText())
+            : lang === 'wavedrom'
+              ? validateWaveDromSyntaxStatic(document.getText())
+              : validateDiagramSyntaxStatic(document.getText(), lang as 'mermaid' | 'plantuml');
+        const syntaxDiags = issues.map((iss) => {
           const safeLine = Math.max(0, Math.min(iss.line, Math.max(0, document.lineCount - 1)));
           const lineText = document.lineAt(safeLine);
           const range = lineText.range.isEmpty ? new vscode.Range(safeLine, 0, safeLine, 1) : lineText.range;
@@ -88,7 +98,13 @@ export class DiagramDiagnostics implements vscode.Disposable {
           d.source = 'DrawGraph';
           return d;
         });
-        this.collection.set(document.uri, diags);
+        const brokenLinkDiags = collectBrokenLinkDiagnosticsForDocument(document);
+        const allDiags = [...syntaxDiags, ...brokenLinkDiags];
+        if (allDiags.length === 0) {
+          this.collection.delete(document.uri);
+          return;
+        }
+        this.collection.set(document.uri, allDiags);
       }, delayMs),
     );
   }
@@ -117,7 +133,13 @@ export class DiagramDiagnostics implements vscode.Disposable {
       clearTimeout(pending);
       this.lintTimers.delete(key);
     }
-    this.collection.delete(uri);
+    const openDoc = vscode.workspace.textDocuments.find((d) => d.uri.toString() === key);
+    const broken = openDoc ? collectBrokenLinkDiagnosticsForDocument(openDoc) : [];
+    if (broken.length > 0) {
+      this.collection.set(uri, broken);
+    } else {
+      this.collection.delete(uri);
+    }
   }
 
   dispose(): void {
@@ -169,7 +191,14 @@ class DiagramSymbolProvider implements vscode.DocumentSymbolProvider {
       return [];
     }
     const text = document.getText();
-    const nodes = document.languageId === 'plantuml' ? parsePlantUmlOutline(text) : parseMermaidOutline(text);
+    const nodes =
+      document.languageId === 'plantuml'
+        ? parsePlantUmlOutline(text)
+        : document.languageId === 'dot'
+          ? parseDotOutline(text)
+          : document.languageId === 'wavedrom'
+            ? parseWaveDromOutline(text)
+            : parseMermaidOutline(text);
     return nodes.map((n) => toDocumentSymbol(document, n));
   }
 }
@@ -244,6 +273,34 @@ class DiagramCodeLensProvider implements vscode.CodeLensProvider {
           new vscode.CodeLens(range, {
             title: t('Convert to PlantUML'),
             command: 'drawGraph.convert.mermaidToPlantuml',
+            arguments: [document.uri],
+          }),
+        );
+      }
+      return lenses;
+    }
+
+    if (document.languageId === 'dot' || document.languageId === 'wavedrom') {
+      const firstLine = text.split(/\r?\n/).findIndex((l) => {
+        const lt = l.trim();
+        return lt.length > 0 && !lt.startsWith('//') && !lt.startsWith('#');
+      });
+      if (firstLine >= 0) {
+        const range = new vscode.Range(firstLine, 0, firstLine, 0);
+        lenses.push(
+          new vscode.CodeLens(range, {
+            title: `$(open-preview) ${t('Preview')}`,
+            command: 'drawGraph.preview.openToSide',
+            arguments: [document.uri],
+          }),
+          new vscode.CodeLens(range, {
+            title: t('Export as PDF'),
+            command: 'drawGraph.exportPdf',
+            arguments: [document.uri],
+          }),
+          new vscode.CodeLens(range, {
+            title: t('Export as Interactive HTML'),
+            command: 'drawGraph.exportHtml',
             arguments: [document.uri],
           }),
         );
@@ -351,33 +408,68 @@ class DiagramHoverProvider implements vscode.HoverProvider {
       }
     }
 
-    // Hover thumbnail preview for local .drawio / .svg / .png diagram references
-    if (document.uri.scheme === 'file') {
-      const pathRe = /(?:\(|"|'|=\s*)([A-Za-z0-9_./-]+\.(?:drawio\.svg|drawio\.png|dio\.svg|dio\.png|drawio|dio|svg|png))(?:\)|"|'|\s|$)/g;
+    // Hover thumbnail preview for local diagram references in code comments, docs, and diagrams
+    if (document.uri.scheme === 'file' && /\.(?:drawio|dio|svg|png|dot|gv|wavedrom|mmd|mermaid|puml|plantuml)\b/i.test(lineText)) {
+      const pathRe =
+        /(?:\(|"|'|=\s*|@see\s+|\s|^)([A-Za-z0-9_./-]+\.(?:drawio\.svg|drawio\.png|dio\.svg|dio\.png|wave\.json|drawio|dio|dot|gv|wavedrom|mmd|mermaid|puml|plantuml|svg|png))(?:\)|"|'|\s|$|[,;:])/g;
       let m: RegExpExecArray | null;
       while ((m = pathRe.exec(lineText)) !== null) {
         const rel = m[1];
-        const start = m.index + m[0].indexOf(rel);
+        const start = m.index + m[0].lastIndexOf(rel);
         const end = start + rel.length;
         if (position.character >= start && position.character <= end) {
-          const filePath = path.resolve(path.dirname(document.uri.fsPath), rel);
+          const wsRoot = vscode.workspace.getWorkspaceFolder(document.uri)?.uri.fsPath;
+          const docCandidate = path.resolve(path.dirname(document.uri.fsPath), rel);
+          const wsCandidate = wsRoot ? path.resolve(wsRoot, rel) : docCandidate;
+          let targetUri = vscode.Uri.file(docCandidate);
+          let bytes: Uint8Array;
           try {
-            const fileUri = vscode.Uri.file(filePath);
-            const bytes = await vscode.workspace.fs.readFile(fileUri);
-            if (bytes.byteLength > 2 * 1024 * 1024) {
+            bytes = await vscode.workspace.fs.readFile(targetUri);
+          } catch {
+            try {
+              targetUri = vscode.Uri.file(wsCandidate);
+              bytes = await vscode.workspace.fs.readFile(targetUri);
+            } catch {
               return undefined;
             }
-            let dataUri: string;
+          }
+          if (bytes.byteLength > 2 * 1024 * 1024) {
+            return undefined;
+          }
+          try {
+            let dataUri: string | undefined;
             if (/\.(?:drawio|dio)$/i.test(rel)) {
               const svg = renderMxfileToPreviewSvg(Buffer.from(bytes).toString('utf8'));
               dataUri = `data:image/svg+xml;base64,${Buffer.from(svg, 'utf8').toString('base64')}`;
+            } else if (/\.(?:dot|gv)$/i.test(rel)) {
+              const svg = renderDotToSvgOffline(Buffer.from(bytes).toString('utf8'));
+              dataUri = `data:image/svg+xml;base64,${Buffer.from(svg, 'utf8').toString('base64')}`;
+            } else if (/\.(?:wavedrom|wave\.json)$/i.test(rel)) {
+              const svg = renderWaveDromToSvg(Buffer.from(bytes).toString('utf8'));
+              dataUri = `data:image/svg+xml;base64,${Buffer.from(svg, 'utf8').toString('base64')}`;
             } else if (/\.svg$/i.test(rel)) {
               dataUri = `data:image/svg+xml;base64,${Buffer.from(bytes).toString('base64')}`;
-            } else {
+            } else if (/\.png$/i.test(rel)) {
               dataUri = `data:image/png;base64,${Buffer.from(bytes).toString('base64')}`;
             }
-            const md = new vscode.MarkdownString(`**${path.basename(rel)}**\n\n![preview](${dataUri})`);
-            md.isTrusted = false;
+
+            const dtype = /\.(?:drawio|dio)/i.test(rel)
+              ? 'drawio'
+              : /\.(?:mmd|mermaid)$/i.test(rel)
+                ? 'mermaid'
+                : /\.(?:puml|plantuml)$/i.test(rel)
+                  ? 'plantuml'
+                  : /\.(?:dot|gv)$/i.test(rel)
+                    ? 'dot'
+                    : 'wavedrom';
+            const openArgs = encodeURIComponent(JSON.stringify([targetUri, 0, dtype]));
+            const diffArgs = encodeURIComponent(JSON.stringify([targetUri]));
+            const header = `**${path.basename(rel)}** — [${t('Open Diagram')}](command:drawGraph.explorer.openEntry?${openArgs}) · [${t('Visual Diff')}](command:drawGraph.visualDiff?${diffArgs})`;
+            const body = dataUri
+              ? `${header}\n\n![preview](${dataUri})`
+              : `${header}\n\n\`\`\`${dtype}\n${Buffer.from(bytes).toString('utf8').split(/\r?\n/).slice(0, 12).join('\n')}\n\`\`\``;
+            const md = new vscode.MarkdownString(body);
+            md.isTrusted = { enabledCommands: ['drawGraph.explorer.openEntry', 'drawGraph.visualDiff'] };
             return new vscode.Hover(md, new vscode.Range(position.line, start, position.line, end));
           } catch {
             return undefined;
@@ -446,16 +538,17 @@ class DiagramColorProvider implements vscode.DocumentColorProvider {
 }
 
 class DiagramCodeActionProvider implements vscode.CodeActionProvider {
-  provideCodeActions(
+  async provideCodeActions(
     document: vscode.TextDocument,
     range: vscode.Range,
     context: vscode.CodeActionContext,
-  ): vscode.CodeAction[] {
+  ): Promise<vscode.CodeAction[]> {
+    const brokenFixes = await provideBrokenLinkQuickFixes(document, context);
     const kind = document.languageId === 'plantuml' ? 'plantuml' : 'mermaid';
     const diagLine = context.diagnostics[0]?.range.start.line ?? range.start.line;
     const fixes = computeDiagramQuickFixes(document.getText(), kind, diagLine);
 
-    return fixes.map((fix) => {
+    const syntaxActions = fixes.map((fix) => {
       const action = new vscode.CodeAction(fix.title, vscode.CodeActionKind.QuickFix);
       const edit = new vscode.WorkspaceEdit();
       if (fix.kind === 'prepend') {
@@ -473,6 +566,64 @@ class DiagramCodeActionProvider implements vscode.CodeActionProvider {
       action.isPreferred = true;
       return action;
     });
+    return [...brokenFixes, ...syntaxActions];
+  }
+}
+
+export const DIAGRAM_TREE_MIME = 'application/vnd.code.tree.drawgraphdiagramexplorer';
+
+class MarkdownDiagramDropProvider implements vscode.DocumentDropEditProvider {
+  async provideDocumentDropEdits(
+    document: vscode.TextDocument,
+    _position: vscode.Position,
+    dataTransfer: vscode.DataTransfer,
+  ): Promise<vscode.DocumentDropEdit | undefined> {
+    const customItem = dataTransfer.get(DIAGRAM_TREE_MIME);
+    const uriListItem = dataTransfer.get('text/uri-list');
+    if (!customItem && !uriListItem) {
+      return undefined;
+    }
+
+    let targetUri: vscode.Uri | undefined;
+    if (customItem) {
+      try {
+        const parsed = JSON.parse(await customItem.asString()) as Array<{ uri: string }>;
+        if (parsed[0]?.uri) {
+          targetUri = vscode.Uri.parse(parsed[0].uri);
+        }
+      } catch {
+        // Fallback to uri-list
+      }
+    }
+    if (!targetUri && uriListItem) {
+      const firstLine = (await uriListItem.asString()).split(/\r?\n/).find((l) => l.trim() && !l.startsWith('#'));
+      if (firstLine) {
+        try {
+          targetUri = vscode.Uri.parse(firstLine.trim());
+        } catch {
+          return undefined;
+        }
+      }
+    }
+    if (!targetUri || !/\.(?:drawio|dio|mmd|mermaid|puml|plantuml|dot|gv|wavedrom|svg|png)$/i.test(targetUri.path)) {
+      return undefined;
+    }
+    // If only text/uri-list came from standard file explorer for plain .png/.svg (not .drawio.svg/.png), let built-in handler run unless from our tree
+    if (!customItem && /\.(?:svg|png)$/i.test(targetUri.path) && !/\.(?:drawio|dio)\.(?:svg|png)$/i.test(targetUri.path)) {
+      return undefined;
+    }
+
+    const relRaw =
+      document.uri.scheme === 'file' && targetUri.scheme === 'file'
+        ? path.relative(path.dirname(document.uri.fsPath), targetUri.fsPath).split(path.sep).join('/')
+        : vscode.workspace.asRelativePath(targetUri, false);
+    const rel = relRaw.startsWith('.') ? relRaw : `./${relRaw}`;
+    const base = path.basename(targetUri.path).replace(/\.(?:drawio|dio)?\.[^.]+$/i, '');
+
+    if (/\.(?:svg|png)$/i.test(targetUri.path)) {
+      return new vscode.DocumentDropEdit(`![${base}](${rel})`);
+    }
+    return new vscode.DocumentDropEdit(`[${path.basename(targetUri.path)}](${rel})`);
   }
 }
 
@@ -507,27 +658,34 @@ export function registerLanguageFeatures(context: vscode.ExtensionContext): Diag
   const signatureHelpProvider = new PlantUmlSignatureHelpProvider();
 
   const diagramSelector: vscode.DocumentSelector = [{ language: 'mermaid' }, { language: 'plantuml' }];
-  const withMarkdownSelector: vscode.DocumentSelector = [
+  const allDiagramSelector: vscode.DocumentSelector = [
     { language: 'mermaid' },
     { language: 'plantuml' },
+    { language: 'dot' },
+    { language: 'wavedrom' },
+  ];
+  const withMarkdownSelector: vscode.DocumentSelector = [
+    ...allDiagramSelector,
     { language: 'markdown' },
   ];
+  const markdownDropProvider = new MarkdownDiagramDropProvider();
 
   context.subscriptions.push(
     diagnostics,
     codeLensProvider,
-    vscode.languages.registerDocumentSymbolProvider(diagramSelector, symbolProvider),
+    vscode.languages.registerDocumentSymbolProvider(allDiagramSelector, symbolProvider),
     vscode.languages.registerCodeLensProvider(withMarkdownSelector, codeLensProvider),
     vscode.languages.registerCompletionItemProvider(diagramSelector, completionProvider, '!', '@', '{', '<', ' '),
     vscode.languages.registerDocumentFormattingEditProvider(diagramSelector, formattingProvider),
     vscode.languages.registerDocumentLinkProvider(diagramSelector, documentLinkProvider),
-    vscode.languages.registerHoverProvider(withMarkdownSelector, hoverProvider),
+    vscode.languages.registerHoverProvider({ scheme: 'file' }, hoverProvider),
     vscode.languages.registerRenameProvider(diagramSelector, renameProvider),
-    vscode.languages.registerColorProvider(diagramSelector, colorProvider),
+    vscode.languages.registerColorProvider(allDiagramSelector, colorProvider),
     vscode.languages.registerCodeActionsProvider(diagramSelector, codeActionProvider, {
       providedCodeActionKinds: [vscode.CodeActionKind.QuickFix],
     }),
     vscode.languages.registerSignatureHelpProvider({ language: 'plantuml' }, signatureHelpProvider, '(', ','),
+    vscode.languages.registerDocumentDropEditProvider({ language: 'markdown' }, markdownDropProvider),
     vscode.workspace.onDidChangeConfiguration((e) => {
       if (e.affectsConfiguration('drawGraph.editor.codeLens') || e.affectsConfiguration('drawGraph.language')) {
         codeLensProvider.refresh();
