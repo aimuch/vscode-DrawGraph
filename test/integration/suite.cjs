@@ -768,6 +768,10 @@ test('v0.3 language intelligence, converters, PDF/multi-page export, code-to-dia
     assert.match(fs.readFileSync(pageFiles[0].fsPath, 'utf8'), /Alpha/);
     assert.match(fs.readFileSync(pageFiles[1].fsPath, 'utf8'), /Beta/);
 
+    const multiPdfFiles = await vscode.commands.executeCommand('drawGraph.drawio.exportAllPages', multiDrawio, 'pdf', multiDir);
+    assert.equal(multiPdfFiles.length, 1, 'exported unopened multi-page Draw.io directly to single PDF');
+    assert.match(fs.readFileSync(multiPdfFiles[0].fsPath, 'latin1'), /\/Count 2/);
+
     // 3. Diagram Explorer TreeView indexes workspace diagrams + multi-page children
     api.diagnostics.diagramExplorer && await vscode.commands.executeCommand('drawGraph.diagramExplorer.refresh');
     const treeEntries = await api.diagnostics.diagramExplorer();
@@ -799,6 +803,29 @@ test('v0.3 language intelligence, converters, PDF/multi-page export, code-to-dia
     const genDepDoc = await vscode.commands.executeCommand('drawGraph.generateDependencyDiagram', sampleTs, 'mermaid');
     assert.ok(genDepDoc && genDepDoc.getText().includes('sampleService.ts') && genDepDoc.getText().includes('sampleHelper.ts'));
     await vscode.commands.executeCommand('workbench.action.revertAndCloseActiveEditor');
+
+    // SQL DDL -> Mermaid erDiagram generator & static syntax linter without preview open
+    const sqlDoc = await vscode.commands.executeCommand(
+      'drawGraph.generateFromData',
+      'CREATE TABLE users (id INT PRIMARY KEY);\nCREATE TABLE orders (id INT PRIMARY KEY, user_id INT REFERENCES users(id));',
+      'mermaid',
+    );
+    assert.ok(sqlDoc && sqlDoc.getText().includes('erDiagram') && sqlDoc.getText().includes('orders'));
+    await vscode.commands.executeCommand('workbench.action.revertAndCloseActiveEditor');
+    await vscode.commands.executeCommand('workbench.action.closeAllEditors');
+
+    const badStaticUri = file('static-lint-check.mmd');
+    fs.writeFileSync(badStaticUri.fsPath, 'flowchart TD\n  subgraph UnclosedGroup\n    A --> B\n');
+    try {
+      await vscode.workspace.openTextDocument(badStaticUri);
+      await waitFor(
+        'static syntax diagnostic without preview panel',
+        () => vscode.languages.getDiagnostics(badStaticUri).some((d) => d.source === 'DrawGraph' && /subgraph/i.test(d.message)),
+        5000,
+      );
+    } finally {
+      if (fs.existsSync(badStaticUri.fsPath)) fs.unlinkSync(badStaticUri.fsPath);
+    }
 
     await vscode.commands.executeCommand('drawGraph.markdown.exportFence', mdTemp, 0, 'svg', fenceSvg);
     assert.match(fs.readFileSync(fenceSvg.fsPath, 'utf8'), /^<svg/);

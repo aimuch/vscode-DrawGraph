@@ -36,6 +36,7 @@ export interface SettingsSnapshot {
     server: string;
     jar: string;
     exportOnSave: string;
+    exportOnSaveOutDir: string;
     markdownMermaid: boolean;
     markdownPlantuml: boolean;
   };
@@ -53,6 +54,7 @@ const RESTRICTED_SETTINGS = new Set([
   'plantuml.server',
   'plantuml.jar',
   'exportOnSave',
+  'exportOnSaveOutDir',
 ]);
 
 const ALLOWED_SETTINGS = new Set([
@@ -75,6 +77,7 @@ const ALLOWED_SETTINGS = new Set([
   'plantuml.server',
   'plantuml.jar',
   'exportOnSave',
+  'exportOnSaveOutDir',
   'markdown.mermaid',
   'markdown.plantuml',
 ]);
@@ -114,6 +117,7 @@ export function getSettingsSnapshot(): SettingsSnapshot {
       server: cfg.get<string>('plantuml.server', 'https://www.plantuml.com/plantuml'),
       jar: cfg.get<string>('plantuml.jar', ''),
       exportOnSave: cfg.get<string>('exportOnSave', 'off'),
+      exportOnSaveOutDir: cfg.get<string>('exportOnSaveOutDir', ''),
       markdownMermaid: cfg.get<boolean>('markdown.mermaid', true),
       markdownPlantuml: cfg.get<boolean>('markdown.plantuml', true),
     },

@@ -92,12 +92,21 @@
 
     const widget = h(
       'div',
-      { id: 'settingsWidget', className: standalone ? 'standalone active' : '' },
+      {
+        id: 'settingsWidget',
+        className: standalone ? 'standalone active' : '',
+        role: standalone ? 'region' : 'dialog',
+        'aria-modal': standalone ? undefined : 'true',
+        'aria-labelledby': 'settingsTitle',
+      },
       headerEl,
       contentEl,
       footerEl,
     );
     document.body.appendChild(widget);
+
+    /** @type {HTMLElement | null} */
+    let previouslyFocused = null;
 
     /** @returns {'en' | 'zh-cn'} */
     function activeLang() {
@@ -143,6 +152,8 @@
         state.preview.pngTransparent = Boolean(value);
       } else if (key === 'preview.followActiveEditor') {
         state.preview.followActiveEditor = Boolean(value);
+      } else if (key === 'preview.debounce') {
+        state.preview.debounce = Math.max(0, Math.round(Number(value) || 0));
       } else if (key === 'editor.codeLens') {
         state.preview.codeLens = Boolean(value);
       } else if (key === 'toolbar.showQuickMenu') {
@@ -155,6 +166,8 @@
         state.plantuml.jar = value;
       } else if (key === 'exportOnSave') {
         state.plantuml.exportOnSave = value;
+      } else if (key === 'exportOnSaveOutDir') {
+        state.plantuml.exportOnSaveOutDir = value;
       } else if (key === 'markdown.mermaid') {
         state.plantuml.markdownMermaid = Boolean(value);
       } else if (key === 'markdown.plantuml') {
@@ -484,6 +497,16 @@
           buildCheckbox('editor.codeLens', tr('chkCodeLens'), state.preview.codeLens),
           buildCheckbox('toolbar.showQuickMenu', tr('chkQuickMenu'), state.preview.showQuickMenu),
         ),
+        h(
+          'div',
+          { className: 'settingsCard' },
+          h(
+            'div',
+            { className: 'settingsGrid' },
+            h('label', { className: 'settingsKey' }, tr('lblDebounce')),
+            buildTextInput('preview.debounce', String(state.preview.debounce ?? 400), '400', false),
+          ),
+        ),
       );
 
       // 4. PlantUML & Markdown section
@@ -515,6 +538,7 @@
               ['off', tr('expOff')],
               ['svg', 'SVG'],
               ['png', 'PNG'],
+              ['pdf', 'PDF'],
             ],
             state.plantuml.exportOnSave,
           ),
@@ -535,6 +559,8 @@
             buildTextInput('plantuml.server', state.plantuml.server, 'https://www.plantuml.com/plantuml', untrusted),
             h('label', { className: 'settingsKey' }, tr('lblPumlJar')),
             buildTextInput('plantuml.jar', state.plantuml.jar, tr('phJar'), untrusted),
+            h('label', { className: 'settingsKey' }, tr('lblExportOutDir')),
+            buildTextInput('exportOnSaveOutDir', state.plantuml.exportOnSaveOutDir || '', tr('phExportOutDir'), untrusted),
           ),
           untrusted && h('p', { className: 'settingsNote' }, tr('untrustedNote')),
         ),
@@ -551,11 +577,15 @@
       if (standalone || visible) {
         return;
       }
+      previouslyFocused = document.activeElement instanceof HTMLElement ? document.activeElement : null;
       visible = true;
       widget.classList.add('transition', 'active');
       backdrop.classList.add('active');
       opts.postMessage({ type: 'requestSettings' });
       opts.onVisibilityChange?.(true);
+      setTimeout(() => {
+        (closeBtn || zhQuickBtn).focus();
+      }, 20);
     }
 
     function close() {
@@ -567,6 +597,10 @@
       widget.classList.remove('active');
       backdrop.classList.remove('active');
       opts.onVisibilityChange?.(false);
+      if (previouslyFocused && typeof previouslyFocused.focus === 'function') {
+        previouslyFocused.focus();
+      }
+      previouslyFocused = null;
     }
 
     function toggle() {

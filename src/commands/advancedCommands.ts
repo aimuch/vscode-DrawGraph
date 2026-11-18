@@ -18,6 +18,7 @@ import {
   type CodeSymbolNode,
   type ModuleDependencyEdge,
 } from '../generators/codeToDiagram';
+import { convertJsonToDiagram, convertSqlToDiagram } from '../generators/dataToDiagram';
 import { t } from '../l10n';
 import { findMarkdownDiagramFences } from '../language/symbols';
 import { pickBlock, splitDiagrams } from '../plantuml/encoder';
@@ -128,6 +129,10 @@ export function registerAdvancedCommands({
       return;
     }
     const line = typeof lineArg === 'number' ? lineArg : 0;
+    if (dtypeArg === 'drawio') {
+      await drawio.openAtPage(uri, line);
+      return;
+    }
     const doc = await vscode.workspace.openTextDocument(uri);
     const editor = await vscode.window.showTextDocument(doc, { viewColumn: vscode.ViewColumn.One });
     const safeLine = Math.max(0, Math.min(line, Math.max(0, doc.lineCount - 1)));
@@ -144,13 +149,14 @@ export function registerAdvancedCommands({
   });
 
   // F1: Git Visual Diagram Diff
-  register('drawGraph.visualDiff', async (arg?: unknown) => {
+  register('drawGraph.visualDiff', async (arg?: unknown, refArg?: unknown) => {
     const target = extractResourceUri(arg) ?? activeTabContext().uri;
     if (!target) {
       void vscode.window.showWarningMessage(t('Open or select a diagram file first.'));
       return false;
     }
-    return visualDiff.openGitDiff(target);
+    const gitRef = typeof refArg === 'string' && refArg.trim() ? refArg.trim() : 'HEAD';
+    return visualDiff.openGitDiff(target, gitRef);
   });
 
   register('drawGraph.visualDiffFiles', async (leftArg?: unknown, rightArg?: unknown) => {
@@ -540,4 +546,96 @@ export function registerAdvancedCommands({
     await offlinePack.removePack();
     syncAfterPackChange();
   });
+
+  // FP-4: SQL DDL / JSON -> ER or Mindmap Diagram Generator
+  register(
+    'drawGraph.generateFromData',
+    async (
+      uriOrTextArg?: unknown,
+      formatArg?: unknown,
+      destArg?: unknown,
+    ): Promise<vscode.TextDocument | vscode.Uri | undefined> => {
+      let rawText: string | undefined;
+      let sourceKind: 'sql' | 'json' | undefined;
+      let baseFolder = vscode.workspace.workspaceFolders?.[0]?.uri;
+
+      if (typeof uriOrTextArg === 'string' && uriOrTextArg.trim()) {
+        rawText = uriOrTextArg;
+      } else {
+        const targetUri = asUri(uriOrTextArg) ?? vscode.window.activeTextEditor?.document.uri;
+        const activeEd = vscode.window.activeTextEditor;
+        if (
+          activeEd &&
+          !uriOrTextArg &&
+          !activeEd.selection.isEmpty &&
+          activeEd.document.getText(activeEd.selection).trim()
+        ) {
+          rawText = activeEd.document.getText(activeEd.selection);
+          if (activeEd.document.uri.scheme === 'file') {
+            baseFolder = vscode.Uri.joinPath(activeEd.document.uri, '..');
+          }
+        } else if (targetUri) {
+          const doc = await vscode.workspace.openTextDocument(targetUri);
+          rawText = doc.getText();
+          if (targetUri.scheme === 'file') {
+            baseFolder = vscode.Uri.joinPath(targetUri, '..');
+          }
+          if (/\.sql$/i.test(targetUri.path) || doc.languageId === 'sql') {
+            sourceKind = 'sql';
+          } else if (/\.jsonc?$/i.test(targetUri.path) || doc.languageId.startsWith('json')) {
+            sourceKind = 'json';
+          }
+        }
+      }
+
+      if (!rawText || !rawText.trim()) {
+        rawText = await vscode.env.clipboard.readText();
+      }
+      if (!rawText || !rawText.trim()) {
+        void vscode.window.showWarningMessage(t('Open a .sql / .json file or copy SQL/JSON text first.'));
+        return undefined;
+      }
+
+      const trimmed = rawText.trim();
+      if (!sourceKind) {
+        sourceKind = trimmed.startsWith('{') || trimmed.startsWith('[') ? 'json' : 'sql';
+      }
+
+      const format = await promptDiagramOutputFormat(formatArg);
+      if (!format) {
+        return undefined;
+      }
+
+      let output: string;
+      try {
+        output =
+          sourceKind === 'json' ? convertJsonToDiagram(trimmed, format) : convertSqlToDiagram(trimmed, format);
+      } catch (err) {
+        void vscode.window.showErrorMessage(t('Failed to parse {0}: {1}', sourceKind.toUpperCase(), (err as Error).message));
+        return undefined;
+      }
+
+      if (format === 'drawio') {
+        const dest =
+          asUri(destArg) ??
+          (await vscode.window.showSaveDialog({
+            defaultUri: baseFolder
+              ? vscode.Uri.joinPath(baseFolder, sourceKind === 'sql' ? 'schema-er.drawio' : 'data-mindmap.drawio')
+              : undefined,
+            filters: { 'draw.io': ['drawio'] },
+          }));
+        if (!dest) {
+          return undefined;
+        }
+        await vscode.workspace.fs.writeFile(dest, Buffer.from(output, 'utf8'));
+        await vscode.commands.executeCommand('vscode.openWith', dest, DrawioEditorProvider.viewType);
+        return dest;
+      }
+
+      const doc = await vscode.workspace.openTextDocument({ language: format, content: output });
+      await vscode.window.showTextDocument(doc, { viewColumn: vscode.ViewColumn.Beside });
+      await previews.open(doc.uri, true);
+      return doc;
+    },
+  );
 }

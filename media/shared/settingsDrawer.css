@@ -390,3 +390,10 @@
 .settingsActionBtn.danger {
   color: var(--vscode-errorForeground, #f14c4c);
 }
+
+#settingsWidget button:focus-visible,
+#settingsWidget input[type='checkbox']:focus-visible,
+#settingsWidget input[type='radio']:focus-visible {
+  outline: 1.5px solid var(--vscode-focusBorder, #007acc);
+  outline-offset: 2px;
+}

@@ -1,6 +1,7 @@
 // @ts-check
 // Interactive Git Visual Diagram Diff webview supporting Side-by-Side synchronized pan/zoom,
-// Swipe split-curtain comparison, and Onion-Skin + RGBA Pixel Diff highlighting.
+// cursor-anchored wheel zoom, Swipe curtain with keyboard control, Onion-Skin + Pixel Diff,
+// Git baseline ref selection, and Multi-Page diagram switching.
 (function () {
   // @ts-ignore injected by VS Code
   const vscode = acquireVsCodeApi();
@@ -24,6 +25,8 @@
   const pixelDiffCanvas = /** @type {HTMLCanvasElement} */ ($('pixelDiffCanvas'));
   const diffStats = $('diffStats');
   const zoomResetBtn = $('zoomResetBtn');
+  const gitRefBtn = $('gitRefBtn');
+  const pageSelect = /** @type {HTMLSelectElement} */ ($('pageSelect'));
 
   /** @type {'side' | 'swipe' | 'onion'} */
   let mode = 'side';
@@ -51,10 +54,28 @@
     updateOverlayClipAndOpacity();
   }
 
+  /**
+   * Zooms anchored at `(cx, cy)` relative to the active pane so the point under the cursor stays stationary.
+   * @param {number} nextZoom
+   * @param {number} [cx]
+   * @param {number} [cy]
+   */
+  function zoomTo(nextZoom, cx, cy) {
+    const clamped = Math.max(0.08, Math.min(12, nextZoom));
+    const refEl = mode === 'side' ? $('paneAfter') : overlayView;
+    const ax = cx !== undefined ? cx : (refEl.clientWidth || diffStage.clientWidth / 2) / 2;
+    const ay = cy !== undefined ? cy : (refEl.clientHeight || diffStage.clientHeight) / 2;
+    panX = ax - ((ax - panX) * clamped) / zoom;
+    panY = ay - ((ay - panY) * clamped) / zoom;
+    zoom = clamped;
+    applyTransforms();
+  }
+
   function updateOverlayClipAndOpacity() {
     if (mode === 'swipe') {
       swipeDivider.hidden = false;
       swipeDivider.style.left = `${swipePct}%`;
+      swipeDivider.setAttribute('aria-valuenow', String(Math.round(swipePct)));
       overlayAfter.style.clipPath = `inset(0 0 0 ${swipePct}%)`;
       overlayAfter.style.opacity = '1';
       overlayBefore.style.opacity = '1';
@@ -101,10 +122,7 @@
     }
   }
 
-  /**
-   * Sanitizes SVG string and returns a cloned DOM element + measured size.
-   * @param {string} markup
-   */
+  /** @param {string} markup */
   function parseCleanSvg(markup) {
     const doc = new DOMParser().parseFromString(markup, 'image/svg+xml');
     const svg = doc.documentElement;
@@ -260,18 +278,14 @@
     });
   });
 
-  $('zoomInBtn').addEventListener('click', () => {
-    zoom = Math.min(12, zoom * 1.25);
-    applyTransforms();
+  gitRefBtn.addEventListener('click', () => vscode.postMessage({ type: 'pickGitRef' }));
+  pageSelect.addEventListener('change', () => {
+    vscode.postMessage({ type: 'selectPage', pageIndex: Number(pageSelect.value) || 0 });
   });
-  $('zoomOutBtn').addEventListener('click', () => {
-    zoom = Math.max(0.08, zoom / 1.25);
-    applyTransforms();
-  });
-  zoomResetBtn.addEventListener('click', () => {
-    zoom = 1;
-    applyTransforms();
-  });
+
+  $('zoomInBtn').addEventListener('click', () => zoomTo(zoom * 1.25));
+  $('zoomOutBtn').addEventListener('click', () => zoomTo(zoom / 1.25));
+  zoomResetBtn.addEventListener('click', () => zoomTo(1));
   $('fitBtn').addEventListener('click', fitToStage);
   onionSlider.addEventListener('input', updateOverlayClipAndOpacity);
   pixelDiffBtn.addEventListener('click', () => {
@@ -294,6 +308,7 @@
     e.stopPropagation();
     draggingSwipe = true;
     swipeDivider.setPointerCapture(e.pointerId);
+    swipeDivider.focus();
   });
   swipeDivider.addEventListener('pointermove', (e) => {
     if (!draggingSwipe) {
@@ -305,6 +320,18 @@
   });
   swipeDivider.addEventListener('pointerup', () => {
     draggingSwipe = false;
+  });
+  swipeDivider.addEventListener('keydown', (e) => {
+    const step = e.shiftKey ? 10 : 2;
+    if (e.key === 'ArrowLeft') {
+      e.preventDefault();
+      swipePct = Math.max(0, swipePct - step);
+      updateOverlayClipAndOpacity();
+    } else if (e.key === 'ArrowRight') {
+      e.preventDefault();
+      swipePct = Math.min(100, swipePct + step);
+      updateOverlayClipAndOpacity();
+    }
   });
 
   diffStage.addEventListener('pointerdown', (e) => {
@@ -332,12 +359,17 @@
     (e) => {
       e.preventDefault();
       if (e.ctrlKey || e.metaKey) {
-        zoom = Math.max(0.08, Math.min(12, zoom * Math.exp(-e.deltaY * 0.01)));
+        const refPane =
+          mode === 'side' && e.target instanceof Element && e.target.closest('.diffPane')
+            ? /** @type {HTMLElement} */ (e.target.closest('.diffPane'))
+            : overlayView;
+        const rect = refPane.getBoundingClientRect();
+        zoomTo(zoom * Math.exp(-e.deltaY * 0.01), e.clientX - rect.left, e.clientY - rect.top);
       } else {
         panX -= e.deltaX;
         panY -= e.deltaY;
+        applyTransforms();
       }
-      applyTransforms();
     },
     { passive: false },
   );
@@ -349,7 +381,46 @@
     if (!msg || msg.type !== 'loadDiff') {
       return;
     }
-    emptyLabel = msg.emptyText || 'Empty';
+    if (msg.labels) {
+      const L = msg.labels;
+      const modeBtns = document.querySelectorAll('.diffModes button');
+      modeBtns.forEach((b) => {
+        const btn = /** @type {HTMLButtonElement} */ (b);
+        if (btn.dataset.mode === 'side' && L.side) btn.textContent = L.side;
+        if (btn.dataset.mode === 'swipe' && L.swipe) btn.textContent = L.swipe;
+        if (btn.dataset.mode === 'onion' && L.onion) btn.textContent = L.onion;
+      });
+      if (L.zoomOut) $('zoomOutBtn').title = L.zoomOut;
+      if (L.zoomReset) zoomResetBtn.title = L.zoomReset;
+      if (L.zoomIn) $('zoomInBtn').title = L.zoomIn;
+      if (L.fit) $('fitBtn').textContent = L.fit;
+      if (L.opacity) $('lblOpacity').textContent = L.opacity;
+      if (L.pixelDiff) pixelDiffBtn.textContent = L.pixelDiff;
+      if (L.emptyText) emptyLabel = L.emptyText;
+    } else if (msg.emptyText) {
+      emptyLabel = msg.emptyText;
+    }
+
+    gitRefBtn.hidden = !msg.isGit;
+    if (msg.isGit && msg.gitRef) {
+      gitRefBtn.textContent = `${msg.gitRef} ▾`;
+    }
+
+    if (Array.isArray(msg.pages) && msg.pages.length > 1) {
+      pageSelect.hidden = false;
+      pageSelect.replaceChildren(
+        ...msg.pages.map((name, i) => {
+          const opt = document.createElement('option');
+          opt.value = String(i);
+          opt.textContent = `${i + 1}/${msg.pages.length}: ${name}`;
+          opt.selected = i === msg.pageIndex;
+          return opt;
+        }),
+      );
+    } else {
+      pageSelect.hidden = true;
+    }
+
     badgeBefore.textContent = msg.before?.label || 'Before';
     badgeAfter.textContent = msg.after?.label || 'After';
 
@@ -370,6 +441,9 @@
     mountVisual(overlayBefore, visA);
     mountVisual(overlayAfter, visB);
     fitToStage();
+    if (mode === 'onion' && pixelDiffActive) {
+      void computePixelDiff();
+    }
   });
 
   vscode.postMessage({ type: 'ready' });

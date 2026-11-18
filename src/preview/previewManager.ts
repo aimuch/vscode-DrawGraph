@@ -133,6 +133,7 @@ class DiagramPreview {
   private readonly disposables: vscode.Disposable[] = [];
   private readonly pendingOffscreen = new Map<number, (res: OffscreenResult) => void>();
   private offscreenCounter = 0;
+  private webviewReady = false;
   private updateTimer: NodeJS.Timeout | undefined;
   private lastBlockKey: string | undefined;
   private selection: BlockSelectionState = { mode: 'cursor', line: undefined };
@@ -173,8 +174,25 @@ class DiagramPreview {
 
     this.disposables.push(
       panel.onDidDispose(() => this.dispose()),
+      panel.onDidChangeViewState((e) => {
+        if (!e.webviewPanel.visible) {
+          this.webviewReady = false;
+          this.flushPendingOffscreen('Preview hidden');
+        }
+      }),
       panel.webview.onDidReceiveMessage((msg: PreviewToHostMessage) => this.onMessage(msg)),
     );
+  }
+
+  get canRenderOffscreen(): boolean {
+    return this.kind === 'mermaid' && this.webviewReady && this.panel.visible && !this.isDisposed;
+  }
+
+  private flushPendingOffscreen(reason: string): void {
+    for (const resolve of this.pendingOffscreen.values()) {
+      resolve({ error: reason });
+    }
+    this.pendingOffscreen.clear();
   }
 
   private get isDisposed(): boolean {
@@ -235,8 +253,13 @@ class DiagramPreview {
       exitPresent: t('Exit Presentation (Esc)'),
       laser: t('Laser'),
       lockTitle: t('Lock or unlock preview to current file'),
+      exportMenu: `${t('Export')} ▾`,
+      exportMenuTitle: t('Export or copy diagram'),
+      exportSvg: t('Export as SVG'),
       exportSvgTitle: t('Export as SVG'),
+      exportPng: t('Export as PNG'),
       exportPngTitle: t('Export as PNG'),
+      exportPdf: t('Export as PDF'),
       exportPdfTitle: t('Export as PDF'),
       copySvg: t('Copy SVG'),
       copySvgTitle: t('Copy SVG to clipboard'),
@@ -282,6 +305,8 @@ class DiagramPreview {
 
     if (newKind !== this.kind) {
       this.kind = newKind;
+      this.webviewReady = false;
+      this.flushPendingOffscreen('Preview retargeted');
       this.panel.webview.html = this.getHtml();
     } else {
       this.pushConfig();
@@ -546,6 +571,7 @@ class DiagramPreview {
         break;
       }
       case 'ready':
+        this.webviewReady = true;
         await this.update(true, false);
         break;
       case 'toggleLock':
@@ -573,9 +599,18 @@ class DiagramPreview {
         if (!msg.data || !vscode.workspace.isTrusted) {
           return;
         }
-        const isSvg = msg.format === 'svg';
-        const target = resolveAutoExportUri(this.uri, isSvg ? '.svg' : '.png');
-        const bytes = isSvg ? Buffer.from(msg.data, 'utf8') : decodeDataUri(msg.data);
+        const ext = msg.format === 'svg' ? '.svg' : msg.format === 'pdf' ? '.pdf' : '.png';
+        const target = resolveAutoExportUri(this.uri, ext);
+        let bytes: Uint8Array;
+        if (msg.format === 'svg') {
+          bytes = Buffer.from(msg.data, 'utf8');
+        } else if (msg.format === 'pdf') {
+          const pngBytes = decodeDataUri(msg.data);
+          const scale = Math.max(1, config().get<number>('preview.pngScale', 2));
+          bytes = buildPdfDocument([{ bytes: pngBytes, format: 'png', scale }]);
+        } else {
+          bytes = decodeDataUri(msg.data);
+        }
         await vscode.workspace.fs.writeFile(target, bytes);
         void vscode.window.setStatusBarMessage(t('Exported to {0}', vscode.workspace.asRelativePath(target)), 2500);
         break;
@@ -672,11 +707,17 @@ class DiagramPreview {
     <button id="presentToggle" title="${tr('Presentation & Spotlight mode (p)')}">${tr('Present')}</button>
     <button id="lockToggle" title="${tr('Lock or unlock preview to current file')}">${tr('Pin')}</button>
     <span class="sep"></span>
-    <button id="exportSvg" title="${tr('Export as SVG')}">SVG</button>
-    <button id="exportPng" title="${tr('Export as PNG')}">PNG</button>
-    <button id="exportPdf" title="${tr('Export as PDF')}">PDF</button>
-    <button id="copySvg" title="${tr('Copy SVG to clipboard')}">${tr('Copy SVG')}</button>
-    <button id="copyPng" title="${tr('Copy PNG image to clipboard')}">${tr('Copy PNG')}</button>
+    <div class="toolbar-dropdown">
+      <button id="exportMenuBtn" type="button" aria-haspopup="menu" aria-expanded="false" title="${tr('Export or copy diagram')}">${tr('Export')} ▾</button>
+      <div id="exportDropdown" role="menu" hidden>
+        <button id="exportSvg" role="menuitem" title="${tr('Export as SVG')}">${tr('Export as SVG')}</button>
+        <button id="exportPng" role="menuitem" title="${tr('Export as PNG')}">${tr('Export as PNG')}</button>
+        <button id="exportPdf" role="menuitem" title="${tr('Export as PDF')}">${tr('Export as PDF')}</button>
+        <div class="menu-divider"></div>
+        <button id="copySvg" role="menuitem" title="${tr('Copy SVG to clipboard')}">${tr('Copy SVG')}</button>
+        <button id="copyPng" role="menuitem" title="${tr('Copy PNG image to clipboard')}">${tr('Copy PNG')}</button>
+      </div>
+    </div>
     <span class="sep"></span>
     <button id="prevItem" class="nav-btn" title="${tr('Previous diagram or page ([)')}" hidden>◀</button>
     <span id="info"></span>
@@ -719,10 +760,8 @@ class DiagramPreview {
     }
     clearTimeout(this.updateTimer);
     this.updateTimer = undefined;
-    for (const resolve of this.pendingOffscreen.values()) {
-      resolve({ error: 'Preview disposed' });
-    }
-    this.pendingOffscreen.clear();
+    this.webviewReady = false;
+    this.flushPendingOffscreen('Preview disposed');
     this.lifecycle.send('DISPOSE');
     this.renderer.dispose();
     this.disposables.forEach((d) => d.dispose());
@@ -915,10 +954,21 @@ export class PreviewManager implements vscode.WebviewPanelSerializer {
    */
   async renderMermaidBytes(source: string, format: 'svg' | 'png' | 'pdf'): Promise<Uint8Array> {
     const rasterFmt = format === 'svg' ? 'svg' : 'png';
-    const openMermaid = [...this.previews.values()].find((p) => p.kind === 'mermaid');
-    const result = openMermaid
-      ? await openMermaid.requestOffscreenMermaid(source, rasterFmt)
-      : await this.runInWorkerWebview(source, rasterFmt);
+    const openMermaid = [...this.previews.values()].find((p) => p.canRenderOffscreen);
+    let result: OffscreenResult | undefined;
+    if (openMermaid) {
+      result = await openMermaid.requestOffscreenMermaid(source, rasterFmt);
+      if (
+        result.error === 'Preview retargeted' ||
+        result.error === 'Preview hidden' ||
+        result.error === 'Preview disposed'
+      ) {
+        result = undefined;
+      }
+    }
+    if (!result) {
+      result = await this.runInWorkerWebview(source, rasterFmt);
+    }
 
     if (result.error || !result.data) {
       throw new Error(result.error ?? t('Mermaid export failed.'));
@@ -934,7 +984,22 @@ export class PreviewManager implements vscode.WebviewPanelSerializer {
     return pngBytes;
   }
 
-  private async runInWorkerWebview(source: string, format: 'svg' | 'png'): Promise<OffscreenResult> {
+  /**
+   * Rasterizes an arbitrary standalone SVG string into PNG bytes via the background webview worker.
+   */
+  async rasterizeSvgToPngBytes(svgMarkup: string): Promise<Uint8Array> {
+    const res = await this.runInWorkerWebview(svgMarkup, 'png', 'svg_raster');
+    if (res.error || !res.data) {
+      throw new Error(res.error ?? t('PNG export failed: the SVG could not be rasterized. Try exporting as SVG.'));
+    }
+    return decodeDataUri(res.data);
+  }
+
+  private async runInWorkerWebview(
+    source: string,
+    format: 'svg' | 'png',
+    jobKind: 'mermaid' | 'svg_raster' = 'mermaid',
+  ): Promise<OffscreenResult> {
     if (this.workerIdleTimer) {
       clearTimeout(this.workerIdleTimer);
       this.workerIdleTimer = undefined;
@@ -946,7 +1011,7 @@ export class PreviewManager implements vscode.WebviewPanelSerializer {
         'drawGraph.mermaidWorker',
         t('Rendering Mermaid…'),
         { viewColumn: vscode.ViewColumn.Beside, preserveFocus: true },
-        { enableScripts: true, localResourceRoots: [media] },
+        { enableScripts: true, retainContextWhenHidden: true, localResourceRoots: [media] },
       );
       this.workerPanel = panel;
       const nonce = getNonce();
@@ -986,33 +1051,12 @@ export class PreviewManager implements vscode.WebviewPanelSerializer {
   const vscode = acquireVsCodeApi();
   let seq = 0;
   let lastTheme = '';
-  window.addEventListener('message', async (ev) => {
-    const msg = ev.data;
-    if (!msg || msg.type !== 'renderOffscreen') return;
-    try {
-      if (msg.theme !== lastTheme) {
-        window.mermaid.initialize({ startOnLoad: false, theme: msg.theme || 'default', securityLevel: 'strict', htmlLabels: false, flowchart: { htmlLabels: false } });
-        lastTheme = msg.theme;
-      }
-      const id = 'dg-worker-' + (++seq);
-      const out = await window.mermaid.render(id, msg.source);
-      document.getElementById('d' + id)?.remove();
-      const doc = new DOMParser().parseFromString(out.svg, 'image/svg+xml');
-      const svg = doc.documentElement;
-      const vb = svg.viewBox && svg.viewBox.baseVal;
-      const w = (vb && vb.width > 0 ? vb.width : parseFloat(svg.getAttribute('width') || '400')) || 400;
-      const h = (vb && vb.height > 0 ? vb.height : parseFloat(svg.getAttribute('height') || '300')) || 300;
-      svg.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
-      svg.setAttribute('width', String(w));
-      svg.setAttribute('height', String(h));
-      svg.removeAttribute('style');
-      const serialized = new XMLSerializer().serializeToString(svg);
-      if (msg.format === 'svg') {
-        vscode.postMessage({ type: 'offscreenRendered', requestId: msg.requestId, data: serialized, width: w, height: h });
-        return;
-      }
-      const scale = ${pngScale};
-      const url = URL.createObjectURL(new Blob([serialized], { type: 'image/svg+xml' }));
+  let jobChain = Promise.resolve();
+
+  function rasterizeSerializedSvg(serialized, w, h, requestId) {
+    const scale = ${pngScale};
+    const url = URL.createObjectURL(new Blob([serialized], { type: 'image/svg+xml' }));
+    return new Promise((resolve) => {
       const img = new Image();
       img.onload = () => {
         try {
@@ -1023,21 +1067,58 @@ export class PreviewManager implements vscode.WebviewPanelSerializer {
           ctx.fillStyle = '#ffffff';
           ctx.fillRect(0, 0, c.width, c.height);
           ctx.drawImage(img, 0, 0, c.width, c.height);
-          vscode.postMessage({ type: 'offscreenRendered', requestId: msg.requestId, data: c.toDataURL('image/png'), width: w, height: h });
+          vscode.postMessage({ type: 'offscreenRendered', requestId, data: c.toDataURL('image/png'), width: w, height: h });
         } catch (e) {
-          vscode.postMessage({ type: 'offscreenRendered', requestId: msg.requestId, error: String(e && e.message || e) });
+          vscode.postMessage({ type: 'offscreenRendered', requestId, error: String(e && e.message || e) });
         } finally {
           URL.revokeObjectURL(url);
+          resolve();
         }
       };
       img.onerror = () => {
         URL.revokeObjectURL(url);
-        vscode.postMessage({ type: 'offscreenRendered', requestId: msg.requestId, error: 'Rasterization failed' });
+        vscode.postMessage({ type: 'offscreenRendered', requestId, error: 'Rasterization failed' });
+        resolve();
       };
       img.src = url;
-    } catch (err) {
-      vscode.postMessage({ type: 'offscreenRendered', requestId: msg.requestId, error: String(err && err.message || err) });
-    }
+    });
+  }
+
+  window.addEventListener('message', (ev) => {
+    const msg = ev.data;
+    if (!msg || msg.type !== 'renderOffscreen') return;
+    jobChain = jobChain.then(async () => {
+      try {
+        let svgMarkup = msg.source;
+        if (msg.jobKind !== 'svg_raster') {
+          if (msg.theme !== lastTheme) {
+            window.mermaid.initialize({ startOnLoad: false, theme: msg.theme || 'default', securityLevel: 'strict', htmlLabels: false, flowchart: { htmlLabels: false } });
+            lastTheme = msg.theme;
+          }
+          const id = 'dg-worker-' + (++seq);
+          const out = await window.mermaid.render(id, msg.source);
+          document.getElementById('d' + id)?.remove();
+          svgMarkup = out.svg;
+        }
+        const doc = new DOMParser().parseFromString(svgMarkup, 'image/svg+xml');
+        const svg = doc.documentElement;
+        const vb = svg.viewBox && svg.viewBox.baseVal;
+        const w = (vb && vb.width > 0 ? vb.width : parseFloat(svg.getAttribute('width') || '400')) || 400;
+        const h = (vb && vb.height > 0 ? vb.height : parseFloat(svg.getAttribute('height') || '300')) || 300;
+        svg.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+        svg.setAttribute('width', String(w));
+        svg.setAttribute('height', String(h));
+        svg.removeAttribute('style');
+        const serialized = new XMLSerializer().serializeToString(svg);
+        if (msg.format === 'svg') {
+          vscode.postMessage({ type: 'offscreenRendered', requestId: msg.requestId, data: serialized, width: w, height: h });
+          return;
+        }
+        await rasterizeSerializedSvg(serialized, w, h, msg.requestId);
+      } catch (err) {
+        vscode.postMessage({ type: 'offscreenRendered', requestId: msg.requestId, error: String(err && err.message || err) });
+      }
+    });
   });
   vscode.postMessage({ type: 'workerReady' });
 })();
@@ -1063,6 +1144,7 @@ export class PreviewManager implements vscode.WebviewPanelSerializer {
         source,
         theme: mermaidTheme(),
         format,
+        jobKind,
       });
     });
 
@@ -1107,10 +1189,11 @@ export class PreviewManager implements vscode.WebviewPanelSerializer {
     if (!vscode.workspace.isTrusted || document.isUntitled) {
       return;
     }
-    const mode = config().get<'off' | 'svg' | 'png'>('exportOnSave', 'off');
-    if (mode !== 'svg' && mode !== 'png') {
+    const mode = config().get<'off' | 'svg' | 'png' | 'pdf'>('exportOnSave', 'off');
+    if (mode !== 'svg' && mode !== 'png' && mode !== 'pdf') {
       return;
     }
+    const ext = mode === 'svg' ? '.svg' : mode === 'pdf' ? '.pdf' : '.png';
     const kind = diagramKind(document);
     if (!kind) {
       return;
@@ -1123,7 +1206,7 @@ export class PreviewManager implements vscode.WebviewPanelSerializer {
       }
       try {
         const bytes = await this.renderMermaidBytes(document.getText(), mode);
-        const target = resolveAutoExportUri(document.uri, mode === 'svg' ? '.svg' : '.png');
+        const target = resolveAutoExportUri(document.uri, ext);
         await vscode.workspace.fs.writeFile(target, bytes);
         void vscode.window.setStatusBarMessage(t('Exported to {0}', vscode.workspace.asRelativePath(target)), 2500);
       } catch (err) {
@@ -1137,7 +1220,7 @@ export class PreviewManager implements vscode.WebviewPanelSerializer {
     }
     const baseDir = document.uri.scheme === 'file' ? path.dirname(document.uri.fsPath) : undefined;
     try {
-      const target = resolveAutoExportUri(document.uri, mode === 'svg' ? '.svg' : '.png');
+      const target = resolveAutoExportUri(document.uri, ext);
       const data = await this.renderPlantUmlBytes(blocks[0].source, mode, baseDir);
       await vscode.workspace.fs.writeFile(target, data);
       void vscode.window.setStatusBarMessage(t('Exported to {0}', vscode.workspace.asRelativePath(target)), 2500);

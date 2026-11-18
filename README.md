@@ -42,8 +42,8 @@ code --install-extension drawgraph-0.3.0.vsix
 - **按需离线引擎包（Offline Pack）与多页/PDF 导出**：支持在设置抽屉中一键下载或导入本地 `.war` / `.zip` 离线引擎包（`drawGraph.drawio.offlineMode`），完全断网也能流畅编辑；支持直接导出零依赖矢量尺寸对齐的 **PDF**（`DrawGraph: 将 Draw.io 图表导出为 PDF`）以及多页 `<diagram>` 批量导出（`DrawGraph: 批量导出 Draw.io 所有页面…`）。
 
 ### Git 图表视觉对比（Visual Diagram Diff）与代码反向建模
-- **Git 视觉对比面板（`DrawGraph: 与 Git HEAD 进行图表视觉对比`）**：在源代码管理（SCM）变更列表右键 `.drawio`、`.drawio.svg`、`.drawio.png`、`.mmd`、`.puml` 文件（或通过快捷菜单），即可打开交互式视觉对比视图，支持**并排同步缩放平移（Side-by-Side）**、**拉帘滑动对比（Swipe）**以及**半透明叠影 + 像素级差异高亮（Onion / Pixel Diff）**，也可通过 `DrawGraph: 对比两个图表文件…` 对比任意两份图表。
-- **从工作区代码反向生成架构图**：右键源码文件或目录执行 `DrawGraph: 从源码生成类图…` 或 `DrawGraph: 从源码生成模块依赖图…`，自动解析类、接口、方法、继承实现与模块导入关系，一键生成 **Mermaid**、**PlantUML** 或可拖拽的 **Draw.io** 图表。
+- **Git 视觉对比面板（`DrawGraph: 与 Git HEAD 进行图表视觉对比`）**：在源代码管理（SCM）变更列表右键 `.drawio`、`.drawio.svg`、`.drawio.png`、`.mmd`、`.puml` 文件（或通过快捷菜单），即可打开交互式视觉对比视图，支持**切换历史基准提交（`HEAD` / `HEAD~1` / 历史 Commit）**、**多页 Draw.io 页签切换与联合坐标对齐**、**并排同步光标缩放平移（Side-by-Side）**、**拉帘滑动对比（Swipe，支持键盘微调）**以及**半透明叠影 + 像素级差异高亮（Onion / Pixel Diff）**，也可通过 `DrawGraph: 对比两个图表文件…` 对比任意两份图表。
+- **从工作区代码及 SQL / JSON 反向生成架构图**：右键源码文件或目录执行 `DrawGraph: 从源码生成类图…` 或 `DrawGraph: 从源码生成模块依赖图…`，或对 `.sql` / `.json` 文件（及剪贴板文本）执行 `DrawGraph: 从 SQL / JSON 生成图表…`，一键生成 **Mermaid**、**PlantUML** 或可拖拽的 **Draw.io** 类图、ER 图或思维导图。
 - **工作区图表导航树（Diagram Explorer）**：在资源管理器侧边栏展开「工作区图表（Diagrams）」面板，集中索引工作区内所有 `.drawio*`、`.mmd`、`.puml` 及包含图表代码块的 `.md` 文档，并支持直接展开多页 Draw.io、多块 PlantUML 与 Markdown 代码块定位跳转。
 
 ### Mermaid 与 PlantUML 实时预览与编辑智能

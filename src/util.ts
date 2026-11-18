@@ -50,7 +50,7 @@ export async function saveBytes(defaultUri: vscode.Uri, data: Uint8Array, filter
 }
 
 /** Resolves the target URI for `drawGraph.exportOnSave` alongside or in `exportOnSaveOutDir`. */
-export function resolveAutoExportUri(sourceUri: vscode.Uri, ext: '.svg' | '.png'): vscode.Uri {
+export function resolveAutoExportUri(sourceUri: vscode.Uri, ext: '.svg' | '.png' | '.pdf'): vscode.Uri {
   const outDir = config().get<string>('exportOnSaveOutDir', '').trim();
   const replaced = withExtension(sourceUri, ext);
   if (!outDir) {

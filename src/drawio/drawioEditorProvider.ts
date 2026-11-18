@@ -177,6 +177,7 @@ export class DrawioEditorProvider implements vscode.CustomTextEditorProvider {
   private exportCounter = 0;
   private sessionSeq = 0;
   private readonly pendingInitialXml = new Map<string, string>();
+  private readonly pendingInitialPage = new Map<string, number>();
   private readonly pngSyncMachines = new Map<string, CoalescedTaskMachine<Uint8Array>>();
   private readonly pngReloaders = new Map<string, () => void>();
   private readonly onDidChangePngDocEmitter = new vscode.EventEmitter<vscode.CustomDocumentEditEvent<DrawioPngDocument>>();
@@ -340,6 +341,26 @@ export class DrawioEditorProvider implements vscode.CustomTextEditorProvider {
     this.pendingInitialXml.set(uri.toString(), mxfileXml);
   }
 
+  /** Opens or focuses `uri` in Draw.io and activates the 0-based `<diagram>` tab `pageIndex`. */
+  async openAtPage(uri: vscode.Uri, pageIndex: number): Promise<void> {
+    this.pendingInitialPage.set(uri.toString(), Math.max(0, pageIndex));
+    const viewType = isPngDiagramPath(uri.path) ? DrawioEditorProvider.pngViewType : DrawioEditorProvider.viewType;
+    const existing = [...this.sessions].find((s) => s.uri.toString() === uri.toString());
+    await vscode.commands.executeCommand('vscode.openWith', uri, viewType);
+    if (existing && existing.status.initialized && !existing.isBinaryPng) {
+      const xml = await readDrawioXmlFromUri(uri);
+      if (xml) {
+        this.pendingInitialPage.delete(uri.toString());
+        void existing.panel.webview.postMessage({
+          type: 'load',
+          xml,
+          page: Math.max(0, pageIndex),
+          title: displayName(uri),
+        });
+      }
+    }
+  }
+
   private createLifecycleMachine(uri: vscode.Uri): StateMachine<DrawioSessionPhase, DrawioSessionEvent> {
     return new StateMachine<DrawioSessionPhase, DrawioSessionEvent>({
       id: `drawio-editor:${++this.sessionSeq}:${displayName(uri)}`,
@@ -393,11 +414,11 @@ export class DrawioEditorProvider implements vscode.CustomTextEditorProvider {
     if (!vscode.workspace.isTrusted) {
       return;
     }
-    const mode = config().get<'off' | 'svg' | 'png'>('exportOnSave', 'off');
-    if (mode !== 'svg' && mode !== 'png') {
+    const mode = config().get<'off' | 'svg' | 'png' | 'pdf'>('exportOnSave', 'off');
+    if (mode !== 'svg' && mode !== 'png' && mode !== 'pdf') {
       return;
     }
-    if (/\.(?:svg|png)$/i.test(savedUri.path)) {
+    if (/\.(?:svg|png|pdf)$/i.test(savedUri.path)) {
       return;
     }
     const session = [...this.sessions].find((s) => s.uri.toString() === savedUri.toString());
@@ -405,15 +426,19 @@ export class DrawioEditorProvider implements vscode.CustomTextEditorProvider {
       return;
     }
     const isSvg = mode === 'svg';
-    const result = await this.requestExport(session, isSvg ? 'xmlsvg' : 'xmlpng', {
+    const scale = Math.max(1, config().get<number>('preview.pngScale', 2));
+    const result = await this.requestExport(session, isSvg ? 'xmlsvg' : mode === 'pdf' ? 'png' : 'xmlpng', {
       border: 10,
-      ...(isSvg ? svgColorOptions() : { background: '#ffffff' }),
+      ...(isSvg ? svgColorOptions() : { background: '#ffffff', ...(mode === 'pdf' ? { scale } : {}) }),
     });
     if (!result.data) {
       return;
     }
-    const target = resolveAutoExportUri(savedUri, isSvg ? '.svg' : '.png');
-    await vscode.workspace.fs.writeFile(target, decodeDataUri(result.data));
+    const rawBytes = decodeDataUri(result.data);
+    const outBytes = mode === 'pdf' ? buildPdfDocument([{ bytes: rawBytes, format: 'png', scale }]) : rawBytes;
+    const ext = isSvg ? '.svg' : mode === 'pdf' ? '.pdf' : '.png';
+    const target = resolveAutoExportUri(savedUri, ext);
+    await vscode.workspace.fs.writeFile(target, outBytes);
     void vscode.window.setStatusBarMessage(t('Exported to {0}', vscode.workspace.asRelativePath(target)), 2500);
   }
 
@@ -590,7 +615,11 @@ export class DrawioEditorProvider implements vscode.CustomTextEditorProvider {
       if (xml.trim() === '') {
         xml = EMPTY_DIAGRAM;
       }
-      post({ type: 'load', xml, title: displayName(document.uri) });
+      const queuedPage = this.pendingInitialPage.get(document.uri.toString());
+      if (queuedPage !== undefined) {
+        this.pendingInitialPage.delete(document.uri.toString());
+      }
+      post({ type: 'load', xml, page: queuedPage, title: displayName(document.uri) });
     };
 
     const applyXml = (xml: string): Promise<boolean> => {
@@ -1025,6 +1054,7 @@ export class DrawioEditorProvider implements vscode.CustomTextEditorProvider {
     uriArg?: vscode.Uri,
     format: 'svg' | 'png' | 'pdf' = 'svg',
     outDirArg?: vscode.Uri,
+    svgRasterizer?: (svg: string) => Promise<Uint8Array>,
   ): Promise<vscode.Uri[]> {
     let sourceUri = uriArg;
     let rawXml: string | undefined;
@@ -1059,6 +1089,7 @@ export class DrawioEditorProvider implements vscode.CustomTextEditorProvider {
         .replace(/\.(?:drawio|dio)\.(?:svg|png|xml)$/i, '')
         .replace(/\.[^.]+$/, '') || 'diagram';
     const matchingSession = [...this.sessions].find((s) => s.uri.toString() === sourceUri!.toString());
+    const scale = Math.max(1, config().get<number>('preview.pngScale', 2));
     const written: vscode.Uri[] = [];
     const pdfPages: Array<{ bytes: Uint8Array; format: 'png'; scale?: number }> = [];
 
@@ -1067,6 +1098,7 @@ export class DrawioEditorProvider implements vscode.CustomTextEditorProvider {
       const safeName = page.name.replace(/[^\w\u0080-\uffff.-]+/g, '_').replace(/^_+|_+$/g, '') || `Page-${i + 1}`;
       const suffix = pages.length === 1 ? '' : `-${safeName}`;
       const singleMxfile = `<mxfile>${page.diagramXml}</mxfile>`;
+      const renderedPageSvg = renderMxfileToPreviewSvg(singleMxfile);
 
       if (format === 'svg') {
         let svgBytes: Uint8Array;
@@ -1074,31 +1106,37 @@ export class DrawioEditorProvider implements vscode.CustomTextEditorProvider {
           const res = await this.requestExport(matchingSession, 'xmlsvg', { border: 10, ...svgColorOptions() });
           svgBytes = res.data
             ? decodeDataUri(res.data)
-            : Buffer.from(replaceEmbeddedDiagram(renderMxfileToPreviewSvg(singleMxfile), singleMxfile), 'utf8');
+            : Buffer.from(replaceEmbeddedDiagram(renderedPageSvg, singleMxfile), 'utf8');
         } else {
-          const rendered = renderMxfileToPreviewSvg(singleMxfile);
-          svgBytes = Buffer.from(replaceEmbeddedDiagram(rendered, singleMxfile), 'utf8');
+          svgBytes = Buffer.from(replaceEmbeddedDiagram(renderedPageSvg, singleMxfile), 'utf8');
         }
         const dest = vscode.Uri.joinPath(outDir, `${stem}${suffix}.drawio.svg`);
         await vscode.workspace.fs.writeFile(dest, svgBytes);
         written.push(dest);
-      } else if (matchingSession) {
-        const res = await this.requestExport(matchingSession, 'png', {
-          border: 10,
-          scale: 2,
-          background: '#ffffff',
-          pageId: page.id,
-        });
-        if (!res.data) {
+      } else {
+        let pngBytes: Uint8Array | undefined;
+        if (matchingSession && pages.length === 1) {
+          const res = await this.requestExport(matchingSession, 'png', {
+            border: 10,
+            scale,
+            background: '#ffffff',
+          });
+          if (res.data) {
+            pngBytes = decodeDataUri(res.data);
+          }
+        }
+        if (!pngBytes && svgRasterizer) {
+          pngBytes = await svgRasterizer(renderedPageSvg);
+        }
+        if (!pngBytes) {
           continue;
         }
-        const pngBytes = decodeDataUri(res.data);
         if (format === 'png') {
           const dest = vscode.Uri.joinPath(outDir, `${stem}${suffix}.png`);
           await vscode.workspace.fs.writeFile(dest, pngBytes);
           written.push(dest);
         } else {
-          pdfPages.push({ bytes: pngBytes, format: 'png', scale: 2 });
+          pdfPages.push({ bytes: pngBytes, format: 'png', scale });
         }
       }
     }

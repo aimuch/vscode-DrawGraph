@@ -495,3 +495,147 @@ export function computeC4SignatureHelp(
     activeParameter: Math.min(activeCall.commas, Math.max(0, macro.parameters.length - 1)),
   };
 }
+
+export interface StaticSyntaxIssue {
+  line: number;
+  message: string;
+  severity: 'error' | 'warning';
+}
+
+/**
+ * Fast, zero-subprocess static syntax validator for Mermaid and PlantUML editors so
+ * common structural mistakes surface immediately even when the preview panel is closed.
+ */
+export function validateDiagramSyntaxStatic(
+  text: string,
+  kind: 'mermaid' | 'plantuml',
+): StaticSyntaxIssue[] {
+  const issues: StaticSyntaxIssue[] = [];
+  if (!text.trim()) {
+    return issues;
+  }
+  const lines = text.split(/\r?\n/);
+
+  if (kind === 'plantuml') {
+    let inBlockComment = false;
+    let commentStartLine = 0;
+    let openStart: { tag: string; line: number } | undefined;
+
+    for (let i = 0; i < lines.length; i++) {
+      const raw = lines[i];
+      if (!inBlockComment && raw.includes("/'") && !raw.includes("'/")) {
+        commentStartLine = i;
+      }
+      const stripped = stripBlockComments(raw, inBlockComment);
+      inBlockComment = stripped.inComment;
+      const t = stripped.code.trim();
+      if (!t || t.startsWith("'")) {
+        continue;
+      }
+      const startM = /^@start(\w+)/i.exec(t);
+      if (startM && startM[1].toLowerCase() !== 'sub') {
+        if (openStart) {
+          issues.push({
+            line: openStart.line,
+            message: `Unclosed @start${openStart.tag} block (missing @end${openStart.tag}).`,
+            severity: 'error',
+          });
+        }
+        openStart = { tag: startM[1], line: i };
+        continue;
+      }
+      const endM = /^@end(\w+)/i.exec(t);
+      if (endM && endM[1].toLowerCase() !== 'sub') {
+        if (!openStart) {
+          issues.push({
+            line: i,
+            message: `Unexpected @end${endM[1]} without a matching @start${endM[1]}.`,
+            severity: 'error',
+          });
+        } else {
+          openStart = undefined;
+        }
+      }
+    }
+
+    if (inBlockComment) {
+      issues.push({
+        line: commentStartLine,
+        message: "Unclosed PlantUML block comment (missing \"'/\").",
+        severity: 'error',
+      });
+    }
+    if (openStart) {
+      issues.push({
+        line: openStart.line,
+        message: `Unclosed @start${openStart.tag} block (missing @end${openStart.tag}).`,
+        severity: 'error',
+      });
+    }
+    return issues;
+  }
+
+  // Mermaid static checks
+  let inFrontmatter = false;
+  let headerLine = -1;
+  let headerText = '';
+  const subgraphOpenLines: number[] = [];
+
+  for (let i = 0; i < lines.length; i++) {
+    const t = lines[i].trim();
+    if (i === 0 && t === '---') {
+      inFrontmatter = true;
+      continue;
+    }
+    if (inFrontmatter) {
+      if (t === '---') {
+        inFrontmatter = false;
+      }
+      continue;
+    }
+    if (!t || t.startsWith('%%')) {
+      continue;
+    }
+    if (headerLine < 0) {
+      headerLine = i;
+      headerText = t;
+      if (
+        !/^(?:flowchart|graph|sequenceDiagram|classDiagram|stateDiagram|erDiagram|gantt|mindmap|pie|gitGraph|C4\w+|timeline|architecture|quadrantChart|xychart|sankey|kanban|packet|block|journey|requirementDiagram|zenuml)/i.test(
+          t,
+        )
+      ) {
+        issues.push({
+          line: i,
+          message: 'Unrecognized or missing Mermaid diagram header (e.g. "flowchart TD" or "sequenceDiagram").',
+          severity: 'error',
+        });
+        return issues;
+      }
+      continue;
+    }
+
+    if (/^(?:flowchart|graph)\b/i.test(headerText)) {
+      if (/^subgraph\b/i.test(t)) {
+        subgraphOpenLines.push(i);
+      } else if (/^end$/i.test(t)) {
+        subgraphOpenLines.pop();
+      } else if (/^[A-Za-z0-9_]+\s*->\s*[A-Za-z0-9_]+\s*$/.test(t)) {
+        issues.push({
+          line: i,
+          message: 'Invalid single arrow "->" in Mermaid flowchart; use "-->" instead.',
+          severity: 'error',
+        });
+      }
+    }
+  }
+
+  for (const openLine of subgraphOpenLines) {
+    issues.push({
+      line: openLine,
+      message: 'Unclosed "subgraph" block (missing matching "end").',
+      severity: 'error',
+    });
+  }
+
+  return issues;
+}

@@ -16,7 +16,7 @@ export type PreviewToHostMessage =
   | { type: 'toggleLock' }
   | { type: 'navigate'; delta: number }
   | { type: 'export'; format: 'svg' | 'png' | 'pdf'; data: string; width?: number; height?: number }
-  | { type: 'autoExportData'; format: 'svg' | 'png'; data: string }
+  | { type: 'autoExportData'; format: 'svg' | 'png' | 'pdf'; data: string }
   | { type: 'offscreenRendered'; requestId: number; data?: string; width?: number; height?: number; error?: string }
   | { type: 'copy'; data: string }
   | { type: 'copiedPng' }

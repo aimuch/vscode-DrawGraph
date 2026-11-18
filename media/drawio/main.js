@@ -213,7 +213,20 @@
         break;
       }
       case 'load':
-        postToDrawio({ action: 'load', xml: msg.xml || '', autosave: 1, title: msg.title, saveAndExit: '0', noSaveBtn: '1', noExitBtn: '1' });
+        postToDrawio(
+          Object.assign(
+            {
+              action: 'load',
+              xml: msg.xml || '',
+              autosave: 1,
+              title: msg.title,
+              saveAndExit: '0',
+              noSaveBtn: '1',
+              noExitBtn: '1',
+            },
+            typeof msg.page === 'number' ? { page: msg.page } : {},
+          ),
+        );
         break;
       case 'action':
         postToDrawio(msg.action);

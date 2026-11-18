@@ -20,23 +20,91 @@ body {
   flex: none;
   display: flex;
   align-items: center;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   gap: 4px;
   padding: 4px 8px;
   border-bottom: 1px solid var(--vscode-panel-border, transparent);
   user-select: none;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+#toolbar::-webkit-scrollbar {
+  display: none;
 }
 
 #toolbar button {
+  flex: none;
   min-width: 28px;
   height: 24px;
   padding: 0 8px;
   border: 1px solid var(--vscode-button-border, transparent);
-  border-radius: 2px;
+  border-radius: 3px;
   color: var(--vscode-button-secondaryForeground);
   background: var(--vscode-button-secondaryBackground);
   font: inherit;
+  white-space: nowrap;
   cursor: pointer;
+}
+
+#toolbar button:focus-visible,
+#findBar button:focus-visible,
+#presentHud button:focus-visible {
+  outline: 1.5px solid var(--vscode-focusBorder, #007acc);
+  outline-offset: 1px;
+}
+
+.toolbar-dropdown {
+  position: relative;
+  flex: none;
+}
+
+#exportDropdown {
+  position: fixed;
+  margin-top: 4px;
+  min-width: 152px;
+  padding: 4px;
+  border-radius: 6px;
+  background: var(--vscode-menu-background, var(--vscode-editorWidget-background, var(--vscode-editor-background)));
+  border: 1px solid var(--vscode-menu-border, var(--vscode-panel-border, rgba(128, 128, 128, 0.45)));
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.28);
+  z-index: 28;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+#exportDropdown button {
+  width: 100%;
+  height: 26px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 4px;
+  text-align: left;
+  background: transparent;
+  color: var(--vscode-menu-foreground, var(--vscode-foreground));
+}
+
+#exportDropdown button:hover {
+  background: var(--vscode-menu-selectionBackground, var(--vscode-button-background));
+  color: var(--vscode-menu-selectionForeground, var(--vscode-button-foreground));
+}
+
+.menu-divider {
+  height: 1px;
+  margin: 2px 4px;
+  background: var(--vscode-menu-separatorBackground, var(--vscode-panel-border, rgba(128, 128, 128, 0.35)));
+}
+
+@media (max-width: 680px) {
+  #toolbar {
+    gap: 3px;
+    padding: 4px 6px;
+  }
+  #toolbar button {
+    padding: 0 6px;
+    font-size: 12px;
+  }
 }
 
 #toolbar button:hover {
@@ -338,6 +406,13 @@ svg.drawgraph-has-spotlight g.node,
 svg.drawgraph-has-spotlight g.cluster,
 svg.drawgraph-has-spotlight g.edgePath,
 svg.drawgraph-has-spotlight g.actor,
+svg.drawgraph-has-spotlight g.classGroup,
+svg.drawgraph-has-spotlight g.statediagram-state,
+svg.drawgraph-has-spotlight g.er.entityBox,
+svg.drawgraph-has-spotlight path.er.relationshipLine,
+svg.drawgraph-has-spotlight .messageLine0,
+svg.drawgraph-has-spotlight .messageLine1,
+svg.drawgraph-has-spotlight .messageText,
 svg.drawgraph-has-spotlight g.elem,
 svg.drawgraph-has-spotlight g[id^='elem_'] {
   opacity: 0.2;

@@ -6,7 +6,7 @@ out/**
 dist/**/*.map
 media/vendor/*.map
 esbuild.mjs
-tsconfig.json
+tsconfig*.json
 **/*.ts
 *.vsix
 .gitignore

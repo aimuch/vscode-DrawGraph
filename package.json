@@ -62,7 +62,8 @@
     "onCommand:drawGraph.visualDiff",
     "onCommand:drawGraph.visualDiffFiles",
     "onCommand:drawGraph.generateClassDiagram",
-    "onCommand:drawGraph.generateDependencyDiagram"
+    "onCommand:drawGraph.generateDependencyDiagram",
+    "onCommand:drawGraph.generateFromData"
   ],
   "contributes": {
     "views": {
@@ -74,6 +75,12 @@
         }
       ]
     },
+    "viewsWelcome": [
+      {
+        "view": "drawGraph.diagramExplorer",
+        "contents": "%viewsWelcome.diagramExplorer%"
+      }
+    ],
     "languages": [
       {
         "id": "mermaid",
@@ -379,6 +386,12 @@
         "icon": "$(references)"
       },
       {
+        "command": "drawGraph.generateFromData",
+        "title": "%command.generateFromData%",
+        "category": "DrawGraph",
+        "icon": "$(database)"
+      },
+      {
         "command": "drawGraph.drawio.downloadOfflinePack",
         "title": "%command.drawio.downloadOfflinePack%",
         "category": "DrawGraph",
@@ -436,24 +449,24 @@
           "group": "navigation@11"
         },
         {
-          "command": "drawGraph.drawio.exportPng",
+          "command": "drawGraph.drawio.copyPng",
           "when": "activeCustomEditorId == drawGraph.drawio || activeCustomEditorId == drawGraph.drawioPng",
           "group": "navigation@12"
         },
         {
-          "command": "drawGraph.drawio.copyPng",
-          "when": "activeCustomEditorId == drawGraph.drawio || activeCustomEditorId == drawGraph.drawioPng",
+          "command": "drawGraph.openSettings",
+          "when": "activeCustomEditorId == drawGraph.drawio || activeCustomEditorId == drawGraph.drawioPng || activeWebviewPanelId == drawGraph.preview",
           "group": "navigation@13"
+        },
+        {
+          "command": "drawGraph.drawio.exportPng",
+          "when": "activeCustomEditorId == drawGraph.drawio || activeCustomEditorId == drawGraph.drawioPng",
+          "group": "1_drawgraph@0"
         },
         {
           "command": "drawGraph.drawio.openAsText",
           "when": "activeCustomEditorId == drawGraph.drawio",
-          "group": "navigation@14"
-        },
-        {
-          "command": "drawGraph.openSettings",
-          "when": "activeCustomEditorId == drawGraph.drawio || activeCustomEditorId == drawGraph.drawioPng || activeWebviewPanelId == drawGraph.preview",
-          "group": "navigation@15"
+          "group": "1_drawgraph@7"
         },
         {
           "command": "drawGraph.drawio.copySvg",
@@ -503,6 +516,33 @@
           "group": "navigation"
         }
       ],
+      "view/item/context": [
+        {
+          "command": "drawGraph.visualDiff",
+          "when": "view == drawGraph.diagramExplorer && viewItem =~ /^diagramFile\\.(drawio|mermaid|plantuml)$/",
+          "group": "inline@1"
+        },
+        {
+          "command": "drawGraph.visualDiff",
+          "when": "view == drawGraph.diagramExplorer && viewItem =~ /^diagramFile\\.(drawio|mermaid|plantuml)$/",
+          "group": "1_actions@1"
+        },
+        {
+          "command": "drawGraph.exportPdf",
+          "when": "view == drawGraph.diagramExplorer && viewItem =~ /^diagramFile\\.(drawio|mermaid|plantuml)$/",
+          "group": "1_actions@2"
+        },
+        {
+          "command": "drawGraph.mermaid.openInDrawio",
+          "when": "view == drawGraph.diagramExplorer && viewItem == diagramFile.mermaid",
+          "group": "1_actions@3"
+        },
+        {
+          "command": "drawGraph.drawio.exportAllPages",
+          "when": "view == drawGraph.diagramExplorer && viewItem == diagramFile.drawio",
+          "group": "1_actions@4"
+        }
+      ],
       "scm/resourceState/context": [
         {
           "command": "drawGraph.visualDiff",
@@ -550,6 +590,11 @@
           "command": "drawGraph.generateDependencyDiagram",
           "when": "explorerResourceIsFolder || resourceExtname == .ts || resourceExtname == .js || resourceExtname == .py",
           "group": "7_modification@2"
+        },
+        {
+          "command": "drawGraph.generateFromData",
+          "when": "resourceExtname == .sql || resourceExtname == .json",
+          "group": "7_modification@3"
         }
       ],
       "commandPalette": [
@@ -871,12 +916,14 @@
           "enum": [
             "off",
             "svg",
-            "png"
+            "png",
+            "pdf"
           ],
           "enumDescriptions": [
             "%config.exportOnSave.off%",
             "%config.exportOnSave.svg%",
-            "%config.exportOnSave.png%"
+            "%config.exportOnSave.png%",
+            "%config.exportOnSave.pdf%"
           ],
           "default": "off",
           "markdownDescription": "%config.exportOnSave%"
@@ -899,7 +946,7 @@
   "scripts": {
     "build": "node esbuild.mjs",
     "watch": "node esbuild.mjs --watch",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.webview.json",
     "test": "node --test test/*.test.mjs",
     "test:integration": "node esbuild.mjs && node test/integration/runTest.mjs",
     "vscode:prepublish": "npm run typecheck && node esbuild.mjs --production",

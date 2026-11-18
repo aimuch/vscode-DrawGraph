@@ -90,7 +90,7 @@ export class OfflinePackManager implements vscode.Disposable {
    */
   resolveBaseUrlSyncOrAsync(): string | Promise<string> {
     const cfg = config();
-    const offlineMode = cfg.get<'auto' | 'online' | 'offline'>('drawGraph.drawio.offlineMode' in cfg ? 'drawio.offlineMode' : 'drawio.offlineMode', 'auto');
+    const offlineMode = cfg.get<'auto' | 'online' | 'offline'>('drawio.offlineMode', 'auto');
     const configuredUrl = cfg.get<string>('drawio.url', 'https://embed.diagrams.net/') || 'https://embed.diagrams.net/';
     const isDefaultUrl = /^https:\/\/embed\.diagrams\.net\/?$/i.test(configuredUrl.trim());
 
@@ -256,7 +256,7 @@ export class OfflinePackManager implements vscode.Disposable {
           title: t('Downloading official Draw.io offline pack (draw.war)…'),
           cancellable: true,
         },
-        async (_progress, token) => {
+        async (progress, token) => {
           const ctrl = new AbortController();
           const cancelSub = token.onCancellationRequested(() => ctrl.abort());
           try {
@@ -264,8 +264,46 @@ export class OfflinePackManager implements vscode.Disposable {
             if (!resp.ok) {
               throw new Error(`HTTP ${resp.status} ${resp.statusText}`);
             }
-            const buf = new Uint8Array(await resp.arrayBuffer());
-            return await this.importFromArchiveBytes(buf);
+            const totalLen = Number(resp.headers.get('content-length') || 0);
+            const MAX_DOWNLOAD_BYTES = 250 * 1024 * 1024;
+            if (totalLen > MAX_DOWNLOAD_BYTES) {
+              throw new Error('Download exceeds 250 MB safety limit.');
+            }
+            if (!resp.body) {
+              const buf = new Uint8Array(await resp.arrayBuffer());
+              return await this.importFromArchiveBytes(buf);
+            }
+            const reader = resp.body.getReader();
+            const chunks: Uint8Array[] = [];
+            let received = 0;
+            let lastPct = 0;
+            while (true) {
+              const { done, value } = await reader.read();
+              if (done) {
+                break;
+              }
+              if (value) {
+                received += value.byteLength;
+                if (received > MAX_DOWNLOAD_BYTES) {
+                  throw new Error('Download exceeds 250 MB safety limit.');
+                }
+                chunks.push(value);
+                const mb = (received / (1024 * 1024)).toFixed(1);
+                if (totalLen > 0) {
+                  const pct = Math.min(100, Math.floor((received / totalLen) * 100));
+                  const inc = Math.max(0, pct - lastPct);
+                  lastPct = pct;
+                  progress.report({
+                    increment: inc,
+                    message: `${mb} / ${(totalLen / (1024 * 1024)).toFixed(1)} MB (${pct}%)`,
+                  });
+                } else {
+                  progress.report({ message: `${mb} MB` });
+                }
+              }
+            }
+            const combined = Buffer.concat(chunks);
+            return await this.importFromArchiveBytes(combined);
           } finally {
             cancelSub.dispose();
           }

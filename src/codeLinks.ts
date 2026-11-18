@@ -42,19 +42,21 @@ function isWithinAllowedBoundary(candidate: vscode.Uri, contextUri?: vscode.Uri)
   return false;
 }
 
-async function openFileAtLine(uri: vscode.Uri, oneBasedLine?: number, contextUri?: vscode.Uri): Promise<boolean> {
+type OpenResult = 'opened' | 'cancelled' | 'failed';
+
+async function openFileAtLine(uri: vscode.Uri, oneBasedLine?: number, contextUri?: vscode.Uri): Promise<OpenResult> {
   if (!isWithinAllowedBoundary(uri, contextUri)) {
     if (!vscode.workspace.isTrusted) {
-      return false;
+      return 'cancelled';
     }
     const openBtn = t('Open');
     const confirm = await vscode.window.showWarningMessage(
-      t('Open external file outside workspace: {0}?', uri.fsPath),
+      t('Open "{0}" outside the current workspace?', uri.fsPath),
       { modal: true },
       openBtn,
     );
     if (confirm !== openBtn) {
-      return true;
+      return 'cancelled';
     }
   }
   try {
@@ -67,9 +69,9 @@ async function openFileAtLine(uri: vscode.Uri, oneBasedLine?: number, contextUri
       editor.selection = new vscode.Selection(pos, pos);
       editor.revealRange(new vscode.Range(pos, pos), vscode.TextEditorRevealType.InCenterIfOutsideViewport);
     }
-    return true;
+    return 'opened';
   } catch {
-    return false;
+    return 'failed';
   }
 }
 
@@ -102,8 +104,12 @@ export async function navigateToCodeTarget(rawTarget: string, contextUri?: vscod
     for (const candidate of candidates) {
       try {
         await vscode.workspace.fs.stat(candidate);
-        if (await openFileAtLine(candidate, line, contextUri)) {
+        const res = await openFileAtLine(candidate, line, contextUri);
+        if (res === 'opened') {
           return true;
+        }
+        if (res === 'cancelled') {
+          return false;
         }
       } catch {
         // Try next candidate.
@@ -112,8 +118,14 @@ export async function navigateToCodeTarget(rawTarget: string, contextUri?: vscod
     const baseName = path.posix.basename(filePath.replace(/\\/g, '/'));
     if (baseName) {
       const found = await vscode.workspace.findFiles(`**/${baseName}`, '**/node_modules/**', 5);
-      if (found.length > 0 && (await openFileAtLine(found[0], line, contextUri))) {
-        return true;
+      if (found.length > 0) {
+        const res = await openFileAtLine(found[0], line, contextUri);
+        if (res === 'opened') {
+          return true;
+        }
+        if (res === 'cancelled') {
+          return false;
+        }
       }
     }
   }
@@ -139,9 +151,14 @@ export async function navigateToCodeTarget(rawTarget: string, contextUri?: vscod
         { placeHolder: t('Select symbol definition for "{0}"', symbolQuery) },
       );
       if (!picked) {
-        return true;
+        return false;
       }
       chosen = picked.sym;
+    }
+    if (!isWithinAllowedBoundary(chosen.location.uri, contextUri)) {
+      if (!vscode.workspace.isTrusted) {
+        return false;
+      }
     }
     const doc = await vscode.workspace.openTextDocument(chosen.location.uri);
     const editor = await vscode.window.showTextDocument(doc, { viewColumn: vscode.ViewColumn.One });

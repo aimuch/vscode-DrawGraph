@@ -12,6 +12,7 @@ import {
   extractDiagramDocumentLinks,
   extractHexColors,
   formatHexColor,
+  validateDiagramSyntaxStatic,
 } from './advancedFeatures';
 import {
   collectMermaidCompletions,
@@ -30,15 +31,76 @@ import {
 
 export class DiagramDiagnostics implements vscode.Disposable {
   private readonly collection = vscode.languages.createDiagnosticCollection('drawGraph');
-  private readonly closeSub: vscode.Disposable;
+  private readonly subs: vscode.Disposable[] = [];
+  private readonly liveErrorUris = new Set<string>();
+  private readonly lintTimers = new Map<string, NodeJS.Timeout>();
 
   constructor() {
-    this.closeSub = vscode.workspace.onDidCloseTextDocument((doc) => {
-      this.collection.delete(doc.uri);
-    });
+    this.subs.push(
+      vscode.workspace.onDidCloseTextDocument((doc) => {
+        const key = doc.uri.toString();
+        const tmr = this.lintTimers.get(key);
+        if (tmr) {
+          clearTimeout(tmr);
+          this.lintTimers.delete(key);
+        }
+        this.liveErrorUris.delete(key);
+        this.collection.delete(doc.uri);
+      }),
+      vscode.workspace.onDidOpenTextDocument((doc) => this.scheduleStaticLint(doc, 60)),
+      vscode.workspace.onDidChangeTextDocument((e) => this.scheduleStaticLint(e.document, 250)),
+    );
+    for (const doc of vscode.workspace.textDocuments) {
+      this.scheduleStaticLint(doc, 60);
+    }
+  }
+
+  private scheduleStaticLint(document: vscode.TextDocument, delayMs: number): void {
+    if (document.languageId !== 'mermaid' && document.languageId !== 'plantuml') {
+      return;
+    }
+    const key = document.uri.toString();
+    const prev = this.lintTimers.get(key);
+    if (prev) {
+      clearTimeout(prev);
+    }
+    this.lintTimers.set(
+      key,
+      setTimeout(() => {
+        this.lintTimers.delete(key);
+        if (this.liveErrorUris.has(key)) {
+          return;
+        }
+        const issues = validateDiagramSyntaxStatic(document.getText(), document.languageId as 'mermaid' | 'plantuml');
+        if (issues.length === 0) {
+          this.collection.delete(document.uri);
+          return;
+        }
+        const diags = issues.map((iss) => {
+          const safeLine = Math.max(0, Math.min(iss.line, Math.max(0, document.lineCount - 1)));
+          const lineText = document.lineAt(safeLine);
+          const range = lineText.range.isEmpty ? new vscode.Range(safeLine, 0, safeLine, 1) : lineText.range;
+          const d = new vscode.Diagnostic(
+            range,
+            iss.message,
+            iss.severity === 'warning' ? vscode.DiagnosticSeverity.Warning : vscode.DiagnosticSeverity.Error,
+          );
+          d.source = 'DrawGraph';
+          return d;
+        });
+        this.collection.set(document.uri, diags);
+      }, delayMs),
+    );
   }
 
   setError(document: vscode.TextDocument, zeroBasedLine: number, message: string): void {
+    const key = document.uri.toString();
+    this.liveErrorUris.add(key);
+    const pending = this.lintTimers.get(key);
+    if (pending) {
+      clearTimeout(pending);
+      this.lintTimers.delete(key);
+    }
     const safeLine = Math.max(0, Math.min(zeroBasedLine, Math.max(0, document.lineCount - 1)));
     const lineText = document.lineAt(safeLine);
     const range = lineText.range.isEmpty ? new vscode.Range(safeLine, 0, safeLine, 1) : lineText.range;
@@ -48,11 +110,22 @@ export class DiagramDiagnostics implements vscode.Disposable {
   }
 
   clear(uri: vscode.Uri): void {
+    const key = uri.toString();
+    this.liveErrorUris.delete(key);
+    const pending = this.lintTimers.get(key);
+    if (pending) {
+      clearTimeout(pending);
+      this.lintTimers.delete(key);
+    }
     this.collection.delete(uri);
   }
 
   dispose(): void {
-    this.closeSub.dispose();
+    for (const tmr of this.lintTimers.values()) {
+      clearTimeout(tmr);
+    }
+    this.lintTimers.clear();
+    this.subs.forEach((s) => s.dispose());
     this.collection.dispose();
   }
 }

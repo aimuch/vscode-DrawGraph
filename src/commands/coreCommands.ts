@@ -423,7 +423,9 @@ export function registerCoreCommands({ context, drawio, previews, settingsPanel 
         }
         format = picked.fmt;
       }
-      return drawio.exportAllPages(asUri(uriArg), format, asUri(outDirArg));
+      return drawio.exportAllPages(asUri(uriArg), format, asUri(outDirArg), (svg) =>
+        previews.rasterizeSvgToPngBytes(svg),
+      );
     },
   );
   register('drawGraph.drawio.copySvg', () => drawio.copyActive('svg'));
@@ -654,6 +656,12 @@ export function registerCoreCommands({ context, drawio, previews, settingsPanel 
             run: () => vscode.commands.executeCommand('drawGraph.extractSource', targetUri),
           });
         }
+      } else if (/\.(?:sql|json)$/i.test(targetUri.path)) {
+        contextual.push({
+          id: 'generateFromData',
+          label: `$(database) ${t('Generate Diagram from SQL / JSON…')}`,
+          run: () => vscode.commands.executeCommand('drawGraph.generateFromData', targetUri),
+        });
       } else if (/\.(?:ts|tsx|js|jsx|mjs|cjs|py|java|cs|go|rs|cpp|hpp|c|h|dart)$/i.test(targetUri.path)) {
         contextual.push(
           {
@@ -706,6 +714,12 @@ export function registerCoreCommands({ context, drawio, previews, settingsPanel 
         label: `$(references) ${t('Generate Module Dependency Diagram…')}`,
         detail: t('Visualize local module imports across files'),
         run: () => vscode.commands.executeCommand('drawGraph.generateDependencyDiagram', targetUri),
+      },
+      {
+        id: 'dataDiagram',
+        label: `$(database) ${t('Generate Diagram from SQL / JSON…')}`,
+        detail: t('Convert SQL CREATE TABLE or JSON into ER / Mindmap diagrams'),
+        run: () => vscode.commands.executeCommand('drawGraph.generateFromData', targetUri),
       },
       { label: '', kind: vscode.QuickPickItemKind.Separator },
       {

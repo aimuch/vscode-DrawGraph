@@ -23,6 +23,8 @@
   const presentToggle = $('presentToggle');
   const mapToggle = $('mapToggle');
   const settingsToggle = $('settingsToggle');
+  const exportMenuBtn = $('exportMenuBtn');
+  const exportDropdown = $('exportDropdown');
   const findBar = $('findBar');
   const findInput = /** @type {HTMLInputElement} */ ($('findInput'));
   const findCount = $('findCount');
@@ -679,12 +681,12 @@
     }
   }
 
-  async function exportPdf() {
+  async function exportPdf(silent = false) {
     try {
       const c = await rasterizeToCanvas(true);
       if (c) {
         vscode.postMessage({
-          type: 'export',
+          type: silent ? 'autoExportData' : 'export',
           format: 'pdf',
           data: c.toDataURL('image/png'),
           width: natural.width,
@@ -692,7 +694,9 @@
         });
       }
     } catch (err) {
-      vscode.postMessage({ type: 'error', message: errorMessage(err) });
+      if (!silent) {
+        vscode.postMessage({ type: 'error', message: errorMessage(err) });
+      }
     }
   }
 
@@ -880,18 +884,54 @@
   minimap.addEventListener('pointerup', endMinimapDrag);
   minimap.addEventListener('pointercancel', endMinimapDrag);
 
+  function closeExportDropdown() {
+    exportDropdown.hidden = true;
+    exportMenuBtn.setAttribute('aria-expanded', 'false');
+  }
+
+  exportMenuBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const nextOpen = exportDropdown.hidden;
+    if (nextOpen) {
+      const r = exportMenuBtn.getBoundingClientRect();
+      exportDropdown.style.left = `${Math.max(6, Math.min(r.left, window.innerWidth - 164))}px`;
+      exportDropdown.style.top = `${r.bottom + 4}px`;
+    }
+    exportDropdown.hidden = !nextOpen;
+    exportMenuBtn.setAttribute('aria-expanded', nextOpen ? 'true' : 'false');
+  });
+
+  window.addEventListener('click', (e) => {
+    if (!exportDropdown.hidden && !(e.target instanceof Element && e.target.closest('.toolbar-dropdown'))) {
+      closeExportDropdown();
+    }
+  });
+
   prevItem.addEventListener('click', () => vscode.postMessage({ type: 'navigate', delta: -1 }));
   nextItem.addEventListener('click', () => vscode.postMessage({ type: 'navigate', delta: 1 }));
-  $('exportSvg').addEventListener('click', () => exportSvg(false));
-  $('exportPng').addEventListener('click', () => void exportPng(false));
-  $('exportPdf').addEventListener('click', () => void exportPdf());
+  $('exportSvg').addEventListener('click', () => {
+    closeExportDropdown();
+    exportSvg(false);
+  });
+  $('exportPng').addEventListener('click', () => {
+    closeExportDropdown();
+    void exportPng(false);
+  });
+  $('exportPdf').addEventListener('click', () => {
+    closeExportDropdown();
+    void exportPdf(false);
+  });
   $('copySvg').addEventListener('click', () => {
+    closeExportDropdown();
     const data = serializeSvg();
     if (data) {
       vscode.postMessage({ type: 'copy', data });
     }
   });
-  $('copyPng').addEventListener('click', () => void copyPng());
+  $('copyPng').addEventListener('click', () => {
+    closeExportDropdown();
+    void copyPng();
+  });
 
   let pointerMovedDuringDrag = false;
   stage.addEventListener('click', (e) => {
@@ -912,7 +952,7 @@
     }
     if (presentationMode && !pointerMovedDuringDrag && currentSvg) {
       const spotCandidate = target.closest(
-        'g.node, g.cluster, g.edgePath, g.actor, g.elem, g[id^="elem_"], g[id^="flowchart-"], g[class*="node"]',
+        'g.node, g.cluster, g.edgePath, g.actor, g.classGroup, g.statediagram-state, g.er.entityBox, g.elem, g[id^="elem_"], g[id^="flowchart-"], g[class*="node"]',
       );
       if (spotCandidate && currentSvg.contains(spotCandidate)) {
         const already = spotCandidate.classList.contains('drawgraph-spotlight-target');
@@ -1138,8 +1178,13 @@
           if (L.exitPresent) exitPresentBtn.textContent = L.exitPresent;
           if (L.laser) laserToggleBtn.textContent = L.laser;
           lockToggle.title = L.lockTitle;
+          if (L.exportMenu) exportMenuBtn.textContent = L.exportMenu;
+          if (L.exportMenuTitle) exportMenuBtn.title = L.exportMenuTitle;
+          if (L.exportSvg) $('exportSvg').textContent = L.exportSvg;
           $('exportSvg').title = L.exportSvgTitle;
+          if (L.exportPng) $('exportPng').textContent = L.exportPng;
           $('exportPng').title = L.exportPngTitle;
+          if (L.exportPdf) $('exportPdf').textContent = L.exportPdf;
           if (L.exportPdfTitle) $('exportPdf').title = L.exportPdfTitle;
           $('copySvg').textContent = L.copySvg;
           $('copySvg').title = L.copySvgTitle;
@@ -1182,7 +1227,7 @@
         } else if (msg.format === 'png') {
           void exportPng(true);
         } else if (msg.format === 'pdf') {
-          void exportPdf();
+          void exportPdf(true);
         }
         break;
       case 'renderOffscreen':
