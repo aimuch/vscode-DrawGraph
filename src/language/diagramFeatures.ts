@@ -247,6 +247,11 @@ class DiagramCodeLensProvider implements vscode.CodeLensProvider {
             command: 'drawGraph.convert.plantumlToMermaid',
             arguments: [document.uri],
           }),
+          new vscode.CodeLens(range, {
+            title: `$(sparkle) ${t('AI Studio')}`,
+            command: 'drawGraph.ai.openStudio',
+            arguments: [{ mode: 'modify', targetUri: document.uri }],
+          }),
         );
       });
       return lenses;
@@ -275,6 +280,11 @@ class DiagramCodeLensProvider implements vscode.CodeLensProvider {
             command: 'drawGraph.convert.mermaidToPlantuml',
             arguments: [document.uri],
           }),
+          new vscode.CodeLens(range, {
+            title: `$(sparkle) ${t('AI Studio')}`,
+            command: 'drawGraph.ai.openStudio',
+            arguments: [{ mode: 'modify', targetUri: document.uri }],
+          }),
         );
       }
       return lenses;
@@ -302,6 +312,11 @@ class DiagramCodeLensProvider implements vscode.CodeLensProvider {
             title: t('Export as Interactive HTML'),
             command: 'drawGraph.exportHtml',
             arguments: [document.uri],
+          }),
+          new vscode.CodeLens(range, {
+            title: `$(sparkle) ${t('AI Studio')}`,
+            command: 'drawGraph.ai.openStudio',
+            arguments: [{ mode: 'modify', targetUri: document.uri }],
           }),
         );
       }
@@ -544,28 +559,45 @@ class DiagramCodeActionProvider implements vscode.CodeActionProvider {
     context: vscode.CodeActionContext,
   ): Promise<vscode.CodeAction[]> {
     const brokenFixes = await provideBrokenLinkQuickFixes(document, context);
-    const kind = document.languageId === 'plantuml' ? 'plantuml' : 'mermaid';
-    const diagLine = context.diagnostics[0]?.range.start.line ?? range.start.line;
-    const fixes = computeDiagramQuickFixes(document.getText(), kind, diagLine);
+    const syntaxActions: vscode.CodeAction[] = [];
 
-    const syntaxActions = fixes.map((fix) => {
-      const action = new vscode.CodeAction(fix.title, vscode.CodeActionKind.QuickFix);
-      const edit = new vscode.WorkspaceEdit();
-      if (fix.kind === 'prepend') {
-        edit.insert(document.uri, new vscode.Position(0, 0), fix.newText);
-        if (kind === 'plantuml' && fix.title.includes('@enduml')) {
-          edit.insert(document.uri, new vscode.Position(document.lineCount, 0), '\n@enduml\n');
+    if (document.languageId === 'mermaid' || document.languageId === 'plantuml') {
+      const kind = document.languageId;
+      const diagLine = context.diagnostics[0]?.range.start.line ?? range.start.line;
+      const fixes = computeDiagramQuickFixes(document.getText(), kind, diagLine);
+
+      for (const fix of fixes) {
+        const action = new vscode.CodeAction(fix.title, vscode.CodeActionKind.QuickFix);
+        const edit = new vscode.WorkspaceEdit();
+        if (fix.kind === 'prepend') {
+          edit.insert(document.uri, new vscode.Position(0, 0), fix.newText);
+          if (kind === 'plantuml' && fix.title.includes('@enduml')) {
+            edit.insert(document.uri, new vscode.Position(document.lineCount, 0), '\n@enduml\n');
+          }
+        } else if (fix.kind === 'append') {
+          const lastLine = Math.max(0, document.lineCount - 1);
+          edit.insert(document.uri, new vscode.Position(lastLine, document.lineAt(lastLine).text.length), fix.newText);
+        } else if (fix.kind === 'replace_line' && fix.line !== undefined) {
+          edit.replace(document.uri, document.lineAt(fix.line).range, fix.newText);
         }
-      } else if (fix.kind === 'append') {
-        const lastLine = Math.max(0, document.lineCount - 1);
-        edit.insert(document.uri, new vscode.Position(lastLine, document.lineAt(lastLine).text.length), fix.newText);
-      } else if (fix.kind === 'replace_line' && fix.line !== undefined) {
-        edit.replace(document.uri, document.lineAt(fix.line).range, fix.newText);
+        action.edit = edit;
+        action.isPreferred = true;
+        syntaxActions.push(action);
       }
-      action.edit = edit;
-      action.isPreferred = true;
-      return action;
-    });
+    }
+
+    const errorDiag = context.diagnostics.find((d) => d.severity === vscode.DiagnosticSeverity.Error);
+    if (errorDiag) {
+      const aiFix = new vscode.CodeAction(`✨ ${t('Fix Diagram Syntax with AI')}`, vscode.CodeActionKind.QuickFix);
+      aiFix.diagnostics = [errorDiag];
+      aiFix.command = {
+        title: t('Fix Diagram Syntax with AI'),
+        command: 'drawGraph.ai.fixSyntax',
+        arguments: [document.uri, errorDiag.message],
+      };
+      syntaxActions.push(aiFix);
+    }
+
     return [...brokenFixes, ...syntaxActions];
   }
 }
@@ -681,7 +713,7 @@ export function registerLanguageFeatures(context: vscode.ExtensionContext): Diag
     vscode.languages.registerHoverProvider({ scheme: 'file' }, hoverProvider),
     vscode.languages.registerRenameProvider(diagramSelector, renameProvider),
     vscode.languages.registerColorProvider(allDiagramSelector, colorProvider),
-    vscode.languages.registerCodeActionsProvider(diagramSelector, codeActionProvider, {
+    vscode.languages.registerCodeActionsProvider(allDiagramSelector, codeActionProvider, {
       providedCodeActionKinds: [vscode.CodeActionKind.QuickFix],
     }),
     vscode.languages.registerSignatureHelpProvider({ language: 'plantuml' }, signatureHelpProvider, '(', ','),

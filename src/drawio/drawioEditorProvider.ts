@@ -1351,6 +1351,40 @@ export class DrawioEditorProvider implements vscode.CustomTextEditorProvider {
     return true;
   }
 
+  /**
+   * Applies an AI-generated or modified `<mxfile>` XML document to `uri`, preserving
+   * native VS Code Undo history on text/SVG diagrams and live-reloading any open Draw.io canvas.
+   */
+  async applyAiDiagramXml(uri: vscode.Uri, mxfileXml: string): Promise<boolean> {
+    if (isPngDiagramPath(uri.path)) {
+      const session = [...this.sessions].find((s) => s.uri.toString() === uri.toString());
+      if (!session) {
+        return false;
+      }
+      void session.panel.webview.postMessage({
+        type: 'load',
+        xml: mxfileXml,
+        title: displayName(uri),
+      });
+      await this.pngSyncMachines.get(uri.toString())?.schedule();
+      return true;
+    }
+
+    const doc = await vscode.workspace.openTextDocument(uri);
+    const nextText = isSvgDiagramPath(uri.path)
+      ? replaceEmbeddedDiagram(renderMxfileToPreviewSvg(mxfileXml), mxfileXml)
+      : mxfileXml;
+    const change = computeMinimalTextChange(doc.getText(), nextText);
+    if (!change) {
+      return true;
+    }
+    const edit = new vscode.WorkspaceEdit();
+    const start = doc.positionAt(change.startOffset);
+    const end = doc.positionAt(change.endOffset);
+    edit.replace(uri, new vscode.Range(start, end), change.replacement);
+    return vscode.workspace.applyEdit(edit);
+  }
+
   private getHtml(webview: vscode.Webview, drawioUrl = buildDrawioUrl()): string {
     const nonce = getNonce();
     const frameOrigin = drawioUrl.origin;

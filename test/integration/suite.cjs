@@ -1015,6 +1015,149 @@ test('v0.4 DOT & WaveDrom previews, broken-link audit & rename sync, Draw.io->Me
   }
 });
 
+test('v0.5 AI Diagram Studio, Multi-Provider SSE Streaming, SecretStorage, Syntax Auto-Fix, and Architecture Review work', async () => {
+  const http = require('node:http');
+  await vscode.commands.executeCommand('workbench.action.closeAllEditors');
+
+  let sawAuthHeader = '';
+  const mockServer = http.createServer((req, res) => {
+    sawAuthHeader = String(req.headers.authorization || '');
+    if (req.method === 'GET' && req.url === '/v1/models') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ data: [{ id: 'mock-architect-v1' }, { id: 'mock-r1-reasoner' }] }));
+      return;
+    }
+    if (req.method === 'POST' && req.url === '/v1/chat/completions') {
+      let body = '';
+      req.on('data', (c) => (body += c));
+      req.on('end', () => {
+        const parsed = JSON.parse(body || '{}');
+        const userText = String(parsed.messages?.[parsed.messages.length - 1]?.content || '');
+        let replyContent;
+        if (userText.includes('BROKEN_DIAGRAM') || userText.includes('Fix all syntax errors')) {
+          replyContent = '```mermaid\nflowchart TD\n  subgraph FixedGroup\n    A["Client"] --> B["API"]\n  end\n```\n- Closed subgraph block';
+        } else if (userText.includes('## Findings')) {
+          replyContent =
+            '<think>Reviewing architecture...</think>\n## Overview\nService gateway.\n\n## Findings\n- [HIGH] `AuthDB` — Single point of failure: Add synchronous replica.';
+        } else if (userText.includes('MODIFICATION_REQUEST')) {
+          replyContent =
+            '```mermaid\nflowchart LR\n  Gateway["API Gateway"] --> Redis[("Redis Cache")]\n  Redis --> Order["Order Service"]\n```\n- Added Redis Cache';
+        } else {
+          replyContent =
+            '<think>Designing clean topology...</think>\n```mermaid\nflowchart LR\n  Gateway["API Gateway"] --> Order["Order Service"]\n```\n- Created Gateway to Order flow';
+        }
+
+        res.writeHead(200, {
+          'Content-Type': 'text/event-stream; charset=utf-8',
+          'Cache-Control': 'no-cache',
+          Connection: 'keep-alive',
+        });
+        const mid = Math.floor(replyContent.length / 2);
+        res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: replyContent.slice(0, mid) } }] })}\n\n`);
+        res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: replyContent.slice(mid) } }] })}\n\n`);
+        res.write('data: [DONE]\n\n');
+        res.end();
+      });
+      return;
+    }
+    res.writeHead(404);
+    res.end();
+  });
+
+  await new Promise((resolve) => mockServer.listen(0, '127.0.0.1', resolve));
+  const port = mockServer.address().port;
+  const cfg = vscode.workspace.getConfiguration('drawGraph');
+  const brokenUri = file('ai-broken.mmd');
+
+  try {
+    await cfg.update('ai.provider', 'OpenAI Compatible', vscode.ConfigurationTarget.Global);
+    await cfg.update('ai.baseUrl', `http://127.0.0.1:${port}/v1`, vscode.ConfigurationTarget.Global);
+    await cfg.update('ai.model', '', vscode.ConfigurationTarget.Global);
+
+    // 1. SecretStorage API key + /v1/models auto-discovery
+    const keySaved = await vscode.commands.executeCommand(
+      'drawGraph.ai.setApiKey',
+      'OpenAI Compatible',
+      'sk-test-drawgraph-v05',
+    );
+    assert.equal(keySaved, true);
+
+    const models = await vscode.commands.executeCommand('drawGraph.ai.discoverModels', 'OpenAI Compatible', true);
+    assert.deepEqual(models, ['mock-architect-v1', 'mock-r1-reasoner']);
+    assert.equal(sawAuthHeader, 'Bearer sk-test-drawgraph-v05');
+
+    // 2. Prompt -> Diagram generation (SSE streaming + <think> stripping + live preview)
+    const genRes = await vscode.commands.executeCommand('drawGraph.ai.generateDiagram', {
+      prompt: 'Gateway to Order service',
+      format: 'mermaid',
+      openNewIfNoTarget: true,
+      skipConsent: true,
+    });
+    assert.ok(genRes && genRes.appliedUri, 'AI generated and opened new diagram');
+    assert.ok(genRes.code.includes('Order Service') && !genRes.code.includes('<think>'));
+    await waitFor(
+      'AI generated Mermaid preview rendered',
+      () => previewOf(genRes.appliedUri)?.status.state === 'rendered',
+      10000,
+    );
+
+    // 3. Natural-language diagram modification in-place
+    const modRes = await vscode.commands.executeCommand('drawGraph.ai.modifyDiagram', {
+      prompt: 'Insert Redis cache before Order Service',
+      targetUri: genRes.appliedUri,
+      applyImmediately: true,
+      skipConsent: true,
+    });
+    assert.ok(modRes && modRes.code.includes('Redis Cache'));
+    const updatedDoc = await vscode.workspace.openTextDocument(genRes.appliedUri);
+    assert.match(updatedDoc.getText(), /Redis Cache/);
+
+    // 4. Interactive AI Diagram Studio webview boots and reaches ready state
+    await vscode.commands.executeCommand('drawGraph.ai.openStudio', {
+      targetUri: genRes.appliedUri,
+      mode: 'modify',
+    });
+    await waitFor('AI Diagram Studio webview ready', () => api.diagnostics.aiStudio().ready === true, 10000);
+
+    // 5. Quick Fix CodeActionProvider + one-click AI syntax auto-repair
+    fs.writeFileSync(brokenUri.fsPath, 'flowchart TD\n  subgraph UnclosedGroup\n    A --> B\n');
+    const brokenDoc = await vscode.workspace.openTextDocument(brokenUri);
+    await waitFor(
+      'Broken diagram diagnostic emitted',
+      () => vscode.languages.getDiagnostics(brokenUri).some((d) => d.severity === vscode.DiagnosticSeverity.Error),
+      5000,
+    );
+    const actions = await vscode.commands.executeCommand(
+      'vscode.executeCodeActionProvider',
+      brokenUri,
+      new vscode.Range(0, 0, 1, 5),
+    );
+    assert.ok(
+      Array.isArray(actions) && actions.some((a) => a.command?.command === 'drawGraph.ai.fixSyntax'),
+      'Quick Fix lightbulb exposes Fix Diagram Syntax with AI',
+    );
+    await vscode.commands.executeCommand('drawGraph.ai.fixSyntax', brokenUri, 'Unclosed subgraph', true);
+    assert.match(brokenDoc.getText(), /subgraph FixedGroup[\s\S]*end/);
+
+    // 6. Architecture review structured findings
+    const explainRes = await vscode.commands.executeCommand('drawGraph.ai.explainDiagram', {
+      targetUri: genRes.appliedUri,
+      headless: true,
+      skipConsent: true,
+    });
+    assert.ok(explainRes && explainRes.findings.some((f) => f.severity === 'HIGH' && f.subject === 'AuthDB'));
+  } finally {
+    mockServer.close();
+    if (fs.existsSync(brokenUri.fsPath)) fs.unlinkSync(brokenUri.fsPath);
+    await vscode.commands.executeCommand('drawGraph.ai.clearApiKey', 'OpenAI Compatible', true);
+    await cfg.update('ai.provider', undefined, vscode.ConfigurationTarget.Global);
+    await cfg.update('ai.baseUrl', undefined, vscode.ConfigurationTarget.Global);
+    await cfg.update('ai.model', undefined, vscode.ConfigurationTarget.Global);
+    await vscode.commands.executeCommand('workbench.action.revertAndCloseActiveEditor');
+    await vscode.commands.executeCommand('workbench.action.closeAllEditors');
+  }
+});
+
 exports.run = async function run() {
   const failures = [];
   for (const { name, fn } of tests) {

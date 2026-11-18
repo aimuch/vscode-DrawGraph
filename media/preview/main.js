@@ -11,6 +11,8 @@
   const stage = $('stage');
   const canvas = $('canvas');
   const errorBox = $('error');
+  const aiFixBtn = document.getElementById('aiFixBtn');
+  const aiStudioBtn = document.getElementById('aiStudioBtn');
   const emptyBox = $('empty');
   const spinner = $('spinner');
   const info = $('info');
@@ -95,6 +97,7 @@
       case 'booting':
         spinner.hidden = true;
         errorBox.hidden = true;
+        if (aiFixBtn) aiFixBtn.hidden = true;
         emptyBox.hidden = true;
         canvas.classList.remove('stale');
         break;
@@ -105,6 +108,7 @@
       case 'rendered':
         spinner.hidden = true;
         errorBox.hidden = true;
+        if (aiFixBtn) aiFixBtn.hidden = true;
         emptyBox.hidden = true;
         canvas.classList.remove('stale');
         break;
@@ -112,12 +116,14 @@
         spinner.hidden = true;
         errorBox.textContent = errorMessageText || 'Unknown error';
         errorBox.hidden = false;
+        if (aiFixBtn) aiFixBtn.hidden = false;
         emptyBox.hidden = true;
         canvas.classList.toggle('stale', currentSvg !== null);
         break;
       case 'empty':
         spinner.hidden = true;
         errorBox.hidden = true;
+        if (aiFixBtn) aiFixBtn.hidden = true;
         emptyBox.hidden = false;
         canvas.classList.remove('stale');
         break;
@@ -938,6 +944,12 @@
   $('copyPng').addEventListener('click', () => {
     closeExportDropdown();
     void copyPng();
+  });
+  aiStudioBtn?.addEventListener('click', () => {
+    vscode.postMessage({ type: 'openAiStudio' });
+  });
+  aiFixBtn?.addEventListener('click', () => {
+    vscode.postMessage({ type: 'aiFixSyntax', errorHint: errorBox.textContent || '' });
   });
 
   let pointerMovedDuringDrag = false;

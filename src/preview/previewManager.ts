@@ -714,9 +714,16 @@ class DiagramPreview {
         break;
       case 'drawerAction':
         await handleSettingsDrawerAction(msg.action);
+        this.post({ type: 'settingsState', settings: getSettingsSnapshot() });
         break;
       case 'openExtensionSettings':
         await openExtensionSettingsInVscode();
+        break;
+      case 'openAiStudio':
+        await vscode.commands.executeCommand('drawGraph.ai.openStudio', { targetUri: this.uri });
+        break;
+      case 'aiFixSyntax':
+        await vscode.commands.executeCommand('drawGraph.ai.fixSyntax', this.uri, msg.errorHint);
         break;
     }
   }
@@ -792,6 +799,7 @@ class DiagramPreview {
     <button id="nextItem" class="nav-btn" title="${tr('Next diagram or page (])')}" hidden>▶</button>
     <span class="toolbar-spacer"></span>
     <span id="spinner" hidden>${tr('Rendering…')}</span>
+    <button id="aiStudioBtn" type="button" title="${tr('Open AI Diagram Studio')}">✨ AI</button>
     <button id="settingsToggle" title="${tr('Settings')}">⚙</button>
   </div>
   <div id="stage">
@@ -814,6 +822,7 @@ class DiagramPreview {
     </div>
   </div>
   <pre id="error" hidden></pre>
+  <button id="aiFixBtn" type="button" hidden>✨ ${tr('Fix with AI')}</button>
   <div id="empty" hidden>${tr('Nothing to preview yet.')}</div>
   ${mermaidScript}
   <script nonce="${nonce}" src="${media('shared', 'settingsDrawer.js')}"></script>

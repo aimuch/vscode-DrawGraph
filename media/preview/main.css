@@ -332,7 +332,7 @@ body:not(.vscode-dark) #minimap {
   max-height: 40%;
   overflow: auto;
   margin: 0;
-  padding: 10px 12px;
+  padding: 10px 110px 10px 12px;
   white-space: pre-wrap;
   font-family: var(--vscode-editor-font-family);
   font-size: var(--vscode-editor-font-size);
@@ -340,6 +340,27 @@ body:not(.vscode-dark) #minimap {
   background: var(--vscode-inputValidation-errorBackground, var(--vscode-editor-background));
   border: 1px solid var(--vscode-inputValidation-errorBorder, var(--vscode-errorForeground));
   border-radius: 3px;
+}
+
+#aiFixBtn {
+  position: absolute;
+  right: 22px;
+  bottom: 20px;
+  z-index: 16;
+  padding: 4px 10px;
+  border-radius: 4px;
+  border: none;
+  background: var(--vscode-button-background);
+  color: var(--vscode-button-foreground);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.25);
+}
+
+#aiFixBtn:hover {
+  background: var(--vscode-button-hoverBackground);
 }
 
 #empty {

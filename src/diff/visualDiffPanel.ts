@@ -33,9 +33,16 @@ export interface DiffSnapshot {
 }
 
 interface DiffSession {
-  mode: 'git' | 'files';
+  mode: 'git' | 'files' | 'memory';
   targetUri: vscode.Uri;
   leftUri?: vscode.Uri;
+  memoryPayload?: {
+    extHint: string;
+    beforeBytes: Uint8Array;
+    afterBytes: Uint8Array;
+    beforeLabel: string;
+    afterLabel: string;
+  };
   gitRef: string;
   pageIndex: number;
   pages: string[];
@@ -325,6 +332,40 @@ export class VisualDiffManager implements vscode.Disposable {
     return true;
   }
 
+  /**
+   * Opens an instant in-memory visual comparison (Side-by-Side, Swipe, Onion / Pixel Diff)
+   * without writing temporary files to disk — used by AI Diagram Studio to preview proposed
+   * diagram edits before applying them.
+   */
+  async openInMemoryComparison(
+    title: string,
+    format: 'mermaid' | 'plantuml' | 'drawio' | 'dot' | 'wavedrom',
+    beforeSource: string,
+    afterSource: string,
+    beforeLabel = t('Current Diagram'),
+    afterLabel = t('AI Proposed'),
+  ): Promise<boolean> {
+    const extMap: Record<typeof format, string> = {
+      mermaid: '.mmd',
+      plantuml: '.puml',
+      drawio: '.drawio',
+      dot: '.dot',
+      wavedrom: '.wavedrom',
+    };
+    const extHint = extMap[format];
+    const virtualUri = vscode.Uri.parse(`untitled:ai-diff${extHint}`);
+    const session = this.createPanelSession('memory', virtualUri, title, 'AI');
+    session.memoryPayload = {
+      extHint,
+      beforeBytes: Buffer.from(beforeSource, 'utf8'),
+      afterBytes: Buffer.from(afterSource, 'utf8'),
+      beforeLabel,
+      afterLabel,
+    };
+    await this.refreshSession(session);
+    return true;
+  }
+
   private buildUiLabels(): Record<string, string> {
     return {
       side: t('Side-by-Side'),
@@ -345,23 +386,34 @@ export class VisualDiffManager implements vscode.Disposable {
     let leftBytes: Uint8Array | undefined;
     let leftLabel: string;
     let leftPath = session.targetUri.path;
+    let rightBytes: Uint8Array | undefined;
+    let rightLabel: string;
+    let rightPath = session.targetUri.path;
 
-    if (session.mode === 'git') {
+    if (session.mode === 'memory' && session.memoryPayload) {
+      leftPath = `before${session.memoryPayload.extHint}`;
+      rightPath = `after${session.memoryPayload.extHint}`;
+      leftBytes = session.memoryPayload.beforeBytes;
+      rightBytes = session.memoryPayload.afterBytes;
+      leftLabel = session.memoryPayload.beforeLabel;
+      rightLabel = session.memoryPayload.afterLabel;
+    } else if (session.mode === 'git') {
       const gitData = await readGitRefBytes(session.targetUri, session.gitRef);
       leftBytes = gitData.bytes;
       leftLabel = gitData.refLabel;
+      rightBytes = await readWorkingBytes(session.targetUri);
+      rightLabel = t('Working Tree');
     } else {
       leftPath = session.leftUri!.path;
       leftBytes = await readWorkingBytes(session.leftUri!);
       leftLabel = path.basename(leftPath);
+      rightBytes = await readWorkingBytes(session.targetUri);
+      rightLabel = path.basename(session.targetUri.path);
     }
-
-    const rightBytes = await readWorkingBytes(session.targetUri);
-    const rightLabel = session.mode === 'git' ? t('Working Tree') : path.basename(session.targetUri.path);
 
     // Discover multi-page Draw.io tabs and compute unified bounding box so unchanged shapes stay aligned!
     const mxLeft = extractRawMxfileText(leftPath, leftBytes);
-    const mxRight = extractRawMxfileText(session.targetUri.path, rightBytes);
+    const mxRight = extractRawMxfileText(rightPath, rightBytes);
     const leftPages = mxLeft ? extractDrawioPages(mxLeft) : [];
     const rightPages = mxRight ? extractDrawioPages(mxRight) : [];
     const maxPages = Math.max(leftPages.length, rightPages.length);
@@ -377,7 +429,7 @@ export class VisualDiffManager implements vscode.Disposable {
     const useUnifiedMxfile =
       Boolean(mxLeft || mxRight) &&
       (/\.(?:drawio|dio|xml)$/i.test(leftPath) || session.pageIndex > 0) &&
-      (/\.(?:drawio|dio|xml)$/i.test(session.targetUri.path) || session.pageIndex > 0);
+      (/\.(?:drawio|dio|xml)$/i.test(rightPath) || session.pageIndex > 0);
 
     const unifiedBounds = useUnifiedMxfile
       ? unionMxfileBounds(
@@ -397,7 +449,11 @@ export class VisualDiffManager implements vscode.Disposable {
           leftPath,
           leftBytes,
           leftLabel,
-          session.leftUri?.scheme === 'file' ? path.dirname(session.leftUri.fsPath) : path.dirname(session.targetUri.fsPath),
+          session.leftUri?.scheme === 'file'
+            ? path.dirname(session.leftUri.fsPath)
+            : session.targetUri.scheme === 'file'
+              ? path.dirname(session.targetUri.fsPath)
+              : undefined,
           session.pageIndex,
         );
 
@@ -409,7 +465,7 @@ export class VisualDiffManager implements vscode.Disposable {
           payload: renderMxfileToPreviewSvg(mxRight, session.pageIndex, unifiedBounds),
         }
       : await this.normalizeDiagramBytes(
-          session.targetUri.path,
+          rightPath,
           rightBytes,
           rightLabel,
           session.targetUri.scheme === 'file' ? path.dirname(session.targetUri.fsPath) : undefined,
@@ -506,7 +562,7 @@ export class VisualDiffManager implements vscode.Disposable {
   }
 
   private createPanelSession(
-    mode: 'git' | 'files',
+    mode: 'git' | 'files' | 'memory',
     targetUri: vscode.Uri,
     title: string,
     gitRef: string,

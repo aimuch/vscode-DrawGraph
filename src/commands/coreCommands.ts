@@ -638,6 +638,16 @@ export function registerCoreCommands({ context, drawio, previews, settingsPanel 
             run: () => previews.open(targetUri, true),
           },
           {
+            id: 'aiModify',
+            label: `$(sparkle) ${t('AI Modify / Optimize Diagram…')}`,
+            run: () => vscode.commands.executeCommand('drawGraph.ai.openStudio', { mode: 'modify', targetUri }),
+          },
+          {
+            id: 'aiExplain',
+            label: `$(comment-discussion) ${t('AI Architecture Review & Explain')}`,
+            run: () => vscode.commands.executeCommand('drawGraph.ai.explainDiagram', targetUri),
+          },
+          {
             id: 'visualDiff',
             label: `$(diff) ${t('Visual Diagram Diff vs Git HEAD')}`,
             run: () => vscode.commands.executeCommand('drawGraph.visualDiff', targetUri),
@@ -750,6 +760,18 @@ export function registerCoreCommands({ context, drawio, previews, settingsPanel 
     }
 
     const creation: QuickActionItem[] = [
+      {
+        id: 'aiStudio',
+        label: `$(sparkle) ${t('AI Diagram Studio…')}`,
+        detail: t('Generate, modify, optimize, fix syntax, or review architecture with AI'),
+        run: () => vscode.commands.executeCommand('drawGraph.ai.openStudio'),
+      },
+      {
+        id: 'aiGenerate',
+        label: `$(wand) ${t('Generate Diagram from Prompt with AI…')}`,
+        detail: t('Create Mermaid, Draw.io, PlantUML, Graphviz DOT, or WaveDrom from natural language'),
+        run: () => vscode.commands.executeCommand('drawGraph.ai.generateDiagram'),
+      },
       {
         id: 'newDrawio',
         label: `$(edit) ${t('New Draw.io Diagram')}`,

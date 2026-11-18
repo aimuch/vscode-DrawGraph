@@ -142,6 +142,12 @@
       if (key === 'language') {
         state.language = value;
         state.resolvedLanguage = activeLang();
+      } else if (key === 'ai.provider' && state.ai) {
+        state.ai.provider = value;
+      } else if (key === 'ai.baseUrl' && state.ai) {
+        state.ai.baseUrl = value;
+      } else if (key === 'ai.model' && state.ai) {
+        state.ai.model = value;
       } else if (key.startsWith('drawio.')) {
         state.drawio[key.slice(7)] = value;
       } else if (key === 'mermaid.theme') {
@@ -336,6 +342,119 @@
           }),
         ),
       );
+
+      // 1b. AI Diagram Assistant section
+      let secAi = null;
+      if (state.ai) {
+        const ai = state.ai;
+        const providers = Array.isArray(ai.providers) ? ai.providers : [];
+        const selectedPreset = providers.find((/** @type {any} */ p) => p.id === ai.provider) || null;
+        const providerSelect = /** @type {HTMLSelectElement} */ (
+          h(
+            'select',
+            {
+              className: 'settingsSelect',
+              onChange: () => sendUpdate('ai.provider', providerSelect.value),
+            },
+            ...providers.map((/** @type {any} */ p) =>
+              h('option', { value: p.id, selected: p.id === ai.provider }, p.name || p.id),
+            ),
+          )
+        );
+        providerSelect.value = ai.provider || 'VS Code';
+
+        const isBuiltIn = ai.provider === 'VS Code';
+        const keyBadgeText = isBuiltIn
+          ? tr('aiKeyNotNeeded')
+          : ai.hasApiKey
+            ? tr('aiKeyStored')
+            : ai.requiresApiKey
+              ? tr('aiKeyMissing')
+              : tr('aiKeyNotNeeded');
+
+        secAi = h(
+          'div',
+          { className: 'settingsSection' },
+          h('h3', null, tr('secAi')),
+          h(
+            'div',
+            { className: 'settingsRow' },
+            h('span', { className: 'settingsLabel' }, tr('lblAiProvider')),
+            providerSelect,
+            h(
+              'button',
+              {
+                type: 'button',
+                className: 'settingsActionBtn',
+                onClick: () => opts.postMessage({ type: 'drawerAction', action: 'openAiStudio' }),
+              },
+              tr('btnOpenAiStudio'),
+            ),
+          ),
+          h(
+            'div',
+            { className: 'settingsCard' },
+            h(
+              'div',
+              { className: 'settingsOfflineRow' },
+              h('span', { className: ai.hasApiKey ? 'settingsBadge ready' : 'settingsBadge' }, keyBadgeText),
+              h(
+                'div',
+                { className: 'settingsActionGroup' },
+                !isBuiltIn &&
+                  h(
+                    'button',
+                    {
+                      type: 'button',
+                      className: 'settingsActionBtn',
+                      onClick: () => opts.postMessage({ type: 'drawerAction', action: 'setAiApiKey' }),
+                    },
+                    tr('btnSetApiKey'),
+                  ),
+                !isBuiltIn &&
+                  ai.hasApiKey &&
+                  h(
+                    'button',
+                    {
+                      type: 'button',
+                      className: 'settingsActionBtn danger',
+                      onClick: () => opts.postMessage({ type: 'drawerAction', action: 'clearAiApiKey' }),
+                    },
+                    tr('btnClearApiKey'),
+                  ),
+                h(
+                  'button',
+                  {
+                    type: 'button',
+                    className: 'settingsActionBtn',
+                    onClick: () => opts.postMessage({ type: 'drawerAction', action: 'discoverAiModels' }),
+                  },
+                  tr('btnDiscoverModels'),
+                ),
+              ),
+            ),
+            h(
+              'div',
+              { className: 'settingsGrid' },
+              !isBuiltIn && h('label', { className: 'settingsKey' }, tr('lblAiBaseUrl')),
+              !isBuiltIn &&
+                buildTextInput(
+                  'ai.baseUrl',
+                  ai.baseUrl || '',
+                  (selectedPreset && selectedPreset.defaultBaseUrl) || tr('phAiBaseUrl'),
+                  untrusted,
+                ),
+              h('label', { className: 'settingsKey' }, tr('lblAiModel')),
+              buildTextInput(
+                'ai.model',
+                ai.model || '',
+                (selectedPreset && selectedPreset.defaultModel) || tr('phAiModel'),
+                false,
+              ),
+            ),
+          ),
+        );
+      }
 
       // 2. Draw.io section (including Offline Engine Pack manager)
       const packInstalled = Boolean(state.drawio.offlinePackInstalled);
@@ -582,7 +701,8 @@
         ),
       );
 
-      contentEl.replaceChildren(secLang, secDrawio, secPreview, secPlantuml);
+      const sections = [secLang, ...(secAi ? [secAi] : []), secDrawio, secPreview, secPlantuml];
+      contentEl.replaceChildren(...sections);
     }
 
     zhQuickBtn.addEventListener('click', () => sendUpdate('language', 'Simplified Chinese'));

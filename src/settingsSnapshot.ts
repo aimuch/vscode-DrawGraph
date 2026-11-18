@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { AI_PROVIDER_IDS, AI_PROVIDER_PRESETS, getAiConfigSync } from './ai/aiProviders';
 import type { OfflinePackStatus } from './drawio/offlinePackManager';
 import { getLanguage, getLanguageSetting, type LanguageSetting, type ResolvedLanguage } from './l10n';
 import { SETTINGS_DRAWER_STRINGS } from './settingsStrings';
@@ -10,6 +11,17 @@ export interface SettingsSnapshot {
   language: LanguageSetting;
   resolvedLanguage: ResolvedLanguage;
   i18n: Record<'en' | 'zh-cn', Record<string, string>>;
+  ai: {
+    provider: string;
+    baseUrl: string;
+    effectiveBaseUrl: string;
+    model: string;
+    effectiveModel: string;
+    hasApiKey: boolean;
+    requiresApiKey: boolean;
+    autoDiscoverModels: boolean;
+    providers: ReadonlyArray<{ id: string; name: string; defaultBaseUrl: string; defaultModel: string }>;
+  };
   drawio: {
     theme: string;
     ui: string;
@@ -55,6 +67,7 @@ export function setOfflinePackStatusProvider(provider: (() => OfflinePackStatus)
 }
 
 const RESTRICTED_SETTINGS = new Set([
+  'ai.baseUrl',
   'drawio.url',
   'plantuml.render',
   'plantuml.server',
@@ -65,6 +78,9 @@ const RESTRICTED_SETTINGS = new Set([
 
 const ALLOWED_SETTINGS = new Set([
   'language',
+  'ai.provider',
+  'ai.baseUrl',
+  'ai.model',
   'drawio.theme',
   'drawio.ui',
   'drawio.svgColorScheme',
@@ -97,12 +113,29 @@ const ALLOWED_SETTINGS = new Set([
 export function getSettingsSnapshot(): SettingsSnapshot {
   const cfg = config();
   const offline = offlineStatusProvider?.() ?? { installed: false, fileCount: 0 };
+  const aiSnap = getAiConfigSync();
   return {
     isTrusted: vscode.workspace.isTrusted,
     vscodeLanguage: vscode.env.language || 'en',
     language: getLanguageSetting(),
     resolvedLanguage: getLanguage(),
     i18n: SETTINGS_DRAWER_STRINGS,
+    ai: {
+      provider: aiSnap.provider,
+      baseUrl: aiSnap.baseUrl,
+      effectiveBaseUrl: aiSnap.effectiveBaseUrl,
+      model: aiSnap.model,
+      effectiveModel: aiSnap.effectiveModel,
+      hasApiKey: aiSnap.hasApiKey,
+      requiresApiKey: aiSnap.requiresApiKey,
+      autoDiscoverModels: aiSnap.autoDiscoverModels,
+      providers: AI_PROVIDER_IDS.map((id) => ({
+        id,
+        name: AI_PROVIDER_PRESETS[id].name,
+        defaultBaseUrl: AI_PROVIDER_PRESETS[id].defaultBaseUrl,
+        defaultModel: AI_PROVIDER_PRESETS[id].defaultModel,
+      })),
+    },
     drawio: {
       theme: cfg.get<string>('drawio.theme', 'auto'),
       ui: cfg.get<string>('drawio.ui', 'kennedy'),
@@ -174,6 +207,18 @@ export async function handleSettingsDrawerAction(action: unknown): Promise<void>
       break;
     case 'removeOfflinePack':
       await vscode.commands.executeCommand('drawGraph.drawio.removeOfflinePack');
+      break;
+    case 'setAiApiKey':
+      await vscode.commands.executeCommand('drawGraph.ai.setApiKey');
+      break;
+    case 'clearAiApiKey':
+      await vscode.commands.executeCommand('drawGraph.ai.clearApiKey');
+      break;
+    case 'discoverAiModels':
+      await vscode.commands.executeCommand('drawGraph.ai.discoverModels');
+      break;
+    case 'openAiStudio':
+      await vscode.commands.executeCommand('drawGraph.ai.openStudio');
       break;
   }
 }

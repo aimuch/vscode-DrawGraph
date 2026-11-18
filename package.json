@@ -2,7 +2,7 @@
   "name": "drawgraph",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "publisher": "drawgraph",
   "icon": "media/icons/icon.png",
   "license": "UNLICENSED",
@@ -36,7 +36,10 @@
     "wavedrom",
     "openapi",
     "protobuf",
-    "prisma"
+    "prisma",
+    "ai",
+    "llm",
+    "architecture"
   ],
   "main": "./dist/extension.js",
   "l10n": "./l10n",
@@ -44,6 +47,7 @@
     "untrustedWorkspaces": {
       "supported": "limited",
       "restrictedConfigurations": [
+        "drawGraph.ai.baseUrl",
         "drawGraph.drawio.url",
         "drawGraph.drawio.customLibraries",
         "drawGraph.plantuml.render",
@@ -77,7 +81,17 @@
     "onCommand:drawGraph.generateFromSpec",
     "onCommand:drawGraph.generateInfraDiagram",
     "onCommand:drawGraph.checkCodeLinks",
-    "onCommand:drawGraph.drawio.createWorkspaceLibrary"
+    "onCommand:drawGraph.drawio.createWorkspaceLibrary",
+    "onCommand:drawGraph.ai.openStudio",
+    "onCommand:drawGraph.ai.generateDiagram",
+    "onCommand:drawGraph.ai.generateFromSelection",
+    "onCommand:drawGraph.ai.modifyDiagram",
+    "onCommand:drawGraph.ai.optimizeDiagram",
+    "onCommand:drawGraph.ai.fixSyntax",
+    "onCommand:drawGraph.ai.explainDiagram",
+    "onCommand:drawGraph.ai.setApiKey",
+    "onCommand:drawGraph.ai.clearApiKey",
+    "onCommand:drawGraph.ai.discoverModels"
   ],
   "contributes": {
     "views": {
@@ -558,6 +572,66 @@
         "command": "drawGraph.openCodeTarget",
         "title": "%command.drawio.navigateCodeLinks%",
         "category": "DrawGraph"
+      },
+      {
+        "command": "drawGraph.ai.openStudio",
+        "title": "%command.ai.openStudio%",
+        "category": "DrawGraph",
+        "icon": "$(sparkle)"
+      },
+      {
+        "command": "drawGraph.ai.generateDiagram",
+        "title": "%command.ai.generateDiagram%",
+        "category": "DrawGraph",
+        "icon": "$(sparkle)"
+      },
+      {
+        "command": "drawGraph.ai.generateFromSelection",
+        "title": "%command.ai.generateFromSelection%",
+        "category": "DrawGraph",
+        "icon": "$(sparkle)"
+      },
+      {
+        "command": "drawGraph.ai.modifyDiagram",
+        "title": "%command.ai.modifyDiagram%",
+        "category": "DrawGraph",
+        "icon": "$(wand)"
+      },
+      {
+        "command": "drawGraph.ai.optimizeDiagram",
+        "title": "%command.ai.optimizeDiagram%",
+        "category": "DrawGraph",
+        "icon": "$(wand)"
+      },
+      {
+        "command": "drawGraph.ai.fixSyntax",
+        "title": "%command.ai.fixSyntax%",
+        "category": "DrawGraph",
+        "icon": "$(wrench)"
+      },
+      {
+        "command": "drawGraph.ai.explainDiagram",
+        "title": "%command.ai.explainDiagram%",
+        "category": "DrawGraph",
+        "icon": "$(comment-discussion)"
+      },
+      {
+        "command": "drawGraph.ai.setApiKey",
+        "title": "%command.ai.setApiKey%",
+        "category": "DrawGraph",
+        "icon": "$(key)"
+      },
+      {
+        "command": "drawGraph.ai.clearApiKey",
+        "title": "%command.ai.clearApiKey%",
+        "category": "DrawGraph",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "drawGraph.ai.discoverModels",
+        "title": "%command.ai.discoverModels%",
+        "category": "DrawGraph",
+        "icon": "$(search)"
       }
     ],
     "menus": {
@@ -656,9 +730,31 @@
           "command": "drawGraph.convert.drawioToPlantuml",
           "when": "activeCustomEditorId == drawGraph.drawio || activeCustomEditorId == drawGraph.drawioPng",
           "group": "1_drawgraph@10"
+        },
+        {
+          "command": "drawGraph.ai.openStudio",
+          "when": "activeCustomEditorId == drawGraph.drawio || activeCustomEditorId == drawGraph.drawioPng || editorLangId == mermaid || editorLangId == plantuml || editorLangId == dot || editorLangId == wavedrom",
+          "group": "0_ai@1"
+        },
+        {
+          "command": "drawGraph.ai.explainDiagram",
+          "when": "activeCustomEditorId == drawGraph.drawio || activeCustomEditorId == drawGraph.drawioPng || editorLangId == mermaid || editorLangId == plantuml || editorLangId == dot || editorLangId == wavedrom",
+          "group": "0_ai@2"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "drawGraph.ai.generateFromSelection",
+          "when": "editorHasSelection",
+          "group": "7_modification@1"
         }
       ],
       "view/title": [
+        {
+          "command": "drawGraph.ai.openStudio",
+          "when": "view == drawGraph.diagramExplorer",
+          "group": "navigation@0"
+        },
         {
           "command": "drawGraph.visualDiffBranch",
           "when": "view == drawGraph.diagramExplorer",
@@ -676,6 +772,16 @@
         }
       ],
       "view/item/context": [
+        {
+          "command": "drawGraph.ai.openStudio",
+          "when": "view == drawGraph.diagramExplorer && viewItem =~ /^diagramFile\\.(drawio|mermaid|plantuml|dot|wavedrom)$/",
+          "group": "0_ai@1"
+        },
+        {
+          "command": "drawGraph.ai.explainDiagram",
+          "when": "view == drawGraph.diagramExplorer && viewItem =~ /^diagramFile\\.(drawio|mermaid|plantuml|dot|wavedrom)$/",
+          "group": "0_ai@2"
+        },
         {
           "command": "drawGraph.visualDiff",
           "when": "view == drawGraph.diagramExplorer && viewItem =~ /^diagramFile\\.(drawio|mermaid|plantuml|dot|wavedrom)$/",
@@ -916,6 +1022,48 @@
           ],
           "default": "Auto",
           "markdownDescription": "%config.language%"
+        },
+        "drawGraph.ai.provider": {
+          "type": "string",
+          "scope": "machine",
+          "enum": [
+            "VS Code",
+            "DeepSeek",
+            "Kimi",
+            "Doubao",
+            "Qwen",
+            "OpenAI",
+            "Ollama",
+            "Magpie",
+            "CC Switch",
+            "OpenAI Compatible"
+          ],
+          "enumDescriptions": [
+            "%config.ai.provider.vscode%",
+            "%config.ai.provider.deepseek%",
+            "%config.ai.provider.kimi%",
+            "%config.ai.provider.doubao%",
+            "%config.ai.provider.qwen%",
+            "%config.ai.provider.openai%",
+            "%config.ai.provider.ollama%",
+            "%config.ai.provider.magpie%",
+            "%config.ai.provider.ccswitch%",
+            "%config.ai.provider.compatible%"
+          ],
+          "default": "VS Code",
+          "markdownDescription": "%config.ai.provider%"
+        },
+        "drawGraph.ai.baseUrl": {
+          "type": "string",
+          "scope": "machine",
+          "default": "",
+          "markdownDescription": "%config.ai.baseUrl%"
+        },
+        "drawGraph.ai.model": {
+          "type": "string",
+          "scope": "machine",
+          "default": "",
+          "markdownDescription": "%config.ai.model%"
         },
         "drawGraph.drawio.url": {
           "type": "string",

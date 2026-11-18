@@ -1,5 +1,14 @@
 import type { SettingsSnapshot } from '../settingsSnapshot';
 
+export type SettingsDrawerActionId =
+  | 'downloadOfflinePack'
+  | 'importOfflinePack'
+  | 'removeOfflinePack'
+  | 'setAiApiKey'
+  | 'clearAiApiKey'
+  | 'discoverAiModels'
+  | 'openAiStudio';
+
 export type PreviewRenderState = 'pending' | 'rendered' | 'error' | 'empty';
 
 /** Discriminated union of all messages sent from the Diagram Preview webview to the Extension Host. */
@@ -25,8 +34,10 @@ export type PreviewToHostMessage =
   | { type: 'codeLink'; target: string; fallbackLabel?: string }
   | { type: 'requestSettings' }
   | { type: 'updateSetting'; key: string; value: unknown }
-  | { type: 'drawerAction'; action: 'downloadOfflinePack' | 'importOfflinePack' | 'removeOfflinePack' }
-  | { type: 'openExtensionSettings' };
+  | { type: 'drawerAction'; action: SettingsDrawerActionId }
+  | { type: 'openExtensionSettings' }
+  | { type: 'openAiStudio' }
+  | { type: 'aiFixSyntax'; errorHint?: string };
 
 /** Discriminated union of all messages sent from the Extension Host to the Diagram Preview webview. */
 export type HostToPreviewMessage =
@@ -62,5 +73,7 @@ export type DrawioToHostMessage =
   | { type: 'error'; message: string }
   | { type: 'requestSettings' }
   | { type: 'updateSetting'; key: string; value: unknown }
-  | { type: 'drawerAction'; action: 'downloadOfflinePack' | 'importOfflinePack' | 'removeOfflinePack' }
-  | { type: 'openExtensionSettings' };
+  | { type: 'drawerAction'; action: SettingsDrawerActionId }
+  | { type: 'openExtensionSettings' }
+  | { type: 'openAiStudio' }
+  | { type: 'aiFixSyntax'; errorHint?: string };

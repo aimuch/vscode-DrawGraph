@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { onDidChangeAiApiKey } from './ai/aiProviders';
 import { t } from './l10n';
 import {
   applySettingUpdate,
@@ -18,6 +19,9 @@ export class SettingsPanelManager {
           this.panel.title = t('DrawGraph Settings');
           void this.panel.webview.postMessage({ type: 'settingsState', settings: getSettingsSnapshot() });
         }
+      }),
+      onDidChangeAiApiKey(() => {
+        this.refresh();
       }),
       { dispose: () => this.panel?.dispose() },
     );

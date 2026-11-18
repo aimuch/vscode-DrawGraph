@@ -1,5 +1,8 @@
 import * as vscode from 'vscode';
+import { AiDiagramStudioManager } from './ai/aiDiagramStudio';
+import { initAiSecretStorage } from './ai/aiProviders';
 import { registerAdvancedCommands } from './commands/advancedCommands';
+import { registerAiCommands } from './commands/aiCommands';
 import { registerCoreCommands } from './commands/coreCommands';
 import { VisualDiffManager } from './diff/visualDiffPanel';
 import { DrawioEditorProvider } from './drawio/drawioEditorProvider';
@@ -16,6 +19,7 @@ import type { TransitionRecord } from './stateMachine';
 
 export function activate(context: vscode.ExtensionContext) {
   initL10n(context.extensionPath);
+  initAiSecretStorage(context);
 
   const log = vscode.window.createOutputChannel('DrawGraph', { log: true });
   const traceTransition = (rec: TransitionRecord, machineId: string) => {
@@ -31,6 +35,7 @@ export function activate(context: vscode.ExtensionContext) {
   const previews = new PreviewManager(context, diagnostics, traceTransition);
   const settingsPanel = new SettingsPanelManager(context);
   const visualDiff = new VisualDiffManager(context, previews);
+  const aiStudio = new AiDiagramStudioManager(context, drawio, previews, visualDiff);
   const explorer = new DiagramExplorerProvider();
   const codeLinkMaintenance = new CodeLinkMaintenanceService();
   const treeView = vscode.window.createTreeView('drawGraph.diagramExplorer', {
@@ -47,6 +52,7 @@ export function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(
     offlinePack,
     visualDiff,
+    aiStudio,
     explorer,
     codeLinkMaintenance,
     treeView,
@@ -59,6 +65,7 @@ export function activate(context: vscode.ExtensionContext) {
   );
 
   registerCoreCommands({ context, drawio, previews, settingsPanel });
+  registerAiCommands({ context, aiStudio });
   registerAdvancedCommands({
     context,
     drawio,
@@ -78,6 +85,7 @@ export function activate(context: vscode.ExtensionContext) {
       drawioEditors: () => drawio.snapshot(),
       drawioAction: (uri: string, action: Record<string, unknown>) => drawio.postAction(uri, action),
       visualDiffs: () => visualDiff.snapshot(),
+      aiStudio: () => aiStudio.snapshot(),
       offlinePack: () => offlinePack.getStatus(),
       diagramExplorer: () => explorer.snapshot(),
       machines: () => [...drawio.machines(), ...previews.machines()],

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.0
+
+- **Multi-Provider AI Engine & OS Keychain SecretStorage (`src/ai/aiProviders.ts`)**: Added first-class support for **VS Code Built-in LM (`vscode.lm`)**, **DeepSeek**, **Kimi (Moonshot)**, **Doubao (Volcengine Ark)**, **Qwen (DashScope)**, **OpenAI**, **Ollama**, **Magpie Gateway** (auto-discovering `~/.config/magpie/gateway.json`), **CC Switch Gateway**, and **OpenAI Compatible** endpoints, with `GET /models` auto-discovery (`DrawGraph: Discover Available AI Models…`), SSE streaming + `<think>` reasoning-tag filtering, per-host privacy consent, `machine`-scoped configuration hardening, and API keys stored exclusively in `vscode.SecretStorage`.
+- **Interactive AI Diagram Studio (`DrawGraph: Open AI Diagram Studio`)**: Side-by-side conversational diagramming workbench across all 5 formats (**Mermaid**, **Draw.io**, **PlantUML**, **Graphviz DOT**, **WaveDrom**) with 5 specialized modes (**Generate**, **Modify**, **Optimize** with 5 presets `layout`/`style`/`simplify`/`resilience`/`translate`, **Fix Syntax**, and **Explain & Architecture Review** with `[HIGH]`/`[MEDIUM]`/`[LOW]`/`[INFO]` findings cards), optional active-editor/selection code context, live rendered SVG preview, and one-click **Apply to Active Diagram** (preserving native Undo on text diagrams and live-updating open `.drawio`/`.drawio.svg`/`.drawio.png` editors).
+- **In-Memory Before ↔ After Visual Diff Preview for AI Edits**: Preview AI-proposed diagram modifications in Side-by-Side, Swipe, or Onion/Pixel Diff mode (`VisualDiffManager.openInMemoryComparison`) before applying them to your file.
+- **One-Click AI Syntax Auto-Repair & Editor Integrations**: Wired `DrawGraph: Fix Diagram Syntax with AI` into VS Code's lightbulb **Quick Fix (`CodeActionProvider`)** on diagram diagnostics AND an inline **`✨ Fix with AI`** button inside the Diagram Preview error banner, plus editor selection context menu (`Generate Diagram from Selection with AI…`), CodeLens (`$(sparkle) AI Studio`), Quick Menu, and full Settings Drawer AI configuration (`中 / EN`).
+
 ## 0.4.0
 
 - **Broken Code-Link Diagnostics & Refactor-Aware Path Sync (`DrawGraph: Audit Broken Diagram Code Links`)**: Automatically flags missing local file references inside diagrams in the VS Code **Problems** panel with one-click Quick Fixes to relocated files, and listens to `workspace.onDidRenameFiles` (`drawGraph.codeLinks.syncOnFileRename`) to rewrite relative file paths across `.drawio`, `.drawio.svg`, `.mmd`, `.puml`, and `.md` diagrams when source files move.

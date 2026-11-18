@@ -22,12 +22,22 @@ DrawGraph 是一个全功能工程架构与硬件图表 VS Code 插件，把五�
 然后在 VS Code 扩展视图右上角的 `…` 菜单中选择「从 VSIX 安装…」，或者在终端运行：
 
 ```bash
-code --install-extension drawgraph-0.4.0.vsix
+code --install-extension drawgraph-0.5.0.vsix
 ```
 
 安装包默认保持超轻量（约 1.7 MB，已内嵌 Mermaid）；如需在无外网环境下使用 draw.io，可在设置抽屉中一键**下载或导入官方 `draw.war` / `.zip` 离线引擎包**（由本地 `127.0.0.1` 服务加载），见下文“渲染方式与隐私”。
 
 ## 功能
+
+### ✨ AI 图表工坊（AI Diagram Studio）与多服务商大模型引擎
+- **10 种模型服务商开箱即用**：内置支持 **VS Code 内置语言模型（Copilot Chat，零配置免 Key）**、**DeepSeek**、**Kimi（月之暗面）**、**豆包（火山引擎方舟）**、**通义千问（阿里云百炼）**、**OpenAI**、**Ollama（本地）**、**Magpie 本地网关**（自动读取 `~/.config/magpie/gateway.json`）、**CC Switch 本地网关**以及任意 **OpenAI 兼容接口**；支持通过 `GET /models` 一键自动发现可用模型列表。
+- **钥匙串级密钥安全与隐私防护**：API Key 独家通过 VS Code `SecretStorage` 加密保存在操作系统钥匙串中，**永不写入 `settings.json`**；`drawGraph.ai.*` 配置限定在 `machine` 作用域并对不受信任工作区开启只读保护，所有图表/源码片段均通过防提示注入分隔符安全包裹，首次调用外部接口会显式弹窗确认授权。
+- **五大核心 AI 图表工作流（全面覆盖 Mermaid / Draw.io / PlantUML / Graphviz DOT / WaveDrom）**：
+  1. **提示词生成图表（Generate）**：输入自然语言描述（或选中编辑器中的业务源码右键「使用 AI 从选中代码生成架构图…」），流式生成任意目标格式的完整图表，若目标为 Draw.io 还会自动校验 `<mxfile>` 结构并提供 Mermaid→Draw.io 智能兜底布局。
+  2. **自然语言增量修改（Modify）**：直接用对话指令增删节点、重组子图或调整连线，支持多轮上下文追问微调；修改前可点击 **「视觉对比 (修改前 ↔ 修改后)」** 在内存级并排 / 拉帘 / 像素差异视图中审阅变更，满意后一键写回当前 `.mmd` / `.puml` / `.dot` / `.wavedrom` 或实时刷新打开的 `.drawio` / `.drawio.svg` / `.drawio.png` 画布（保留原生 `Cmd/Ctrl+Z` 撤销栈）。
+  3. **五种策略一键优化重构（Optimize）**：内置「布局与分组整理」「视觉配色美化」「精简冗余节点」「补充容错与重试」「节点标签中英互译」五种专业架构优化预设。
+  4. **语法错误一键自愈（Fix Syntax）**：当图表出现语法错误时，无论是点击编辑器黄色灯泡（`Quick Fix`）还是点击右侧预览红框右下角的 **「✨ AI 修复」** 按钮，均可结合实时行列诊断信息一键修复语法。
+  5. **架构评审与风险洞察（Explain & Review）**：自动梳理系统边界与核心链路，并以 `[HIGH]` / `[MEDIUM]` / `[LOW]` / `[INFO]` 分级卡片高亮单点故障（SPOF）、性能瓶颈、缺失超时重试或紧耦合风险。
 
 ### draw.io 可视化编辑器
 - 打开 `.drawio` 文件时自动使用内嵌的 draw.io 编辑器。界面语言跟随 VS Code，亮/暗主题可自动匹配。

@@ -321,6 +321,18 @@
   cursor: not-allowed;
 }
 
+.settingsSelect {
+  height: 28px;
+  padding: 0 8px;
+  border: 1px solid var(--vscode-dropdown-border, var(--vscode-panel-border, rgba(128, 128, 128, 0.35)));
+  border-radius: 6px;
+  background-color: var(--vscode-dropdown-background, var(--vscode-editor-background));
+  color: var(--vscode-dropdown-foreground, var(--vscode-foreground));
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
 .settingsNote {
   margin: 0;
   font-size: 12px;
