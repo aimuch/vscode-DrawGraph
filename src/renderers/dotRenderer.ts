@@ -888,8 +888,21 @@ function tryRunDotCli(bin: string, source: string): Promise<string | undefined> 
       proc.kill();
       finish(undefined);
     }, 6000);
+    const MAX_DOT_STDOUT = 16 * 1024 * 1024;
+    let totalBytes = 0;
     const chunks: Buffer[] = [];
-    proc.stdout.on('data', (chunk: Buffer) => chunks.push(chunk));
+    proc.stdin.on('error', () => {
+      // Ignore EPIPE when `dot` exits before consuming stdin.
+    });
+    proc.stdout.on('data', (chunk: Buffer) => {
+      totalBytes += chunk.byteLength;
+      if (totalBytes > MAX_DOT_STDOUT) {
+        proc.kill();
+        finish(undefined);
+        return;
+      }
+      chunks.push(chunk);
+    });
     proc.on('error', () => finish(undefined));
     proc.on('close', (code) => {
       if (code === 0) {

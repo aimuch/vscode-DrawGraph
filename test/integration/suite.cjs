@@ -1112,12 +1112,17 @@ test('v0.5 AI Diagram Studio, Multi-Provider SSE Streaming, SecretStorage, Synta
     const updatedDoc = await vscode.workspace.openTextDocument(genRes.appliedUri);
     assert.match(updatedDoc.getText(), /Redis Cache/);
 
-    // 4. Interactive AI Diagram Studio webview boots and reaches ready state
+    // 4. Interactive AI Diagram Studio webview boots and reaches ready state + explicit FSM introspection
     await vscode.commands.executeCommand('drawGraph.ai.openStudio', {
       targetUri: genRes.appliedUri,
       mode: 'modify',
     });
     await waitFor('AI Diagram Studio webview ready', () => api.diagnostics.aiStudio().ready === true, 10000);
+    const machineIds = api.diagnostics.machines().map((m) => m.id);
+    assert.ok(machineIds.includes('ai-studio'), 'ai-studio state machine registered in diagnostics.machines()');
+    assert.ok(machineIds.includes('offline-pack'), 'offline-pack state machine registered in diagnostics.machines()');
+    assert.ok(machineIds.includes('diagram-explorer'), 'diagram-explorer state machine registered in diagnostics.machines()');
+    await waitFor('All subsystem FSMs reach settled state', () => api.diagnostics.isSettled() === true, 5000);
 
     // 5. Quick Fix CodeActionProvider + one-click AI syntax auto-repair
     fs.writeFileSync(brokenUri.fsPath, 'flowchart TD\n  subgraph UnclosedGroup\n    A --> B\n');

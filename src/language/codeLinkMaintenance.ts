@@ -5,6 +5,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
+import { computeMinimalTextChange } from '../drawio/minimalEdit';
 import { readDrawioXmlFromUri } from '../drawio/drawioEditorProvider';
 import { t } from '../l10n';
 import { config } from '../util';
@@ -31,6 +32,74 @@ function fileExistsOnDisk(docFsPath: string, cleanRel: string, wsRoot?: string):
     }
   }
   return false;
+}
+
+async function fileExistsAsync(docFsPath: string, cleanRel: string, wsRoot?: string): Promise<boolean> {
+  const docCandidate = vscode.Uri.file(path.resolve(path.dirname(docFsPath), cleanRel));
+  try {
+    await vscode.workspace.fs.stat(docCandidate);
+    return true;
+  } catch {
+    // Try workspace root fallback
+  }
+  if (wsRoot) {
+    const wsCandidate = vscode.Uri.file(path.resolve(wsRoot, cleanRel));
+    try {
+      await vscode.workspace.fs.stat(wsCandidate);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  return false;
+}
+
+export async function collectBrokenLinkDiagnosticsForDocumentAsync(
+  document: vscode.TextDocument,
+): Promise<vscode.Diagnostic[]> {
+  if (document.uri.scheme !== 'file') {
+    return [];
+  }
+  if (document.languageId !== 'mermaid' && document.languageId !== 'plantuml') {
+    return [];
+  }
+  if (!config().get<boolean>('codeLinks.checkBrokenLinks', true)) {
+    return [];
+  }
+  const wsFolder = vscode.workspace.getWorkspaceFolder(document.uri) ?? vscode.workspace.workspaceFolders?.[0];
+  const wsRoot = wsFolder?.uri.fsPath;
+  const links = collectLocalFileLinksInTextDiagram(
+    document.getText(),
+    document.languageId as 'mermaid' | 'plantuml',
+    document.uri.fsPath,
+    wsRoot,
+  );
+  if (links.length === 0) {
+    return [];
+  }
+
+  const checks = await Promise.all(
+    links.map(async (lk) => ({
+      lk,
+      exists: await fileExistsAsync(document.uri.fsPath, lk.cleanRelativePath, wsRoot),
+    })),
+  );
+
+  const diags: vscode.Diagnostic[] = [];
+  for (const { lk, exists } of checks) {
+    if (!exists) {
+      const range = new vscode.Range(lk.line, lk.startCol, lk.line, lk.endCol);
+      const d = new vscode.Diagnostic(
+        range,
+        t('Broken diagram file link: "{0}" does not exist in workspace.', lk.cleanRelativePath),
+        vscode.DiagnosticSeverity.Warning,
+      );
+      d.source = 'DrawGraph';
+      d.code = BROKEN_LINK_DIAGNOSTIC_CODE;
+      diags.push(d);
+    }
+  }
+  return diags;
 }
 
 export function collectBrokenLinkDiagnosticsForDocument(document: vscode.TextDocument): vscode.Diagnostic[] {
@@ -148,19 +217,32 @@ export class CodeLinkMaintenanceService implements vscode.Disposable {
       return;
     }
 
+    const oldBasenames = renames.map((r) => path.basename(r.oldFsPath)).filter(Boolean);
     const diagramUris = await vscode.workspace.findFiles(SYNCABLE_DIAGRAM_GLOB, EXCLUDE_GLOB, 300);
     const edit = new vscode.WorkspaceEdit();
     let touchedFiles = 0;
 
     for (const uri of diagramUris) {
       try {
-        const doc = await vscode.workspace.openTextDocument(uri);
-        const text = doc.getText();
+        const alreadyOpen = vscode.workspace.textDocuments.find((d) => d.uri.toString() === uri.toString());
+        const text = alreadyOpen
+          ? alreadyOpen.getText()
+          : Buffer.from(await vscode.workspace.fs.readFile(uri)).toString('utf8');
+        if (!oldBasenames.some((bn) => text.includes(bn))) {
+          continue;
+        }
         const { updated, replacements } = rewriteRenamedPathsInText(text, uri.fsPath, wsRoot, renames);
         if (replacements > 0 && updated !== text) {
-          const fullRange = doc.validateRange(new vscode.Range(0, 0, doc.lineCount, 0));
-          edit.replace(uri, fullRange, updated);
-          touchedFiles++;
+          const doc = alreadyOpen ?? (await vscode.workspace.openTextDocument(uri));
+          const change = computeMinimalTextChange(doc.getText(), updated);
+          if (change) {
+            edit.replace(
+              uri,
+              new vscode.Range(doc.positionAt(change.startOffset), doc.positionAt(change.endOffset)),
+              change.replacement,
+            );
+            touchedFiles++;
+          }
         }
       } catch {
         // Ignore binary or unreadable files

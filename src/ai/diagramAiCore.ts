@@ -361,6 +361,12 @@ export function stripThinkingBlocks(raw: string): string {
   return cleaned.trim();
 }
 
+/** Returns `true` when the streaming buffer currently has an unclosed `<think>` reasoning block. */
+export function isThinkingInProgress(raw: string): boolean {
+  const withoutClosed = raw.replace(/<think>[\s\S]*?<\/think>/gi, '');
+  return withoutClosed.toLowerCase().includes('<think>');
+}
+
 export interface ExtractedAiDiagram {
   code: string;
   explanation: string;
@@ -391,7 +397,11 @@ function ensureMxfileWrapper(xml: string): string {
  * LLM response, normalizing and validating `<mxfile>` XML (with automatic Mermaid-to-Draw.io
  * fallback if the model emitted Mermaid instead of XML).
  */
-export function extractAndNormalizeAiDiagram(rawResponse: string, targetFormat: AiDiagramFormat): ExtractedAiDiagram {
+export function extractAndNormalizeAiDiagram(
+  rawResponse: string,
+  targetFormat: AiDiagramFormat,
+  finalize = true,
+): ExtractedAiDiagram {
   const visible = stripThinkingBlocks(rawResponse);
   if (!visible) {
     return { code: '', explanation: '', isCompleteFence: false };
@@ -417,7 +427,7 @@ export function extractAndNormalizeAiDiagram(rawResponse: string, targetFormat: 
       }) ?? blocks[0];
 
     const explanation = visible.replace(preferred.fullMatch, '').trim();
-    const normalizedCode = finalizeCodeForFormat(preferred.body, targetFormat);
+    const normalizedCode = finalize ? finalizeCodeForFormat(preferred.body, targetFormat) : preferred.body;
     return { code: normalizedCode, explanation, isCompleteFence: true };
   }
 
@@ -439,7 +449,7 @@ export function extractAndNormalizeAiDiagram(rawResponse: string, targetFormat: 
     )
   ) {
     return {
-      code: finalizeCodeForFormat(visible, targetFormat),
+      code: finalize ? finalizeCodeForFormat(visible, targetFormat) : visible.trim(),
       explanation: '',
       isCompleteFence: true,
     };

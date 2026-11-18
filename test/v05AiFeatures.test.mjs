@@ -11,6 +11,7 @@ await esbuild.build({
   entryPoints: {
     aiCore: 'src/ai/diagramAiCore.ts',
     settingsStrings: 'src/settingsStrings.ts',
+    advancedFeatures: 'src/language/advancedFeatures.ts',
   },
   bundle: true,
   format: 'esm',
@@ -31,11 +32,13 @@ const {
   buildAiDiagramPrompt,
   parseArchitectureFindings,
   stripThinkingBlocks,
+  isThinkingInProgress,
   extractAndNormalizeAiDiagram,
   parseSseChatLine,
 } = await import(join(outdir, 'aiCore.mjs'));
 
 const { SETTINGS_DRAWER_STRINGS } = await import(join(outdir, 'settingsStrings.mjs'));
+const { computeDiagramQuickFixes } = await import(join(outdir, 'advancedFeatures.mjs'));
 
 test('AI provider presets cover all 10 providers aligned with vscode-git-map + Magpie gateway parser', () => {
   assert.deepEqual(AI_PROVIDER_IDS, [
@@ -129,6 +132,8 @@ test('buildAiDiagramPrompt supports all 5 modes and all 5 diagram formats in EN 
 
 test('stripThinkingBlocks & extractAndNormalizeAiDiagram handle R1 <think>, streaming fences, and Draw.io fallback', () => {
   // Unclosed <think> while streaming
+  assert.equal(isThinkingInProgress('<think>Analyzing topology and nodes...'), true);
+  assert.equal(isThinkingInProgress('<think>Done.</think>\n```mermaid\nflowchart LR\n  A-->B\n```'), false);
   assert.equal(stripThinkingBlocks('<think>Analyzing topology and nodes...'), '');
   // Closed <think> followed by fenced diagram + summary
   const rawMermaid = `<think>Let us use flowchart LR.</think>
@@ -214,4 +219,11 @@ test('v0.5 package manifest, untrusted workspace restrictions, and EN/ZH localiz
     Object.keys(SETTINGS_DRAWER_STRINGS['zh-cn']).sort(),
     'Settings Drawer EN and ZH-CN keys match 100%',
   );
+
+  // CR-2 regression check: PlantUML with @enduml already present should only prepend @startuml, not duplicate @enduml
+  const partialPumlFixes = computeDiagramQuickFixes('Alice -> Bob: Hi\n@enduml\n', 'plantuml');
+  assert.equal(partialPumlFixes.length, 1);
+  assert.equal(partialPumlFixes[0].title, 'Prepend missing @startuml');
+  const barePumlFixes = computeDiagramQuickFixes('Alice -> Bob: Hi\n', 'plantuml');
+  assert.equal(barePumlFixes[0].title, 'Wrap diagram in @startuml … @enduml');
 });

@@ -159,6 +159,15 @@ export async function navigateToCodeTarget(rawTarget: string, contextUri?: vscod
       if (!vscode.workspace.isTrusted) {
         return false;
       }
+      const openBtn = t('Open');
+      const confirm = await vscode.window.showWarningMessage(
+        t('Open "{0}" outside the current workspace?', chosen.location.uri.fsPath),
+        { modal: true },
+        openBtn,
+      );
+      if (confirm !== openBtn) {
+        return false;
+      }
     }
     const doc = await vscode.workspace.openTextDocument(chosen.location.uri);
     const editor = await vscode.window.showTextDocument(doc, { viewColumn: vscode.ViewColumn.One });

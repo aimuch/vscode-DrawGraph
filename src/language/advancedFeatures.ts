@@ -408,7 +408,7 @@ export function computeDiagramQuickFixes(
       });
     } else if (!hasStart && text.trim().length > 0) {
       fixes.push({
-        title: 'Wrap diagram in @startuml … @enduml',
+        title: hasEnd ? 'Prepend missing @startuml' : 'Wrap diagram in @startuml … @enduml',
         kind: 'prepend',
         newText: '@startuml\n',
       });

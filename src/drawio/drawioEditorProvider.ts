@@ -1,5 +1,6 @@
 import * as path from 'node:path';
 import * as vscode from 'vscode';
+import { onDidChangeAiApiKey } from '../ai/aiProviders';
 import { buildPdfDocument } from '../export/pdfWriter';
 import { getDrawioLanguage, t } from '../l10n';
 import type { DrawioToHostMessage } from '../protocol/messages';
@@ -18,7 +19,12 @@ import {
   type TransitionTable,
 } from '../stateMachine';
 import { config, decodeDataUri, getNonce, isDarkTheme, resolveAutoExportUri, saveBytes, withExtension } from '../util';
-import { buildCodeSymbolMergeXml, extractCodeLinksFromDrawioXml, extractDrawioPages } from './codeLinksXml';
+import {
+  buildCodeSymbolMergeXml,
+  extractCodeLinksFromDrawioXml,
+  extractDrawioPages,
+  type DiagramCodeLink,
+} from './codeLinksXml';
 import { discoverWorkspaceLibraryFsPathsSync, loadCustomLibraries, parseMxLibraryXml } from './customLibraryLoader';
 import { extractDiagramFromPng, isPngDiagramPath, pngBytesToDataUri } from './drawioPng';
 import { extractDiagramFromSvg, isSvgDiagramPath, replaceEmbeddedDiagram } from './drawioSvg';
@@ -93,6 +99,7 @@ interface EditorSession {
   lifecycle: StateMachine<DrawioSessionPhase, DrawioSessionEvent>;
   syncMachine?: CoalescedTaskMachine<unknown>;
   pendingExports: Map<number, (result: ExportResult) => void>;
+  cachedCodeLinks?: DiagramCodeLink[];
   status: { initialized: boolean; loads: number; changes: number };
   isEditQueueIdle: () => boolean;
   flushPendingEdits: () => Promise<void>;
@@ -241,6 +248,9 @@ export class DrawioEditorProvider implements vscode.CustomTextEditorProvider {
       }),
       vscode.workspace.onDidSaveTextDocument((doc) => {
         void provider.autoExportOnSave(doc.uri);
+      }),
+      onDidChangeAiApiKey(() => {
+        provider.broadcastSettingsState();
       }),
     );
     if (offlinePack) {
@@ -489,15 +499,18 @@ export class DrawioEditorProvider implements vscode.CustomTextEditorProvider {
                 break;
               case 'init':
                 session.status.initialized = true;
+                session.cachedCodeLinks = undefined;
                 lifecycle.send('INIT_RECEIVED');
                 hooks.sendLoad('LOAD_SENT');
                 break;
               case 'loaded':
                 session.status.loads++;
+                session.cachedCodeLinks = undefined;
                 lifecycle.send('DIAGRAM_LOADED');
                 await hooks.onLoaded();
                 break;
               case 'change':
+                session.cachedCodeLinks = undefined;
                 await hooks.onChange(message.xml);
                 break;
               case 'save':
@@ -514,6 +527,7 @@ export class DrawioEditorProvider implements vscode.CustomTextEditorProvider {
                 break;
               case 'drawerAction':
                 await handleSettingsDrawerAction(message.action);
+                post({ type: 'settingsState', settings: getSettingsSnapshot() });
                 break;
               case 'openExtensionSettings':
                 await openExtensionSettingsInVscode();
@@ -705,6 +719,7 @@ export class DrawioEditorProvider implements vscode.CustomTextEditorProvider {
           return;
         }
         if (document.getText() !== webviewXml) {
+          session.cachedCodeLinks = undefined;
           svgSyncMachine?.cancel('external document edit');
           sendLoad('RELOAD_EXTERNAL');
         }
@@ -1316,9 +1331,13 @@ export class DrawioEditorProvider implements vscode.CustomTextEditorProvider {
     for (const s of this.sessions) {
       if (!s.panel.visible) continue;
       try {
-        const xml = await readDrawioXmlFromUri(s.uri);
-        if (!xml) continue;
-        const links = extractCodeLinksFromDrawioXml(xml);
+        let links = s.cachedCodeLinks;
+        if (!links) {
+          const xml = await readDrawioXmlFromUri(s.uri);
+          if (!xml) continue;
+          links = extractCodeLinksFromDrawioXml(xml);
+          s.cachedCodeLinks = links;
+        }
         const hit = links.find((lk) => {
           const tgt = lk.target.toLowerCase();
           const lbl = lk.label.toLowerCase();

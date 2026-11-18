@@ -17,7 +17,7 @@ import {
   validateDiagramSyntaxStatic,
 } from './advancedFeatures';
 import {
-  collectBrokenLinkDiagnosticsForDocument,
+  collectBrokenLinkDiagnosticsForDocumentAsync,
   provideBrokenLinkQuickFixes,
 } from './codeLinkMaintenance';
 import {
@@ -37,22 +37,28 @@ import {
   type OutlineNode,
 } from './symbols';
 
+type DocDiagPhase = 'clean' | 'lint_scheduled' | 'static_diagnosed' | 'preview_error';
+
+interface DocDiagEntry {
+  phase: DocDiagPhase;
+  timer?: NodeJS.Timeout;
+  epoch: number;
+}
+
 export class DiagramDiagnostics implements vscode.Disposable {
   private readonly collection = vscode.languages.createDiagnosticCollection('drawGraph');
   private readonly subs: vscode.Disposable[] = [];
-  private readonly liveErrorUris = new Set<string>();
-  private readonly lintTimers = new Map<string, NodeJS.Timeout>();
+  private readonly entries = new Map<string, DocDiagEntry>();
 
   constructor() {
     this.subs.push(
       vscode.workspace.onDidCloseTextDocument((doc) => {
         const key = doc.uri.toString();
-        const tmr = this.lintTimers.get(key);
-        if (tmr) {
-          clearTimeout(tmr);
-          this.lintTimers.delete(key);
+        const entry = this.entries.get(key);
+        if (entry?.timer) {
+          clearTimeout(entry.timer);
         }
-        this.liveErrorUris.delete(key);
+        this.entries.delete(key);
         this.collection.delete(doc.uri);
       }),
       vscode.workspace.onDidOpenTextDocument((doc) => this.scheduleStaticLint(doc, 60)),
@@ -63,59 +69,85 @@ export class DiagramDiagnostics implements vscode.Disposable {
     }
   }
 
+  private getOrCreateEntry(key: string): DocDiagEntry {
+    let entry = this.entries.get(key);
+    if (!entry) {
+      entry = { phase: 'clean', epoch: 0 };
+      this.entries.set(key, entry);
+    }
+    return entry;
+  }
+
   private scheduleStaticLint(document: vscode.TextDocument, delayMs: number): void {
     const lang = document.languageId;
     if (lang !== 'mermaid' && lang !== 'plantuml' && lang !== 'dot' && lang !== 'wavedrom') {
       return;
     }
     const key = document.uri.toString();
-    const prev = this.lintTimers.get(key);
-    if (prev) {
-      clearTimeout(prev);
+    const entry = this.getOrCreateEntry(key);
+    if (entry.phase === 'preview_error') {
+      return;
     }
-    this.lintTimers.set(
-      key,
-      setTimeout(() => {
-        this.lintTimers.delete(key);
-        if (this.liveErrorUris.has(key)) {
-          return;
-        }
-        const issues =
-          lang === 'dot'
-            ? validateDotSyntaxStatic(document.getText())
-            : lang === 'wavedrom'
-              ? validateWaveDromSyntaxStatic(document.getText())
-              : validateDiagramSyntaxStatic(document.getText(), lang as 'mermaid' | 'plantuml');
-        const syntaxDiags = issues.map((iss) => {
-          const safeLine = Math.max(0, Math.min(iss.line, Math.max(0, document.lineCount - 1)));
-          const lineText = document.lineAt(safeLine);
-          const range = lineText.range.isEmpty ? new vscode.Range(safeLine, 0, safeLine, 1) : lineText.range;
-          const d = new vscode.Diagnostic(
-            range,
-            iss.message,
-            iss.severity === 'warning' ? vscode.DiagnosticSeverity.Warning : vscode.DiagnosticSeverity.Error,
-          );
-          d.source = 'DrawGraph';
-          return d;
-        });
-        const brokenLinkDiags = collectBrokenLinkDiagnosticsForDocument(document);
-        const allDiags = [...syntaxDiags, ...brokenLinkDiags];
-        if (allDiags.length === 0) {
-          this.collection.delete(document.uri);
-          return;
-        }
-        this.collection.set(document.uri, allDiags);
-      }, delayMs),
-    );
+    if (entry.timer) {
+      clearTimeout(entry.timer);
+    }
+    entry.phase = 'lint_scheduled';
+    const scheduledEpoch = ++entry.epoch;
+    entry.timer = setTimeout(() => {
+      entry.timer = undefined;
+      if (entry.phase === 'preview_error' || entry.epoch !== scheduledEpoch) {
+        return;
+      }
+      void this.runStaticLintPass(document, entry, scheduledEpoch);
+    }, delayMs);
+  }
+
+  private async runStaticLintPass(
+    document: vscode.TextDocument,
+    entry: DocDiagEntry,
+    expectedEpoch: number,
+  ): Promise<void> {
+    const lang = document.languageId;
+    const issues =
+      lang === 'dot'
+        ? validateDotSyntaxStatic(document.getText())
+        : lang === 'wavedrom'
+          ? validateWaveDromSyntaxStatic(document.getText())
+          : validateDiagramSyntaxStatic(document.getText(), lang as 'mermaid' | 'plantuml');
+    const syntaxDiags = issues.map((iss) => {
+      const safeLine = Math.max(0, Math.min(iss.line, Math.max(0, document.lineCount - 1)));
+      const lineText = document.lineAt(safeLine);
+      const range = lineText.range.isEmpty ? new vscode.Range(safeLine, 0, safeLine, 1) : lineText.range;
+      const d = new vscode.Diagnostic(
+        range,
+        iss.message,
+        iss.severity === 'warning' ? vscode.DiagnosticSeverity.Warning : vscode.DiagnosticSeverity.Error,
+      );
+      d.source = 'DrawGraph';
+      return d;
+    });
+    const brokenLinkDiags = await collectBrokenLinkDiagnosticsForDocumentAsync(document);
+    if (entry.phase === 'preview_error' || entry.epoch !== expectedEpoch) {
+      return;
+    }
+    const allDiags = [...syntaxDiags, ...brokenLinkDiags];
+    if (allDiags.length === 0) {
+      entry.phase = 'clean';
+      this.collection.delete(document.uri);
+      return;
+    }
+    entry.phase = 'static_diagnosed';
+    this.collection.set(document.uri, allDiags);
   }
 
   setError(document: vscode.TextDocument, zeroBasedLine: number, message: string): void {
     const key = document.uri.toString();
-    this.liveErrorUris.add(key);
-    const pending = this.lintTimers.get(key);
-    if (pending) {
-      clearTimeout(pending);
-      this.lintTimers.delete(key);
+    const entry = this.getOrCreateEntry(key);
+    entry.phase = 'preview_error';
+    entry.epoch++;
+    if (entry.timer) {
+      clearTimeout(entry.timer);
+      entry.timer = undefined;
     }
     const safeLine = Math.max(0, Math.min(zeroBasedLine, Math.max(0, document.lineCount - 1)));
     const lineText = document.lineAt(safeLine);
@@ -127,26 +159,59 @@ export class DiagramDiagnostics implements vscode.Disposable {
 
   clear(uri: vscode.Uri): void {
     const key = uri.toString();
-    this.liveErrorUris.delete(key);
-    const pending = this.lintTimers.get(key);
-    if (pending) {
-      clearTimeout(pending);
-      this.lintTimers.delete(key);
+    const entry = this.getOrCreateEntry(key);
+    entry.phase = 'clean';
+    const epoch = ++entry.epoch;
+    if (entry.timer) {
+      clearTimeout(entry.timer);
+      entry.timer = undefined;
     }
     const openDoc = vscode.workspace.textDocuments.find((d) => d.uri.toString() === key);
-    const broken = openDoc ? collectBrokenLinkDiagnosticsForDocument(openDoc) : [];
-    if (broken.length > 0) {
-      this.collection.set(uri, broken);
+    if (!openDoc) {
+      this.collection.delete(uri);
+      return;
+    }
+    void collectBrokenLinkDiagnosticsForDocumentAsync(openDoc).then((broken) => {
+      if (entry.epoch !== epoch || entry.phase === 'preview_error') {
+        return;
+      }
+      if (broken.length > 0) {
+        entry.phase = 'static_diagnosed';
+        this.collection.set(uri, broken);
+      } else {
+        this.collection.delete(uri);
+      }
+    });
+  }
+
+  /**
+   * Releases live preview error ownership when a preview panel closes or retargets away,
+   * immediately handing diagnostic authority back to the static linter so fixed errors
+   * never stay permanently frozen in the editor.
+   */
+  releasePreviewAuthority(uri: vscode.Uri): void {
+    const key = uri.toString();
+    const entry = this.entries.get(key);
+    if (!entry || entry.phase !== 'preview_error') {
+      return;
+    }
+    entry.phase = 'clean';
+    entry.epoch++;
+    const openDoc = vscode.workspace.textDocuments.find((d) => d.uri.toString() === key);
+    if (openDoc) {
+      this.scheduleStaticLint(openDoc, 60);
     } else {
       this.collection.delete(uri);
     }
   }
 
   dispose(): void {
-    for (const tmr of this.lintTimers.values()) {
-      clearTimeout(tmr);
+    for (const entry of this.entries.values()) {
+      if (entry.timer) {
+        clearTimeout(entry.timer);
+      }
     }
-    this.lintTimers.clear();
+    this.entries.clear();
     this.subs.forEach((s) => s.dispose());
     this.collection.dispose();
   }
@@ -572,7 +637,8 @@ class DiagramCodeActionProvider implements vscode.CodeActionProvider {
         if (fix.kind === 'prepend') {
           edit.insert(document.uri, new vscode.Position(0, 0), fix.newText);
           if (kind === 'plantuml' && fix.title.includes('@enduml')) {
-            edit.insert(document.uri, new vscode.Position(document.lineCount, 0), '\n@enduml\n');
+            const lastLine = Math.max(0, document.lineCount - 1);
+            edit.insert(document.uri, new vscode.Position(lastLine, document.lineAt(lastLine).text.length), '\n@enduml\n');
           }
         } else if (fix.kind === 'append') {
           const lastLine = Math.max(0, document.lineCount - 1);

@@ -27,16 +27,16 @@ export function activate(context: vscode.ExtensionContext) {
   };
   context.subscriptions.push(log);
 
-  const offlinePack = new OfflinePackManager(context);
+  const offlinePack = new OfflinePackManager(context, traceTransition);
   setOfflinePackStatusProvider(() => offlinePack.getStatus());
 
   const diagnostics = registerLanguageFeatures(context);
   const drawio = DrawioEditorProvider.register(context, traceTransition, offlinePack);
   const previews = new PreviewManager(context, diagnostics, traceTransition);
   const settingsPanel = new SettingsPanelManager(context);
-  const visualDiff = new VisualDiffManager(context, previews);
-  const aiStudio = new AiDiagramStudioManager(context, drawio, previews, visualDiff);
-  const explorer = new DiagramExplorerProvider();
+  const visualDiff = new VisualDiffManager(context, previews, traceTransition);
+  const aiStudio = new AiDiagramStudioManager(context, drawio, previews, visualDiff, traceTransition);
+  const explorer = new DiagramExplorerProvider(traceTransition);
   const codeLinkMaintenance = new CodeLinkMaintenanceService();
   const treeView = vscode.window.createTreeView('drawGraph.diagramExplorer', {
     treeDataProvider: explorer,
@@ -88,8 +88,21 @@ export function activate(context: vscode.ExtensionContext) {
       aiStudio: () => aiStudio.snapshot(),
       offlinePack: () => offlinePack.getStatus(),
       diagramExplorer: () => explorer.snapshot(),
-      machines: () => [...drawio.machines(), ...previews.machines()],
-      isSettled: () => drawio.isSettled() && previews.isSettled(),
+      machines: () => [
+        ...drawio.machines(),
+        ...previews.machines(),
+        ...visualDiff.machines(),
+        ...aiStudio.machines(),
+        ...offlinePack.machines(),
+        ...explorer.machines(),
+      ],
+      isSettled: () =>
+        drawio.isSettled() &&
+        previews.isSettled() &&
+        visualDiff.isSettled() &&
+        aiStudio.isSettled() &&
+        offlinePack.isSettled() &&
+        explorer.isSettled(),
     };
   }
   return api;

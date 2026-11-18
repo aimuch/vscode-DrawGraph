@@ -9,9 +9,30 @@ import { renderWaveDromToSvg } from '../renderers/wavedromRenderer';
 import { config } from '../util';
 
 const asyncPlantUmlCache = new Map<string, string>();
+const staticSvgDataUriCache = new Map<string, string>();
 const pendingAsyncKeys = new Set<string>();
 const markdownPlantUmlRenderer = new PlantUmlRenderer('markdown-plantuml');
 let refreshScheduled = false;
+
+function getOrComputeStaticDataUri(cacheKey: string, computeSvg: () => string): string {
+  const hit = staticSvgDataUriCache.get(cacheKey);
+  if (hit !== undefined) {
+    // Refresh LRU order
+    staticSvgDataUriCache.delete(cacheKey);
+    staticSvgDataUriCache.set(cacheKey, hit);
+    return hit;
+  }
+  const svg = computeSvg();
+  const dataUri = `data:image/svg+xml;base64,${Buffer.from(svg, 'utf8').toString('base64')}`;
+  staticSvgDataUriCache.set(cacheKey, dataUri);
+  if (staticSvgDataUriCache.size > 64) {
+    const oldest = staticSvgDataUriCache.keys().next().value;
+    if (oldest !== undefined) {
+      staticSvgDataUriCache.delete(oldest);
+    }
+  }
+  return dataUri;
+}
 
 function scheduleMarkdownRefresh(): void {
   if (refreshScheduled) {
@@ -27,6 +48,7 @@ function scheduleMarkdownRefresh(): void {
 export function disposeMarkdownPlantUml(): void {
   markdownPlantUmlRenderer.dispose();
   asyncPlantUmlCache.clear();
+  staticSvgDataUriCache.clear();
   pendingAsyncKeys.clear();
 }
 
@@ -171,18 +193,16 @@ export function mermaidMarkdownPlugin(md: MarkdownIt): MarkdownIt {
     }
     if ((lang === 'dot' || lang === 'graphviz') && cfg.get<boolean>('markdown.dot', true)) {
       try {
-        const svg = renderDotToSvgOffline(token.content);
-        const b64 = Buffer.from(svg, 'utf8').toString('base64');
-        return `<div class="drawgraph-plantuml drawgraph-dot code-line"${line}><img src="data:image/svg+xml;base64,${b64}" alt="Graphviz DOT diagram"></div>\n`;
+        const dataUri = getOrComputeStaticDataUri(`dot\0${token.content}`, () => renderDotToSvgOffline(token.content));
+        return `<div class="drawgraph-plantuml drawgraph-dot code-line"${line}><img src="${dataUri}" alt="Graphviz DOT diagram"></div>\n`;
       } catch (err) {
         return `<div class="drawgraph-plantuml code-line"${line}><pre class="drawgraph-error">${md.utils.escapeHtml((err as Error).message)}</pre></div>\n`;
       }
     }
     if ((lang === 'wavedrom' || lang === 'bitfield') && cfg.get<boolean>('markdown.wavedrom', true)) {
       try {
-        const svg = renderWaveDromToSvg(token.content);
-        const b64 = Buffer.from(svg, 'utf8').toString('base64');
-        return `<div class="drawgraph-plantuml drawgraph-wavedrom code-line"${line}><img src="data:image/svg+xml;base64,${b64}" alt="WaveDrom diagram"></div>\n`;
+        const dataUri = getOrComputeStaticDataUri(`wavedrom\0${token.content}`, () => renderWaveDromToSvg(token.content));
+        return `<div class="drawgraph-plantuml drawgraph-wavedrom code-line"${line}><img src="${dataUri}" alt="WaveDrom diagram"></div>\n`;
       } catch (err) {
         return `<div class="drawgraph-plantuml code-line"${line}><pre class="drawgraph-error">${md.utils.escapeHtml((err as Error).message)}</pre></div>\n`;
       }

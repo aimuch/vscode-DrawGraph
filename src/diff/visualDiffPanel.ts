@@ -10,6 +10,7 @@ import { splitDiagrams } from '../plantuml/encoder';
 import { mermaidTheme, type PreviewManager } from '../preview/previewManager';
 import { renderDotToSvgOffline } from '../renderers/dotRenderer';
 import { renderWaveDromToSvg } from '../renderers/wavedromRenderer';
+import { StateMachine, type MachineSnapshot, type TransitionRecord, type TransitionTable } from '../stateMachine';
 import { getNonce } from '../util';
 
 const execFileAsync = promisify(execFile);
@@ -21,6 +22,29 @@ export interface NormalizedDiffSide {
   payload: string;
 }
 
+export type DiffSessionPhase = 'booting' | 'loading' | 'ready' | 'disposed';
+export type DiffSessionEvent = 'WEBVIEW_READY' | 'REFRESH' | 'PAYLOAD_SENT' | 'DISPOSE';
+
+const DIFF_SESSION_TRANSITIONS: TransitionTable<DiffSessionPhase, DiffSessionEvent> = {
+  booting: {
+    WEBVIEW_READY: 'loading',
+    DISPOSE: 'disposed',
+  },
+  loading: {
+    REFRESH: 'loading',
+    PAYLOAD_SENT: 'ready',
+    DISPOSE: 'disposed',
+  },
+  ready: {
+    REFRESH: 'loading',
+    PAYLOAD_SENT: 'ready',
+    DISPOSE: 'disposed',
+  },
+  disposed: {},
+};
+
+const DIFF_SESSION_SETTLED: readonly DiffSessionPhase[] = ['ready', 'disposed'];
+
 export interface DiffSnapshot {
   uri: string;
   gitRef?: string;
@@ -28,6 +52,8 @@ export interface DiffSnapshot {
   pageCount: number;
   reviewCount: number;
   ready: boolean;
+  phase: DiffSessionPhase;
+  isSettled: boolean;
   beforeEmpty: boolean;
   afterEmpty: boolean;
 }
@@ -49,6 +75,7 @@ interface DiffSession {
   reviewQueue?: vscode.Uri[];
   reviewIndex: number;
   panel: vscode.WebviewPanel;
+  lifecycle: StateMachine<DiffSessionPhase, DiffSessionEvent>;
   ready: boolean;
   beforeEmpty: boolean;
   afterEmpty: boolean;
@@ -159,10 +186,12 @@ function extractRawMxfileText(filePath: string, bytes?: Uint8Array): string | un
 export class VisualDiffManager implements vscode.Disposable {
   private readonly sessions = new Set<DiffSession>();
   private readonly subs: vscode.Disposable[] = [];
+  private sessionSeq = 0;
 
   constructor(
     private readonly context: vscode.ExtensionContext,
     private readonly previews: PreviewManager,
+    private readonly onTransition?: (record: TransitionRecord<string, string>, machineId: string) => void,
   ) {
     this.subs.push(
       vscode.workspace.onDidChangeConfiguration((e) => {
@@ -180,6 +209,19 @@ export class VisualDiffManager implements vscode.Disposable {
     );
   }
 
+  machines(): MachineSnapshot[] {
+    return [...this.sessions].map((s) => s.lifecycle.snapshot());
+  }
+
+  isSettled(): boolean {
+    for (const s of this.sessions) {
+      if (!s.lifecycle.isSettled) {
+        return false;
+      }
+    }
+    return true;
+  }
+
   snapshot(): DiffSnapshot[] {
     return [...this.sessions].map((s) => ({
       uri: s.targetUri.toString(),
@@ -187,7 +229,9 @@ export class VisualDiffManager implements vscode.Disposable {
       pageIndex: s.pageIndex,
       pageCount: s.pages.length,
       reviewCount: s.reviewQueue?.length ?? 1,
-      ready: s.ready,
+      ready: s.ready && s.lifecycle.state === 'ready',
+      phase: s.lifecycle.state,
+      isSettled: s.lifecycle.isSettled,
       beforeEmpty: s.beforeEmpty,
       afterEmpty: s.afterEmpty,
     }));
@@ -492,10 +536,16 @@ export class VisualDiffManager implements vscode.Disposable {
   }
 
   private async refreshSession(session: DiffSession): Promise<void> {
-    if (!session.ready) {
+    const isDisposed = () => session.lifecycle.state === 'disposed';
+    if (!session.ready || isDisposed()) {
       return;
     }
+    session.lifecycle.send('REFRESH');
     const payload = await this.computeSessionPayload(session);
+    if (isDisposed()) {
+      return;
+    }
+    session.lifecycle.send('PAYLOAD_SENT');
     void session.panel.webview.postMessage(payload);
   }
 
@@ -578,6 +628,14 @@ export class VisualDiffManager implements vscode.Disposable {
     );
     panel.iconPath = vscode.Uri.joinPath(mediaRoot, 'icons', 'drawgraph.svg');
 
+    const lifecycle = new StateMachine<DiffSessionPhase, DiffSessionEvent>({
+      id: `visual-diff:${++this.sessionSeq}:${path.basename(targetUri.path)}`,
+      initial: 'booting',
+      transitions: DIFF_SESSION_TRANSITIONS,
+      settledStates: DIFF_SESSION_SETTLED,
+      onTransition: this.onTransition,
+    });
+
     const session: DiffSession = {
       mode,
       targetUri,
@@ -588,6 +646,7 @@ export class VisualDiffManager implements vscode.Disposable {
       reviewQueue,
       reviewIndex: 0,
       panel,
+      lifecycle,
       ready: false,
       beforeEmpty: false,
       afterEmpty: false,
@@ -675,6 +734,7 @@ export class VisualDiffManager implements vscode.Disposable {
     const sub = webview.onDidReceiveMessage(async (msg: { type: string; pageIndex?: number; reviewIndex?: number }) => {
       if (msg.type === 'ready') {
         session.ready = true;
+        session.lifecycle.send('WEBVIEW_READY');
         await this.refreshSession(session);
       } else if (msg.type === 'selectPage' && typeof msg.pageIndex === 'number') {
         session.pageIndex = Math.max(0, msg.pageIndex);
@@ -702,6 +762,7 @@ export class VisualDiffManager implements vscode.Disposable {
 
     panel.onDidDispose(() => {
       sub.dispose();
+      session.lifecycle.send('DISPOSE');
       this.sessions.delete(session);
     });
 

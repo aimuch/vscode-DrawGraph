@@ -29,6 +29,8 @@
   const welcomeSub = $('welcomeSub');
   const starterChips = $('starterChips');
   const errorBanner = $('errorBanner');
+  const errorText = $('errorText');
+  const retryRunBtn = /** @type {HTMLButtonElement} */ ($('retryRunBtn'));
   const statusBanner = $('statusBanner');
   const resultContainer = $('resultContainer');
   const diagramOutputSection = $('diagramOutputSection');
@@ -66,12 +68,54 @@
   let currentPreset = 'layout';
   /** @type {'preview' | 'source'} */
   let activeOutputTab = 'preview';
-  let streaming = false;
+  /** @type {'welcome' | 'streaming_thinking' | 'streaming_output' | 'result_diagram' | 'result_explain' | 'error'} */
+  let studioUiPhase = 'welcome';
   let latestCode = '';
+  let hasPriorResult = false;
   /** @type {{ uri: string; label: string; format: string; hasDiagnostics: boolean; diagnostics: string } | null} */
   let boundTarget = null;
   let currentMermaidTheme = 'default';
   let renderSeq = 0;
+
+  /**
+   * Single source of truth for AI Studio UI visibility & button states.
+   * @param {'welcome' | 'streaming_thinking' | 'streaming_output' | 'result_diagram' | 'result_explain' | 'error'} next
+   * @param {string} [detail]
+   */
+  function transitionStudioUiPhase(next, detail) {
+    studioUiPhase = next;
+    const isStreaming = next === 'streaming_thinking' || next === 'streaming_output';
+    runBtn.disabled = isStreaming;
+    stopBtn.hidden = !isStreaming;
+    welcomeView.hidden = next !== 'welcome';
+    errorBanner.hidden = next !== 'error';
+
+    if (next === 'error') {
+      errorText.textContent = detail || 'AI request failed.';
+      statusBanner.hidden = true;
+      resultContainer.hidden = !hasPriorResult;
+      return;
+    }
+
+    if (next === 'welcome') {
+      statusBanner.hidden = true;
+      resultContainer.hidden = true;
+      return;
+    }
+
+    if (isStreaming) {
+      statusBanner.hidden = false;
+      statusBanner.textContent =
+        next === 'streaming_thinking'
+          ? `🧠 ${tr('thinkingStatus', 'Reasoning & planning topology ({0})…').replace('{0}', detail || 'AI')}`
+          : tr('streamingStatus', 'Generating with {0}…').replace('{0}', detail || 'AI');
+      resultContainer.hidden = false;
+      return;
+    }
+
+    statusBanner.hidden = true;
+    resultContainer.hidden = false;
+  }
 
   /** @param {string} key @param {string} [fallback] */
   function tr(key, fallback) {
@@ -316,7 +360,7 @@
   }
 
   function triggerRun() {
-    if (streaming) return;
+    if (studioUiPhase === 'streaming_thinking' || studioUiPhase === 'streaming_output') return;
     const prompt = promptInput.value.trim();
     if ((currentMode === 'generate' || currentMode === 'modify') && !prompt && !includeCodeChk.checked) {
       promptInput.focus();
@@ -371,14 +415,13 @@
   });
 
   runBtn.addEventListener('click', triggerRun);
+  retryRunBtn.addEventListener('click', triggerRun);
   stopBtn.addEventListener('click', () => vscode.postMessage({ type: 'stop' }));
   clearSessionBtn.addEventListener('click', () => {
     latestCode = '';
+    hasPriorResult = false;
     promptInput.value = '';
-    errorBanner.hidden = true;
-    statusBanner.hidden = true;
-    resultContainer.hidden = true;
-    welcomeView.hidden = false;
+    transitionStudioUiPhase('welcome');
     vscode.postMessage({ type: 'clearHistory' });
   });
 
@@ -496,6 +539,7 @@
         openNewBtn.textContent = tr('btnOpenNew', 'Open as New Diagram');
         copyCodeBtn.textContent = tr('btnCopyCode', 'Copy Code');
         runBtn.textContent = `✨ ${tr('btnRun', 'Run AI')}`;
+        retryRunBtn.textContent = tr('btnRetry', 'Retry');
         stopBtn.textContent = tr('btnStop', 'Stop');
         welcomeTitle.textContent = tr('emptyWelcomeTitle');
         welcomeSub.textContent = tr('emptyWelcomeSub');
@@ -514,15 +558,8 @@
       }
 
       case 'streamStart': {
-        streaming = true;
-        welcomeView.hidden = true;
-        errorBanner.hidden = true;
-        statusBanner.hidden = false;
-        statusBanner.textContent = tr('streamingStatus', 'Generating with {0}…').replace('{0}', msg.providerLabel || 'AI');
-        resultContainer.hidden = false;
+        transitionStudioUiPhase('streaming_output', msg.providerLabel || 'AI');
         findingsSection.hidden = true;
-        runBtn.disabled = true;
-        stopBtn.hidden = false;
         if (msg.mode === 'explain') {
           diagramOutputSection.hidden = true;
           explanationBox.hidden = false;
@@ -538,6 +575,7 @@
       }
 
       case 'streamChunk': {
+        transitionStudioUiPhase(msg.thinking ? 'streaming_thinking' : 'streaming_output', msg.providerLabel || 'AI');
         if (msg.mode === 'explain') {
           renderMarkdownSafe(explanationBox, msg.explanation || '');
         } else {
@@ -553,16 +591,14 @@
       }
 
       case 'streamComplete': {
-        streaming = false;
-        statusBanner.hidden = true;
-        runBtn.disabled = false;
-        stopBtn.hidden = true;
-
+        hasPriorResult = true;
         if (msg.mode === 'explain') {
+          transitionStudioUiPhase('result_explain');
           diagramOutputSection.hidden = true;
           renderFindings(msg.findings || []);
           renderMarkdownSafe(explanationBox, msg.explanation || '');
         } else {
+          transitionStudioUiPhase('result_diagram');
           latestCode = msg.code || '';
           currentFormat = msg.format || currentFormat;
           diagramOutputSection.hidden = !latestCode;
@@ -579,20 +615,16 @@
       }
 
       case 'streamCancelled': {
-        streaming = false;
-        statusBanner.hidden = true;
-        runBtn.disabled = false;
-        stopBtn.hidden = true;
+        if (hasPriorResult || latestCode) {
+          transitionStudioUiPhase(currentMode === 'explain' ? 'result_explain' : 'result_diagram');
+        } else {
+          transitionStudioUiPhase('welcome');
+        }
         break;
       }
 
       case 'streamError': {
-        streaming = false;
-        statusBanner.hidden = true;
-        runBtn.disabled = false;
-        stopBtn.hidden = true;
-        errorBanner.hidden = false;
-        errorBanner.textContent = msg.message || 'AI request failed.';
+        transitionStudioUiPhase('error', msg.message || 'AI request failed.');
         break;
       }
     }

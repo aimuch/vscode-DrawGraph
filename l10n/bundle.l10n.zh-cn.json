@@ -278,6 +278,7 @@
   "Live Preview": "实时预览",
   "Source Code": "图表源码",
   "Generating with {0}…": "正在通过 {0} 生成…",
+  "Reasoning & planning topology ({0})…": "正在深度推理规划图表结构（{0}）…",
   "Design, Refine & Review Diagrams with AI": "用 AI 设计、演进与评审你的工程图表",
   "Supports Mermaid, Draw.io, PlantUML, Graphviz DOT, and WaveDrom with visual Before ↔ After diffing.": "全面支持 Mermaid、Draw.io、PlantUML、Graphviz DOT 与 WaveDrom，支持修改前后视觉像素对比。",
   "E-commerce microservices with API Gateway, Auth, Order, Kafka & PostgreSQL": "电商微服务架构（含 API 网关、认证、订单服务、Kafka 消息队列与 PostgreSQL）",

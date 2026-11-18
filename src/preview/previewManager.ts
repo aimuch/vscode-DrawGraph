@@ -1,5 +1,6 @@
 import * as path from 'node:path';
 import * as vscode from 'vscode';
+import { onDidChangeAiApiKey } from '../ai/aiProviders';
 import { navigateToCodeTarget } from '../codeLinks';
 import { buildInteractiveHtmlBundle } from '../export/htmlExporter';
 import { buildPdfDocument } from '../export/pdfWriter';
@@ -56,7 +57,15 @@ interface PreviewState {
   locked?: boolean;
 }
 
-export type PreviewPhase = 'initializing' | 'debouncing' | 'rendering' | 'ready' | 'error' | 'empty' | 'disposed';
+export type PreviewPhase =
+  | 'initializing'
+  | 'debouncing'
+  | 'rendering'
+  | 'ready'
+  | 'error'
+  | 'empty'
+  | 'suspended'
+  | 'disposed';
 export type PreviewEvent =
   | 'SCHEDULE_UPDATE'
   | 'START_RENDER'
@@ -64,6 +73,8 @@ export type PreviewEvent =
   | 'RENDER_EMPTY'
   | 'RENDER_ERROR'
   | 'RENDER_CANCELLED'
+  | 'SUSPEND'
+  | 'RESUME'
   | 'RETARGET'
   | 'DISPOSE';
 
@@ -74,6 +85,7 @@ const PREVIEW_TRANSITIONS: TransitionTable<PreviewPhase, PreviewEvent> = {
     RENDER_OK: 'ready',
     RENDER_EMPTY: 'empty',
     RENDER_ERROR: 'error',
+    SUSPEND: 'suspended',
     RETARGET: 'initializing',
     DISPOSE: 'disposed',
   },
@@ -83,6 +95,7 @@ const PREVIEW_TRANSITIONS: TransitionTable<PreviewPhase, PreviewEvent> = {
     RENDER_OK: 'ready',
     RENDER_EMPTY: 'empty',
     RENDER_ERROR: 'error',
+    SUSPEND: 'suspended',
     RETARGET: 'initializing',
     DISPOSE: 'disposed',
   },
@@ -93,6 +106,7 @@ const PREVIEW_TRANSITIONS: TransitionTable<PreviewPhase, PreviewEvent> = {
     RENDER_EMPTY: 'empty',
     RENDER_ERROR: 'error',
     RENDER_CANCELLED: 'ready',
+    SUSPEND: 'suspended',
     RETARGET: 'initializing',
     DISPOSE: 'disposed',
   },
@@ -102,6 +116,7 @@ const PREVIEW_TRANSITIONS: TransitionTable<PreviewPhase, PreviewEvent> = {
     RENDER_OK: 'ready',
     RENDER_EMPTY: 'empty',
     RENDER_ERROR: 'error',
+    SUSPEND: 'suspended',
     RETARGET: 'initializing',
     DISPOSE: 'disposed',
   },
@@ -111,6 +126,7 @@ const PREVIEW_TRANSITIONS: TransitionTable<PreviewPhase, PreviewEvent> = {
     RENDER_OK: 'ready',
     RENDER_EMPTY: 'empty',
     RENDER_ERROR: 'error',
+    SUSPEND: 'suspended',
     RETARGET: 'initializing',
     DISPOSE: 'disposed',
   },
@@ -120,13 +136,23 @@ const PREVIEW_TRANSITIONS: TransitionTable<PreviewPhase, PreviewEvent> = {
     RENDER_OK: 'ready',
     RENDER_EMPTY: 'empty',
     RENDER_ERROR: 'error',
+    SUSPEND: 'suspended',
     RETARGET: 'initializing',
+    DISPOSE: 'disposed',
+  },
+  suspended: {
+    RESUME: 'initializing',
+    START_RENDER: 'rendering',
+    RENDER_OK: 'ready',
+    RENDER_EMPTY: 'empty',
+    RENDER_ERROR: 'error',
+    RETARGET: 'suspended',
     DISPOSE: 'disposed',
   },
   disposed: {},
 };
 
-const PREVIEW_SETTLED: readonly PreviewPhase[] = ['ready', 'error', 'empty', 'disposed'];
+const PREVIEW_SETTLED: readonly PreviewPhase[] = ['ready', 'error', 'empty', 'suspended', 'disposed'];
 
 type BlockSelectionState =
   | { mode: 'cursor'; line: number | undefined }
@@ -194,8 +220,17 @@ class DiagramPreview {
       panel.onDidDispose(() => this.dispose()),
       panel.onDidChangeViewState((e) => {
         if (!e.webviewPanel.visible) {
+          clearTimeout(this.updateTimer);
+          this.updateTimer = undefined;
+          this.renderer.cancel();
           this.webviewReady = false;
           this.flushPendingOffscreen('Preview hidden');
+          this.lifecycle.send('SUSPEND', 'tab hidden');
+        } else if (this.lifecycle.state === 'suspended') {
+          this.lifecycle.send('RESUME', 'tab revealed');
+          if (this.webviewReady) {
+            void this.update(true, false);
+          }
         }
       }),
       panel.webview.onDidReceiveMessage((msg: PreviewToHostMessage) => this.onMessage(msg)),
@@ -316,9 +351,13 @@ class DiagramPreview {
   }
 
   retarget(newUri: vscode.Uri, newKind: DiagramKind, cursorLine?: number): void {
+    const prevUri = this.uri;
     clearTimeout(this.updateTimer);
     this.updateTimer = undefined;
     this.renderer.cancel();
+    if (prevUri.toString() !== newUri.toString()) {
+      this.diagnostics?.releasePreviewAuthority(prevUri);
+    }
     this.uri = newUri;
     this.lastBlockKey = undefined;
     this.selection = { mode: 'cursor', line: cursorLine };
@@ -355,6 +394,11 @@ class DiagramPreview {
 
   scheduleUpdate(delay = config().get<number>('preview.debounce', 400)) {
     if (this.isDisposed) {
+      return;
+    }
+    if (!this.panel.visible) {
+      this.lastBlockKey = undefined;
+      this.lifecycle.send('SUSPEND', 'edit while hidden');
       return;
     }
     clearTimeout(this.updateTimer);
@@ -838,6 +882,7 @@ class DiagramPreview {
     clearTimeout(this.updateTimer);
     this.updateTimer = undefined;
     this.webviewReady = false;
+    this.diagnostics?.releasePreviewAuthority(this.uri);
     this.flushPendingOffscreen('Preview disposed');
     this.lifecycle.send('DISPOSE');
     this.renderer.dispose();
@@ -912,6 +957,9 @@ export class PreviewManager implements vscode.WebviewPanelSerializer {
       }),
       vscode.window.onDidChangeActiveColorTheme(() => {
         this.previews.forEach((p) => void p.update(true, false));
+      }),
+      onDidChangeAiApiKey(() => {
+        this.previews.forEach((p) => p.pushSettingsState());
       }),
       vscode.workspace.onDidSaveTextDocument((doc) => {
         void this.autoExportOnSave(doc);

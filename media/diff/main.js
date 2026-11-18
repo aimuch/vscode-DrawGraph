@@ -32,6 +32,8 @@
 
   /** @type {'side' | 'swipe' | 'onion'} */
   let mode = 'side';
+  /** @type {'auto_fit' | 'manual'} */
+  let viewportMode = 'auto_fit';
   let zoom = 1;
   let panX = 24;
   let panY = 36;
@@ -39,6 +41,7 @@
   let pixelDiffActive = false;
   let natural = { width: 480, height: 320 };
   let emptyLabel = 'Empty';
+  let loadEpoch = 0;
 
   /** @type {{ svgOrDataUri: string, isPng: boolean } | null} */
   let renderedBefore = null;
@@ -70,6 +73,7 @@
     panX = ax - ((ax - panX) * clamped) / zoom;
     panY = ay - ((ay - panY) * clamped) / zoom;
     zoom = clamped;
+    viewportMode = 'manual';
     applyTransforms();
   }
 
@@ -98,6 +102,7 @@
   }
 
   function fitToStage() {
+    viewportMode = 'auto_fit';
     const pane = mode === 'side' ? $('paneAfter') : overlayView;
     const pw = Math.max(80, (pane.clientWidth || diffStage.clientWidth / 2) - 48);
     const ph = Math.max(80, (pane.clientHeight || diffStage.clientHeight) - 64);
@@ -200,6 +205,10 @@
         fitToStage();
       };
       target.appendChild(img);
+      return;
+    }
+    if (resolved.node) {
+      target.appendChild(resolved.node.cloneNode(true));
       return;
     }
     const parsed = parseCleanSvg(resolved.svgOrDataUri);
@@ -310,28 +319,30 @@
     }
   });
 
-  let draggingSwipe = false;
-  let panning = false;
-  let anchorX = 0;
-  let anchorY = 0;
+  /** @type {{ phase: 'idle' } | { phase: 'swiping' } | { phase: 'panning'; anchorX: number; anchorY: number }} */
+  let gesture = { phase: 'idle' };
 
+  const endSwipe = () => {
+    if (gesture.phase === 'swiping') {
+      gesture = { phase: 'idle' };
+    }
+  };
   swipeDivider.addEventListener('pointerdown', (e) => {
     e.stopPropagation();
-    draggingSwipe = true;
+    gesture = { phase: 'swiping' };
     swipeDivider.setPointerCapture(e.pointerId);
     swipeDivider.focus();
   });
   swipeDivider.addEventListener('pointermove', (e) => {
-    if (!draggingSwipe) {
+    if (gesture.phase !== 'swiping') {
       return;
     }
     const rect = overlayView.getBoundingClientRect();
     swipePct = Math.max(0, Math.min(100, ((e.clientX - rect.left) / Math.max(1, rect.width)) * 100));
     updateOverlayClipAndOpacity();
   });
-  swipeDivider.addEventListener('pointerup', () => {
-    draggingSwipe = false;
-  });
+  swipeDivider.addEventListener('pointerup', endSwipe);
+  swipeDivider.addEventListener('pointercancel', endSwipe);
   swipeDivider.addEventListener('keydown', (e) => {
     const step = e.shiftKey ? 10 : 2;
     if (e.key === 'ArrowLeft') {
@@ -345,26 +356,29 @@
     }
   });
 
+  const endPan = () => {
+    if (gesture.phase === 'panning') {
+      gesture = { phase: 'idle' };
+    }
+  };
   diffStage.addEventListener('pointerdown', (e) => {
     if (e.button !== 0 || (e.target instanceof Element && e.target.closest('#swipeDivider'))) {
       return;
     }
-    panning = true;
-    anchorX = e.clientX - panX;
-    anchorY = e.clientY - panY;
+    gesture = { phase: 'panning', anchorX: e.clientX - panX, anchorY: e.clientY - panY };
     diffStage.setPointerCapture(e.pointerId);
   });
   diffStage.addEventListener('pointermove', (e) => {
-    if (!panning) {
+    if (gesture.phase !== 'panning') {
       return;
     }
-    panX = e.clientX - anchorX;
-    panY = e.clientY - anchorY;
+    panX = e.clientX - gesture.anchorX;
+    panY = e.clientY - gesture.anchorY;
+    viewportMode = 'manual';
     applyTransforms();
   });
-  diffStage.addEventListener('pointerup', () => {
-    panning = false;
-  });
+  diffStage.addEventListener('pointerup', endPan);
+  diffStage.addEventListener('pointercancel', endPan);
   diffStage.addEventListener(
     'wheel',
     (e) => {
@@ -379,13 +393,18 @@
       } else {
         panX -= e.deltaX;
         panY -= e.deltaY;
+        viewportMode = 'manual';
         applyTransforms();
       }
     },
     { passive: false },
   );
 
-  window.addEventListener('resize', fitToStage);
+  window.addEventListener('resize', () => {
+    if (viewportMode === 'auto_fit') {
+      fitToStage();
+    }
+  });
 
   window.addEventListener('message', async (ev) => {
     const msg = ev.data;
@@ -452,10 +471,14 @@
     badgeBefore.textContent = msg.before?.label || 'Before';
     badgeAfter.textContent = msg.after?.label || 'After';
 
+    const epoch = ++loadEpoch;
     const [visA, visB] = await Promise.all([
       resolveSideVisual(msg.before, msg.mermaidTheme),
       resolveSideVisual(msg.after, msg.mermaidTheme),
     ]);
+    if (epoch !== loadEpoch) {
+      return;
+    }
     renderedBefore = visA ? { svgOrDataUri: visA.svgOrDataUri, isPng: visA.isPng } : null;
     renderedAfter = visB ? { svgOrDataUri: visB.svgOrDataUri, isPng: visB.isPng } : null;
 

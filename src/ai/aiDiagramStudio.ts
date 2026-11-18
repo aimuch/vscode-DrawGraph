@@ -15,6 +15,7 @@ import {
   handleSettingsDrawerAction,
   openExtensionSettingsInVscode,
 } from '../settingsSnapshot';
+import { StateMachine, type MachineSnapshot, type TransitionRecord, type TransitionTable } from '../stateMachine';
 import { getNonce } from '../util';
 import {
   fetchProviderModels,
@@ -27,6 +28,7 @@ import {
 import {
   buildAiDiagramPrompt,
   extractAndNormalizeAiDiagram,
+  isThinkingInProgress,
   parseArchitectureFindings,
   stripThinkingBlocks,
   type AiDiagramFormat,
@@ -88,10 +90,56 @@ function detectFormatFromUriOrLang(uri: vscode.Uri, languageId?: string): AiDiag
   return undefined;
 }
 
+export type AiStudioPhase = 'closed' | 'booting' | 'idle' | 'streaming' | 'ready' | 'error';
+export type AiStudioEvent =
+  | 'OPEN_PANEL'
+  | 'WEBVIEW_READY'
+  | 'START_STREAM'
+  | 'STREAM_OK'
+  | 'STREAM_CANCEL'
+  | 'STREAM_FAIL'
+  | 'RESET_SESSION'
+  | 'CLOSE_PANEL';
+
+const AI_STUDIO_TRANSITIONS: TransitionTable<AiStudioPhase, AiStudioEvent> = {
+  closed: {
+    OPEN_PANEL: 'booting',
+  },
+  booting: {
+    WEBVIEW_READY: 'idle',
+    CLOSE_PANEL: 'closed',
+  },
+  idle: {
+    START_STREAM: 'streaming',
+    RESET_SESSION: 'idle',
+    CLOSE_PANEL: 'closed',
+  },
+  streaming: {
+    START_STREAM: 'streaming',
+    STREAM_OK: 'ready',
+    STREAM_CANCEL: 'idle',
+    STREAM_FAIL: 'error',
+    CLOSE_PANEL: 'closed',
+  },
+  ready: {
+    START_STREAM: 'streaming',
+    RESET_SESSION: 'idle',
+    CLOSE_PANEL: 'closed',
+  },
+  error: {
+    START_STREAM: 'streaming',
+    RESET_SESSION: 'idle',
+    CLOSE_PANEL: 'closed',
+  },
+};
+
+const AI_STUDIO_SETTLED: readonly AiStudioPhase[] = ['closed', 'idle', 'ready', 'error'];
+
 export class AiDiagramStudioManager implements vscode.Disposable {
   private panel: vscode.WebviewPanel | undefined;
-  private webviewReady = false;
   private activeCts: vscode.CancellationTokenSource | undefined;
+  private headlessInFlight = 0;
+  private readonly lifecycle: StateMachine<AiStudioPhase, AiStudioEvent>;
   private boundTargetUri: vscode.Uri | undefined;
   private currentMode: AiTaskMode = 'generate';
   private currentFormat: AiDiagramFormat = 'mermaid';
@@ -107,22 +155,30 @@ export class AiDiagramStudioManager implements vscode.Disposable {
     private readonly drawio: DrawioEditorProvider,
     private readonly previews: PreviewManager,
     private readonly visualDiff: VisualDiffManager,
+    onTransition?: (record: TransitionRecord<string, string>, machineId: string) => void,
   ) {
+    this.lifecycle = new StateMachine<AiStudioPhase, AiStudioEvent>({
+      id: 'ai-studio',
+      initial: 'closed',
+      transitions: AI_STUDIO_TRANSITIONS,
+      settledStates: AI_STUDIO_SETTLED,
+      onTransition,
+    });
     this.subs.push(
       vscode.window.onDidChangeActiveTextEditor(() => {
-        if (this.panel && this.webviewReady) {
+        if (this.panel && this.isWebviewReady) {
           void this.pushContextState();
         }
       }),
       vscode.workspace.onDidChangeConfiguration((e) => {
-        if (e.affectsConfiguration('drawGraph') && this.panel && this.webviewReady) {
+        if (e.affectsConfiguration('drawGraph') && this.panel && this.isWebviewReady) {
           this.panel.title = `✨ ${t('AI Diagram Studio')}`;
           void this.pushContextState();
           void this.panel.webview.postMessage({ type: 'settingsState', settings: getSettingsSnapshot() });
         }
       }),
       onDidChangeAiApiKey(() => {
-        if (this.panel && this.webviewReady) {
+        if (this.panel && this.isWebviewReady) {
           void this.pushContextState();
           void this.panel.webview.postMessage({ type: 'settingsState', settings: getSettingsSnapshot() });
         }
@@ -130,11 +186,26 @@ export class AiDiagramStudioManager implements vscode.Disposable {
     );
   }
 
+  private get isWebviewReady(): boolean {
+    const s = this.lifecycle.state;
+    return s !== 'closed' && s !== 'booting';
+  }
+
+  isSettled(): boolean {
+    return this.lifecycle.isSettled && this.headlessInFlight === 0;
+  }
+
+  machines(): MachineSnapshot[] {
+    return [this.lifecycle.snapshot()];
+  }
+
   snapshot() {
     return {
       isOpen: Boolean(this.panel),
-      ready: this.webviewReady,
-      streaming: Boolean(this.activeCts),
+      ready: this.isWebviewReady,
+      streaming: this.lifecycle.state === 'streaming',
+      phase: this.lifecycle.state,
+      isSettled: this.isSettled(),
       mode: this.currentMode,
       format: this.currentFormat,
       boundUri: this.boundTargetUri?.toString(),
@@ -311,7 +382,7 @@ export class AiDiagramStudioManager implements vscode.Disposable {
 
     if (this.panel) {
       this.panel.reveal(vscode.ViewColumn.Beside, false);
-      if (this.webviewReady) {
+      if (this.isWebviewReady) {
         await this.pushContextState(options);
         if (options.autoRun) {
           await this.startStudioRun({
@@ -330,7 +401,7 @@ export class AiDiagramStudioManager implements vscode.Disposable {
     }
 
     this.pendingOpenOptions = options;
-    this.webviewReady = false;
+    this.lifecycle.send('OPEN_PANEL');
     const mediaRoot = vscode.Uri.joinPath(this.context.extensionUri, 'media');
     const panel = vscode.window.createWebviewPanel(
       'drawGraph.aiStudio',
@@ -355,7 +426,7 @@ export class AiDiagramStudioManager implements vscode.Disposable {
       this.activeCts?.cancel();
       this.activeCts?.dispose();
       this.activeCts = undefined;
-      this.webviewReady = false;
+      this.lifecycle.send('CLOSE_PANEL');
       if (this.panel === panel) {
         this.panel = undefined;
       }
@@ -395,6 +466,8 @@ export class AiDiagramStudioManager implements vscode.Disposable {
       tabPreview: t('Live Preview'),
       tabSource: t('Source Code'),
       streamingStatus: t('Generating with {0}…'),
+      thinkingStatus: t('Reasoning & planning topology ({0})…'),
+      btnRetry: t('Retry'),
       emptyWelcomeTitle: t('Design, Refine & Review Diagrams with AI'),
       emptyWelcomeSub: t('Supports Mermaid, Draw.io, PlantUML, Graphviz DOT, and WaveDrom with visual Before ↔ After diffing.'),
       chipMicroservices: t('E-commerce microservices with API Gateway, Auth, Order, Kafka & PostgreSQL'),
@@ -518,40 +591,66 @@ export class AiDiagramStudioManager implements vscode.Disposable {
     });
 
     const aiCfg = getAiConfigSync();
+    const providerLabel = `${aiCfg.provider}${aiCfg.effectiveModel ? ` · ${aiCfg.effectiveModel}` : ''}`;
+    this.lifecycle.send('START_STREAM', `${args.mode}:${effectiveFormat}`);
     void this.panel.webview.postMessage({
       type: 'streamStart',
       mode: args.mode,
       format: effectiveFormat,
-      providerLabel: `${aiCfg.provider}${aiCfg.effectiveModel ? ` · ${aiCfg.effectiveModel}` : ''}`,
+      providerLabel,
     });
+
+    // Coalesce high-frequency SSE chunks to ~30fps (32ms) to avoid IPC & DOM layout storms
+    let latestAcc = '';
+    let chunkTimer: NodeJS.Timeout | undefined;
+    const flushChunk = () => {
+      if (chunkTimer) {
+        clearTimeout(chunkTimer);
+        chunkTimer = undefined;
+      }
+      if (!this.panel || this.activeCts !== cts || !latestAcc) {
+        return;
+      }
+      const thinking = isThinkingInProgress(latestAcc);
+      if (args.mode === 'explain') {
+        void this.panel.webview.postMessage({
+          type: 'streamChunk',
+          mode: 'explain',
+          thinking,
+          providerLabel,
+          explanation: stripThinkingBlocks(latestAcc),
+          code: '',
+        });
+      } else {
+        const extracted = extractAndNormalizeAiDiagram(latestAcc, effectiveFormat, false);
+        void this.panel.webview.postMessage({
+          type: 'streamChunk',
+          mode: args.mode,
+          thinking,
+          providerLabel,
+          code: extracted.code,
+          explanation: extracted.explanation,
+          isCompleteFence: extracted.isCompleteFence,
+        });
+      }
+    };
 
     try {
       const result = await runAiPrompt(this.context, fullPrompt, {
         token: cts.token,
         skipConsent: args.skipConsent,
         onChunk: (acc) => {
-          if (!this.panel || this.activeCts !== cts) {
-            return;
-          }
-          if (args.mode === 'explain') {
-            void this.panel.webview.postMessage({
-              type: 'streamChunk',
-              mode: 'explain',
-              explanation: stripThinkingBlocks(acc),
-              code: '',
-            });
-          } else {
-            const extracted = extractAndNormalizeAiDiagram(acc, effectiveFormat);
-            void this.panel.webview.postMessage({
-              type: 'streamChunk',
-              mode: args.mode,
-              code: extracted.code,
-              explanation: extracted.explanation,
-              isCompleteFence: extracted.isCompleteFence,
-            });
+          latestAcc = acc;
+          if (!chunkTimer) {
+            chunkTimer = setTimeout(flushChunk, 32);
           }
         },
       });
+
+      if (chunkTimer) {
+        clearTimeout(chunkTimer);
+        chunkTimer = undefined;
+      }
 
       if (this.activeCts !== cts) {
         return;
@@ -564,6 +663,7 @@ export class AiDiagramStudioManager implements vscode.Disposable {
           { role: 'user', text: args.prompt || `Explain ${target?.label ?? 'diagram'}` },
           { role: 'assistant', text: cleanMd.slice(0, 1200) },
         );
+        this.lifecycle.send('STREAM_OK', `findings=${findings.length}`);
         void this.panel?.webview.postMessage({
           type: 'streamComplete',
           mode: 'explain',
@@ -574,7 +674,7 @@ export class AiDiagramStudioManager implements vscode.Disposable {
           modelLabel: `${result.provider} · ${result.modelName}`,
         });
       } else {
-        const extracted = extractAndNormalizeAiDiagram(result.text, effectiveFormat);
+        const extracted = extractAndNormalizeAiDiagram(result.text, effectiveFormat, true);
         this.lastGeneratedCode = extracted.code;
         this.lastGeneratedFormat = effectiveFormat;
         this.history.push(
@@ -596,6 +696,7 @@ export class AiDiagramStudioManager implements vscode.Disposable {
             };
           }
         }
+        this.lifecycle.send('STREAM_OK', effectiveFormat);
         void this.panel?.webview.postMessage({
           type: 'streamComplete',
           mode: args.mode,
@@ -610,16 +711,25 @@ export class AiDiagramStudioManager implements vscode.Disposable {
         });
       }
     } catch (err) {
+      if (chunkTimer) {
+        clearTimeout(chunkTimer);
+        chunkTimer = undefined;
+      }
       if (this.activeCts !== cts) {
         return;
       }
       if (err instanceof vscode.CancellationError) {
+        this.lifecycle.send('STREAM_CANCEL');
         void this.panel?.webview.postMessage({ type: 'streamCancelled' });
       } else {
         const message = err instanceof Error ? err.message : String(err);
+        this.lifecycle.send('STREAM_FAIL', message.slice(0, 80));
         void this.panel?.webview.postMessage({ type: 'streamError', message });
       }
     } finally {
+      if (chunkTimer) {
+        clearTimeout(chunkTimer);
+      }
       if (this.activeCts === cts) {
         this.activeCts = undefined;
         cts.dispose();
@@ -753,6 +863,7 @@ export class AiDiagramStudioManager implements vscode.Disposable {
         cancellable: true,
       },
       async (_progress, token) => {
+        this.headlessInFlight++;
         try {
           const res = await runAiPrompt(this.context, fullPrompt, {
             token,
@@ -799,6 +910,8 @@ export class AiDiagramStudioManager implements vscode.Disposable {
           const msg = err instanceof Error ? err.message : String(err);
           void vscode.window.showErrorMessage(t('DrawGraph AI failed: {0}', msg));
           throw err;
+        } finally {
+          this.headlessInFlight = Math.max(0, this.headlessInFlight - 1);
         }
       },
     );
@@ -827,7 +940,7 @@ export class AiDiagramStudioManager implements vscode.Disposable {
   private async onMessage(msg: Record<string, unknown>): Promise<void> {
     switch (msg.type) {
       case 'ready': {
-        this.webviewReady = true;
+        this.lifecycle.send('WEBVIEW_READY');
         const pending = this.pendingOpenOptions;
         this.pendingOpenOptions = undefined;
         await this.pushContextState(pending);
@@ -858,6 +971,7 @@ export class AiDiagramStudioManager implements vscode.Disposable {
       case 'clearHistory':
         this.history = [];
         this.lastGeneratedCode = '';
+        this.lifecycle.send('RESET_SESSION');
         await this.pushContextState();
         break;
       case 'applyResult': {
@@ -1020,7 +1134,10 @@ export class AiDiagramStudioManager implements vscode.Disposable {
       <div id="starterChips" class="starterChips"></div>
     </div>
 
-    <div id="errorBanner" class="errorBanner" hidden></div>
+    <div id="errorBanner" class="errorBanner" hidden>
+      <span id="errorText"></span>
+      <button type="button" id="retryRunBtn" class="secondaryActionBtn">Retry</button>
+    </div>
     <div id="statusBanner" class="statusBanner" hidden></div>
 
     <div id="resultContainer" hidden>
@@ -1069,6 +1186,7 @@ export class AiDiagramStudioManager implements vscode.Disposable {
   dispose(): void {
     this.activeCts?.cancel();
     this.activeCts?.dispose();
+    this.lifecycle.send('CLOSE_PANEL');
     this.panel?.dispose();
     this.subs.forEach((s) => s.dispose());
   }

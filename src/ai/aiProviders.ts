@@ -73,12 +73,21 @@ export function normalizeAiProviderId(raw: string | undefined): AiProviderId {
   return 'VS Code';
 }
 
+let cachedMagpieGateway: { url: string | null; expiresAt: number } | undefined;
+
 export function readMagpieGatewayUrlSync(): string | null {
+  const now = Date.now();
+  if (cachedMagpieGateway && now < cachedMagpieGateway.expiresAt) {
+    return cachedMagpieGateway.url;
+  }
   try {
     const gwPath = path.join(os.homedir(), '.config', 'magpie', 'gateway.json');
     const raw = fs.readFileSync(gwPath, 'utf8');
-    return parseMagpieGatewayJson(raw);
+    const url = parseMagpieGatewayJson(raw);
+    cachedMagpieGateway = { url, expiresAt: now + 5000 };
+    return url;
   } catch {
+    cachedMagpieGateway = { url: null, expiresAt: now + 5000 };
     return null;
   }
 }

@@ -363,6 +363,16 @@ body:not(.vscode-dark) #minimap {
   background: var(--vscode-button-hoverBackground);
 }
 
+#aiStudioBtn {
+  border-color: rgba(59, 130, 246, 0.45);
+  background: rgba(59, 130, 246, 0.12);
+  font-weight: 600;
+}
+
+#aiStudioBtn:hover {
+  background: rgba(59, 130, 246, 0.24);
+}
+
 #empty {
   position: absolute;
   inset: 40px 0 0 0;
