@@ -904,10 +904,50 @@ export function mermaidTheme(): string {
   return theme;
 }
 
+export type OffscreenWorkerPhase = 'cold' | 'booting' | 'busy' | 'warm_idle' | 'disposed';
+export type OffscreenWorkerEvent =
+  | 'SPAWN_WORKER'
+  | 'WORKER_READY'
+  | 'START_JOB'
+  | 'JOBS_DRAINED'
+  | 'IDLE_EXPIRED'
+  | 'WORKER_CLOSED'
+  | 'DISPOSE';
+
+const OFFSCREEN_WORKER_TRANSITIONS: TransitionTable<OffscreenWorkerPhase, OffscreenWorkerEvent> = {
+  cold: {
+    SPAWN_WORKER: 'booting',
+    DISPOSE: 'disposed',
+  },
+  booting: {
+    WORKER_READY: 'warm_idle',
+    START_JOB: 'busy',
+    WORKER_CLOSED: 'cold',
+    DISPOSE: 'disposed',
+  },
+  busy: {
+    WORKER_READY: 'busy',
+    START_JOB: 'busy',
+    JOBS_DRAINED: 'warm_idle',
+    WORKER_CLOSED: 'cold',
+    DISPOSE: 'disposed',
+  },
+  warm_idle: {
+    START_JOB: 'busy',
+    IDLE_EXPIRED: 'cold',
+    WORKER_CLOSED: 'cold',
+    DISPOSE: 'disposed',
+  },
+  disposed: {},
+};
+
+const OFFSCREEN_WORKER_SETTLED: readonly OffscreenWorkerPhase[] = ['cold', 'warm_idle', 'disposed'];
+
 export class PreviewManager implements vscode.WebviewPanelSerializer {
   static readonly viewType = 'drawGraph.preview';
   private readonly previews = new Map<string, DiagramPreview>();
   private readonly sharedExporter: PlantUmlRenderer;
+  private readonly workerLifecycle: StateMachine<OffscreenWorkerPhase, OffscreenWorkerEvent>;
   private workerPanel: vscode.WebviewPanel | undefined;
   private workerReady: Promise<void> | undefined;
   private workerIdleTimer: NodeJS.Timeout | undefined;
@@ -920,6 +960,13 @@ export class PreviewManager implements vscode.WebviewPanelSerializer {
     private readonly onTransition?: (record: TransitionRecord<string, string>, machineId: string) => void,
   ) {
     this.sharedExporter = new PlantUmlRenderer('plantuml-shared-exporter', onTransition);
+    this.workerLifecycle = new StateMachine<OffscreenWorkerPhase, OffscreenWorkerEvent>({
+      id: 'mermaid-offscreen-worker',
+      initial: 'cold',
+      transitions: OFFSCREEN_WORKER_TRANSITIONS,
+      settledStates: OFFSCREEN_WORKER_SETTLED,
+      onTransition,
+    });
     context.subscriptions.push(
       vscode.window.registerWebviewPanelSerializer(PreviewManager.viewType, this),
       vscode.workspace.onDidChangeTextDocument((e) => {
@@ -966,7 +1013,7 @@ export class PreviewManager implements vscode.WebviewPanelSerializer {
       }),
       {
         dispose: () => {
-          this.disposeWorkerPanel();
+          this.disposeWorkerPanel(true);
           this.sharedExporter.dispose();
           this.previews.forEach((p) => p.dispose());
         },
@@ -1168,6 +1215,7 @@ export class PreviewManager implements vscode.WebviewPanelSerializer {
     }
 
     if (!this.workerPanel) {
+      this.workerLifecycle.send('SPAWN_WORKER');
       const media = vscode.Uri.joinPath(this.context.extensionUri, 'media');
       const panel = vscode.window.createWebviewPanel(
         'drawGraph.mermaidWorker',
@@ -1183,6 +1231,7 @@ export class PreviewManager implements vscode.WebviewPanelSerializer {
       this.workerReady = new Promise<void>((resolveReady) => {
         const sub = panel.webview.onDidReceiveMessage((msg: { type: string; requestId?: number; data?: string; width?: number; height?: number; error?: string }) => {
           if (msg.type === 'workerReady') {
+            this.workerLifecycle.send('WORKER_READY');
             resolveReady();
           } else if (msg.type === 'offscreenRendered' && msg.requestId !== undefined) {
             const cb = this.workerPending.get(msg.requestId);
@@ -1192,9 +1241,11 @@ export class PreviewManager implements vscode.WebviewPanelSerializer {
         });
         panel.onDidDispose(() => {
           sub.dispose();
+          resolveReady();
           if (this.workerPanel === panel) {
             this.workerPanel = undefined;
             this.workerReady = undefined;
+            this.workerLifecycle.send('WORKER_CLOSED');
           }
           for (const cb of this.workerPending.values()) {
             cb({ error: 'Worker closed' });
@@ -1289,6 +1340,10 @@ export class PreviewManager implements vscode.WebviewPanelSerializer {
     }
 
     await this.workerReady;
+    if (!this.workerPanel) {
+      return { error: 'Worker closed' };
+    }
+    this.workerLifecycle.send('START_JOB', jobKind);
     const requestId = ++this.workerReqSeq;
     const result = await new Promise<OffscreenResult>((resolve) => {
       const timer = setTimeout(() => {
@@ -1310,23 +1365,33 @@ export class PreviewManager implements vscode.WebviewPanelSerializer {
       });
     });
 
-    this.workerIdleTimer = setTimeout(() => {
-      if (this.workerPending.size === 0) {
-        this.disposeWorkerPanel();
-      }
-    }, 1500);
+    if (this.workerPending.size === 0) {
+      this.workerLifecycle.send('JOBS_DRAINED');
+      this.workerIdleTimer = setTimeout(() => {
+        if (this.workerPending.size === 0) {
+          this.workerLifecycle.send('IDLE_EXPIRED');
+          this.disposeWorkerPanel();
+        }
+      }, 1500);
+    }
 
     return result;
   }
 
-  private disposeWorkerPanel(): void {
+  private disposeWorkerPanel(finalDispose = false): void {
     if (this.workerIdleTimer) {
       clearTimeout(this.workerIdleTimer);
       this.workerIdleTimer = undefined;
     }
-    this.workerPanel?.dispose();
+    const panel = this.workerPanel;
     this.workerPanel = undefined;
     this.workerReady = undefined;
+    if (finalDispose) {
+      this.workerLifecycle.send('DISPOSE');
+    } else if (panel) {
+      this.workerLifecycle.send('WORKER_CLOSED');
+    }
+    panel?.dispose();
   }
 
   async exportPlantUmlBlock(uri: vscode.Uri, blockIndex: number, format: 'svg' | 'png' | 'pdf'): Promise<void> {
@@ -1362,7 +1427,7 @@ export class PreviewManager implements vscode.WebviewPanelSerializer {
     }
     if (kind === 'mermaid') {
       const openPreview = this.previews.get(document.uri.toString());
-      if (openPreview) {
+      if (openPreview && openPreview.canRenderOffscreen) {
         openPreview.requestSilentExport(mode);
         return;
       }
@@ -1447,7 +1512,7 @@ export class PreviewManager implements vscode.WebviewPanelSerializer {
   }
 
   machines(): MachineSnapshot[] {
-    const out: MachineSnapshot[] = [this.sharedExporter.snapshot().worker];
+    const out: MachineSnapshot[] = [this.sharedExporter.snapshot().worker, this.workerLifecycle.snapshot()];
     for (const p of this.previews.values()) {
       out.push(p.lifecycle.snapshot());
       if (p.kind === 'plantuml') {
@@ -1458,7 +1523,7 @@ export class PreviewManager implements vscode.WebviewPanelSerializer {
   }
 
   isSettled(): boolean {
-    if (!this.sharedExporter.snapshot().isSettled) {
+    if (!this.sharedExporter.snapshot().isSettled || !this.workerLifecycle.isSettled || this.workerPending.size > 0) {
       return false;
     }
     for (const p of this.previews.values()) {

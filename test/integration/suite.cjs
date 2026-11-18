@@ -1122,6 +1122,7 @@ test('v0.5 AI Diagram Studio, Multi-Provider SSE Streaming, SecretStorage, Synta
     assert.ok(machineIds.includes('ai-studio'), 'ai-studio state machine registered in diagnostics.machines()');
     assert.ok(machineIds.includes('offline-pack'), 'offline-pack state machine registered in diagnostics.machines()');
     assert.ok(machineIds.includes('diagram-explorer'), 'diagram-explorer state machine registered in diagnostics.machines()');
+    assert.ok(machineIds.includes('mermaid-offscreen-worker'), 'mermaid-offscreen-worker state machine registered in diagnostics.machines()');
     await waitFor('All subsystem FSMs reach settled state', () => api.diagnostics.isSettled() === true, 5000);
 
     // 5. Quick Fix CodeActionProvider + one-click AI syntax auto-repair
