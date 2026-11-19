@@ -20,6 +20,15 @@
   const formatSelect = /** @type {HTMLSelectElement} */ ($('formatSelect'));
   const lblTarget = $('lblTarget');
   const targetBadge = $('targetBadge');
+  const pagePickerWrap = document.getElementById('pagePickerWrap');
+  const pageSelect = /** @type {HTMLSelectElement | null} */ (document.getElementById('pageSelect'));
+  const guidelinesBadge = document.getElementById('guidelinesBadge');
+  const versionHistoryBar = document.getElementById('versionHistoryBar');
+  const previewZoomBar = document.getElementById('previewZoomBar');
+  const studioZoomOut = document.getElementById('studioZoomOut');
+  const studioZoomReset = document.getElementById('studioZoomReset');
+  const studioZoomIn = document.getElementById('studioZoomIn');
+  const studioZoomFit = document.getElementById('studioZoomFit');
   const codeContextWrap = $('codeContextWrap');
   const includeCodeChk = /** @type {HTMLInputElement} */ ($('includeCodeChk'));
   const codeContextText = $('codeContextText');
@@ -62,7 +71,7 @@
   let strings = {};
   /** @type {'generate' | 'modify' | 'optimize' | 'fix' | 'explain'} */
   let currentMode = 'generate';
-  /** @type {'mermaid' | 'plantuml' | 'drawio' | 'dot' | 'wavedrom'} */
+  /** @type {'mermaid' | 'plantuml' | 'drawio' | 'dot' | 'wavedrom' | 'd2'} */
   let currentFormat = 'mermaid';
   /** @type {'layout' | 'style' | 'simplify' | 'resilience' | 'translate'} */
   let currentPreset = 'layout';
@@ -72,9 +81,14 @@
   let studioUiPhase = 'welcome';
   let latestCode = '';
   let hasPriorResult = false;
-  /** @type {{ uri: string; label: string; format: string; hasDiagnostics: boolean; diagnostics: string } | null} */
+  /** @type {{ uri: string; label: string; format: string; hasDiagnostics: boolean; diagnostics: string; pages?: string[]; selectedPageIndex?: number } | null} */
   let boundTarget = null;
   let currentMermaidTheme = 'default';
+  let currentMermaidLook = 'classic';
+  let studioZoom = 1;
+  /** @type {Array<{ id: number; label: string; format: string }>} */
+  let studioVersions = [];
+  let activeVersionId = 0;
   let renderSeq = 0;
 
   /**
@@ -168,9 +182,63 @@
     });
     const imported = document.importNode(root, true);
     previewCanvas.appendChild(imported);
+    applyStudioZoom();
   }
 
-  async function renderDiagramPreview(/** @type {{ renderKind: string; payload: string; mermaidTheme?: string }} */ preview) {
+  function applyStudioZoom() {
+    const svg = previewCanvas.querySelector('svg');
+    if (svg) {
+      svg.style.transform = studioZoom === 1 ? '' : `scale(${studioZoom})`;
+      svg.style.transformOrigin = 'top center';
+    }
+    if (studioZoomReset) {
+      studioZoomReset.textContent = `${Math.round(studioZoom * 100)}%`;
+    }
+  }
+
+  function renderVersionHistoryBar() {
+    if (!versionHistoryBar) {
+      return;
+    }
+    versionHistoryBar.replaceChildren();
+    if (!Array.isArray(studioVersions) || studioVersions.length <= 1) {
+      versionHistoryBar.hidden = true;
+      return;
+    }
+    versionHistoryBar.hidden = false;
+    for (const v of studioVersions) {
+      const pill = h(
+        'button',
+        {
+          type: 'button',
+          className: `versionPill${v.id === activeVersionId ? ' active' : ''}`,
+          onClick: () => vscode.postMessage({ type: 'selectVersion', versionId: v.id }),
+        },
+        `${v.label} (${v.format})`,
+      );
+      versionHistoryBar.appendChild(pill);
+    }
+    const idx = studioVersions.findIndex((v) => v.id === activeVersionId);
+    if (idx > 0) {
+      const prev = studioVersions[idx - 1];
+      const cur = studioVersions[idx];
+      if (prev.format === cur.format) {
+        versionHistoryBar.appendChild(
+          h(
+            'button',
+            {
+              type: 'button',
+              className: 'secondaryActionBtn',
+              onClick: () => vscode.postMessage({ type: 'compareVersions', fromId: prev.id, toId: cur.id }),
+            },
+            `Diff ${prev.label} ↔ ${cur.label}`,
+          ),
+        );
+      }
+    }
+  }
+
+  async function renderDiagramPreview(/** @type {{ renderKind: string; payload: string; mermaidTheme?: string; mermaidLook?: string }} */ preview) {
     if (!preview || !preview.payload) {
       previewCanvas.replaceChildren();
       return;
@@ -178,10 +246,12 @@
     if (preview.renderKind === 'mermaid' && mermaid) {
       try {
         const theme = preview.mermaidTheme || currentMermaidTheme || 'default';
+        const look = preview.mermaidLook || currentMermaidLook || 'classic';
         mermaid.initialize({
           startOnLoad: false,
           securityLevel: 'strict',
           theme: theme === 'auto' ? (document.body.classList.contains('vscode-dark') ? 'dark' : 'default') : theme,
+          look: look === 'handDrawn' ? 'handDrawn' : 'classic',
         });
         const id = `aiStudioMmd_${++renderSeq}`;
         const out = await mermaid.render(id, preview.payload);
@@ -327,6 +397,9 @@
     tabSourceBtn.classList.toggle('active', !showPreview);
     previewCanvas.hidden = !showPreview;
     sourceCodeView.hidden = showPreview;
+    if (previewZoomBar) {
+      previewZoomBar.hidden = !showPreview;
+    }
   }
 
   function syncModeUi() {
@@ -340,13 +413,31 @@
       btn.classList.toggle('active', btn.getAttribute('data-preset') === currentPreset);
     });
 
-    formatPickerWrap.hidden = currentMode !== 'generate' && Boolean(boundTarget);
+    // Keep format selector unlocked for Generate, Modify, and Optimize (supports cross-format AI re-draw)
+    formatPickerWrap.hidden = currentMode === 'explain' || (currentMode === 'fix' && Boolean(boundTarget));
     if (boundTarget && currentMode !== 'generate') {
       targetBadge.textContent = `${boundTarget.label} (${boundTarget.format})`;
       targetBadge.classList.toggle('hasError', Boolean(boundTarget.hasDiagnostics));
     } else {
       targetBadge.textContent = tr('noActiveDiagram', 'New Diagram');
       targetBadge.classList.remove('hasError');
+    }
+    if (pagePickerWrap && pageSelect) {
+      const pages = boundTarget && boundTarget.format === 'drawio' && currentMode !== 'generate' ? boundTarget.pages || [] : [];
+      if (pages.length > 1) {
+        pagePickerWrap.hidden = false;
+        pageSelect.replaceChildren(
+          ...pages.map((name, idx) => {
+            const opt = document.createElement('option');
+            opt.value = String(idx);
+            opt.textContent = `${idx + 1}/${pages.length}: ${name}`;
+            opt.selected = idx === (boundTarget?.selectedPageIndex ?? 0);
+            return opt;
+          }),
+        );
+      } else {
+        pagePickerWrap.hidden = true;
+      }
     }
 
     const placeholders = {
@@ -373,6 +464,7 @@
       prompt,
       optimizePreset: currentPreset,
       includeCodeContext: !codeContextWrap.hidden && includeCodeChk.checked,
+      pageIndex: pageSelect && !pagePickerWrap?.hidden ? Number(pageSelect.value) || 0 : undefined,
     });
   }
 
@@ -412,6 +504,23 @@
   tabSourceBtn.addEventListener('click', () => {
     activeOutputTab = 'source';
     syncOutputTabs();
+  });
+
+  studioZoomOut?.addEventListener('click', () => {
+    studioZoom = Math.max(0.25, studioZoom / 1.25);
+    applyStudioZoom();
+  });
+  studioZoomIn?.addEventListener('click', () => {
+    studioZoom = Math.min(4, studioZoom * 1.25);
+    applyStudioZoom();
+  });
+  studioZoomReset?.addEventListener('click', () => {
+    studioZoom = 1;
+    applyStudioZoom();
+  });
+  studioZoomFit?.addEventListener('click', () => {
+    studioZoom = 1;
+    applyStudioZoom();
   });
 
   runBtn.addEventListener('click', triggerRun);
@@ -488,6 +597,17 @@
         }
         if (msg.mermaidTheme) {
           currentMermaidTheme = msg.mermaidTheme;
+        }
+        if (msg.mermaidLook) {
+          currentMermaidLook = msg.mermaidLook;
+        }
+        if (guidelinesBadge) {
+          guidelinesBadge.hidden = !msg.hasStyleGuide;
+        }
+        if (Array.isArray(msg.versions)) {
+          studioVersions = msg.versions;
+          activeVersionId = Number(msg.activeVersionId) || 0;
+          renderVersionHistoryBar();
         }
         boundTarget = msg.target || null;
         if (msg.mode) currentMode = msg.mode;
@@ -607,6 +727,12 @@
           syncOutputTabs();
           applyBtn.hidden = !msg.canApplyToTarget;
           diffBtn.hidden = !msg.canApplyToTarget;
+          if (Array.isArray(msg.versions)) {
+            studioVersions = msg.versions;
+            activeVersionId = Number(msg.activeVersionId) || 0;
+            renderVersionHistoryBar();
+          }
+          studioZoom = 1;
           void renderDiagramPreview(msg.preview);
           renderFindings([]);
           renderMarkdownSafe(explanationBox, msg.explanation || '');

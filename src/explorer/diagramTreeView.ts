@@ -9,7 +9,7 @@ import { findMarkdownDiagramFences } from '../language/symbols';
 import { splitDiagrams } from '../plantuml/encoder';
 import { StateMachine, type MachineSnapshot, type TransitionRecord, type TransitionTable } from '../stateMachine';
 
-export type ExplorerDiagramType = 'drawio' | 'mermaid' | 'plantuml' | 'dot' | 'wavedrom' | 'markdown';
+export type ExplorerDiagramType = 'drawio' | 'mermaid' | 'plantuml' | 'dot' | 'wavedrom' | 'd2' | 'markdown';
 
 export interface DiagramTreeNode {
   kind: 'file' | 'subdiagram';
@@ -68,9 +68,9 @@ const EXPLORER_INDEX_TRANSITIONS: TransitionTable<ExplorerIndexPhase, ExplorerIn
 
 const EXPLORER_INDEX_SETTLED: readonly ExplorerIndexPhase[] = ['stale', 'ready', 'disposed'];
 
-const PRIMARY_DIAGRAM_GLOB = '**/*.{drawio,dio,mmd,mermaid,puml,plantuml,pu,iuml,wsd,dot,gv,wavedrom}';
+const PRIMARY_DIAGRAM_GLOB = '**/*.{drawio,dio,mmd,mermaid,puml,plantuml,pu,iuml,wsd,dot,gv,wavedrom,d2}';
 const SECONDARY_DIAGRAM_GLOB = '**/*.{drawio.svg,drawio.png,drawio.xml,dio.svg,dio.png,dio.xml,wave.json,md}';
-const WATCHER_GLOB = '**/*.{drawio,dio,mmd,mermaid,puml,plantuml,pu,iuml,wsd,dot,gv,wavedrom,json,md,svg,png,xml}';
+const WATCHER_GLOB = '**/*.{drawio,dio,mmd,mermaid,puml,plantuml,pu,iuml,wsd,dot,gv,wavedrom,d2,json,md,svg,png,xml}';
 const EXCLUDE_GLOB = '**/{node_modules,.git,dist,out,build,.vscode-test}/**';
 const SCAN_CONCURRENCY = 12;
 
@@ -90,6 +90,9 @@ function classifyDiagramUri(uri: vscode.Uri): ExplorerDiagramType | undefined {
   }
   if (/\.(?:wavedrom|wave\.json)$/i.test(lower)) {
     return 'wavedrom';
+  }
+  if (lower.endsWith('.d2')) {
+    return 'd2';
   }
   if (lower.endsWith('.md')) {
     return 'markdown';
@@ -222,7 +225,9 @@ export class DiagramExplorerProvider
             ? 'pulse'
             : element.diagramType === 'dot'
               ? 'graph-scatter'
-              : 'type-hierarchy-sub';
+              : element.diagramType === 'd2'
+                ? 'layers'
+                : 'type-hierarchy-sub';
       item.iconPath = new vscode.ThemeIcon(iconId);
       item.command = {
         command: 'drawGraph.explorer.openEntry',

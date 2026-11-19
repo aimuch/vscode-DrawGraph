@@ -131,13 +131,71 @@ body {
   color: var(--vscode-descriptionForeground);
 }
 
-#formatSelect {
+#formatSelect,
+#pageSelect {
   background: var(--vscode-dropdown-background);
   color: var(--vscode-dropdown-foreground);
   border: 1px solid var(--vscode-dropdown-border, rgba(128, 128, 128, 0.3));
   border-radius: 4px;
   padding: 2px 6px;
   font-size: 12px;
+}
+
+.guidelinesBadge {
+  padding: 2px 7px;
+  border-radius: 999px;
+  font-size: 11px;
+  background: rgba(16, 185, 129, 0.16);
+  color: var(--vscode-testing-iconPassed, #10b981);
+  border: 1px solid rgba(16, 185, 129, 0.38);
+}
+
+#versionHistoryBar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.18));
+  background: rgba(128, 128, 128, 0.05);
+}
+
+.versionPill {
+  background: transparent;
+  color: var(--vscode-descriptionForeground);
+  border: 1px solid rgba(128, 128, 128, 0.3);
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.versionPill.active {
+  background: var(--vscode-button-background);
+  color: var(--vscode-button-foreground);
+  border-color: transparent;
+  font-weight: 600;
+}
+
+.previewZoomBar {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  margin-left: 4px;
+}
+
+.previewZoomBar button {
+  background: transparent;
+  color: var(--vscode-foreground);
+  border: 1px solid rgba(128, 128, 128, 0.28);
+  border-radius: 4px;
+  padding: 2px 6px;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.previewZoomBar button:hover {
+  background: var(--vscode-toolbar-hoverBackground, rgba(128, 128, 128, 0.18));
 }
 
 .targetBadge {

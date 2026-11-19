@@ -21,7 +21,7 @@ export type AiProviderId =
   | 'CC Switch'
   | 'OpenAI Compatible';
 
-export type AiDiagramFormat = 'mermaid' | 'plantuml' | 'drawio' | 'dot' | 'wavedrom';
+export type AiDiagramFormat = 'mermaid' | 'plantuml' | 'drawio' | 'dot' | 'wavedrom' | 'd2';
 
 export type AiTaskMode = 'generate' | 'modify' | 'optimize' | 'fix' | 'explain';
 
@@ -187,6 +187,11 @@ function formatSpecInstructions(format: AiDiagramFormat): string {
         '- Target format: **WaveDrom JSON** (`json` fenced code block).',
         '- Output strict valid JSON containing either `"signal": [...]` (digital timing waveforms using `p`/`n` clocks, `0`/`1`/`x`/`z`, `3`..`9` buses with `"data": [...]`, and optional `"edge"` / `"head"`) OR `"reg": [...]` (hardware register BitField layout with `"bits"`, `"name"`, `"attr"`, `"type"`, and `"config": { "bits": 32, "lanes": 2 }`).',
       ].join('\n');
+    case 'd2':
+      return [
+        '- Target format: **D2** (`d2` fenced code block).',
+        '- Output clean declarative D2 syntax (`direction: right`, nested containers `group: "Label" { ... }`, `shape: cylinder` / `diamond` / `queue` / `cloud` / `sql_table`, and directed edges `a -> b: label`).',
+      ].join('\n');
   }
 }
 
@@ -208,6 +213,7 @@ export interface BuildAiDiagramPromptArgs {
   currentDiagram?: string;
   drawioSummaryMermaid?: string;
   codeContext?: { fileName: string; content: string };
+  teamGuidelines?: string;
   diagnosticErrors?: string;
   optimizePreset?: OptimizePreset;
   history?: ReadonlyArray<{ role: 'user' | 'assistant'; text: string }>;
@@ -243,6 +249,13 @@ export function buildAiDiagramPrompt(args: BuildAiDiagramPromptArgs): string {
     formatSpecInstructions(args.format),
     outputEnvelopeRule(args.format, args.lang),
   );
+
+  if (args.teamGuidelines && args.teamGuidelines.trim()) {
+    parts.push(
+      'Team diagramming style guide (follow these conventions when generating or editing):',
+      wrapUntrustedBlock('TEAM_STYLE_GUIDE', args.teamGuidelines.trim().slice(0, 4000)),
+    );
+  }
 
   if (args.history && args.history.length > 0) {
     const recent = args.history
@@ -422,6 +435,7 @@ export function extractAndNormalizeAiDiagram(
         if (targetFormat === 'drawio') return b.lang === 'xml' || b.lang === 'drawio' || b.body.includes('<mx');
         if (targetFormat === 'wavedrom') return b.lang === 'json' || b.lang === 'wavedrom';
         if (targetFormat === 'dot') return b.lang === 'dot' || b.lang === 'graphviz';
+        if (targetFormat === 'd2') return b.lang === 'd2';
         if (targetFormat === 'plantuml') return b.lang === 'plantuml' || b.lang === 'puml' || b.body.includes('@start');
         return b.lang === 'mermaid' || b.lang === 'mmd';
       }) ?? blocks[0];
@@ -510,4 +524,34 @@ export function parseSseChatLine(rawLine: string): { text?: string; done?: boole
     // Ignore keep-alive or partial comments
   }
   return {};
+}
+
+/**
+ * Splices an updated single-page `<diagram ...>...</diagram>` (or `<mxfile>` wrapping one)
+ * back into `fullMxfileXml` at `pageIndex`, leaving all other pages untouched.
+ */
+export function spliceDrawioPageXml(
+  fullMxfileXml: string,
+  pageIndex: number,
+  updatedSinglePageXml: string,
+): string {
+  const diagramRe = /<diagram\b[^>]*>[\s\S]*?<\/diagram>/gi;
+  const fullMatches = [...fullMxfileXml.matchAll(diagramRe)];
+  if (fullMatches.length <= 1 || pageIndex < 0 || pageIndex >= fullMatches.length) {
+    return updatedSinglePageXml;
+  }
+  const replacementMatch = /<diagram\b[^>]*>[\s\S]*?<\/diagram>/i.exec(updatedSinglePageXml);
+  if (!replacementMatch) {
+    return updatedSinglePageXml;
+  }
+  const target = fullMatches[pageIndex];
+  const origTagOpen = /^<diagram\b[^>]*>/i.exec(target[0])?.[0];
+  let replacementDiagram = replacementMatch[0];
+  if (origTagOpen) {
+    // Preserve original page id and name attributes
+    replacementDiagram = replacementDiagram.replace(/^<diagram\b[^>]*>/i, origTagOpen);
+  }
+  const start = target.index ?? 0;
+  const end = start + target[0].length;
+  return `${fullMxfileXml.slice(0, start)}${replacementDiagram}${fullMxfileXml.slice(end)}`;
 }

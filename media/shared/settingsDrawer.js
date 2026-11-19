@@ -152,6 +152,8 @@
         state.drawio[key.slice(7)] = value;
       } else if (key === 'mermaid.theme') {
         state.preview.mermaidTheme = value;
+      } else if (key === 'mermaid.look') {
+        state.preview.mermaidLook = value;
       } else if (key === 'preview.pngScale') {
         state.preview.pngScale = Number(value);
       } else if (key === 'preview.pngTransparent') {
@@ -188,6 +190,10 @@
         state.plantuml.markdownDot = Boolean(value);
       } else if (key === 'markdown.wavedrom') {
         state.plantuml.markdownWavedrom = Boolean(value);
+      } else if (key === 'markdown.d2') {
+        state.plantuml.markdownD2 = Boolean(value);
+      } else if (key === 'd2.path') {
+        state.plantuml.d2Path = value;
       }
       opts.postMessage({ type: 'updateSetting', key, value });
       renderPreservingFocus();
@@ -607,6 +613,19 @@
         h(
           'div',
           { className: 'settingsRow' },
+          h('span', { className: 'settingsLabel' }, tr('lblMermaidLook')),
+          buildSegmented(
+            'mermaid.look',
+            [
+              ['classic', tr('lookClassic')],
+              ['handDrawn', tr('lookHandDrawn')],
+            ],
+            state.preview.mermaidLook || 'classic',
+          ),
+        ),
+        h(
+          'div',
+          { className: 'settingsRow' },
           h('span', { className: 'settingsLabel' }, tr('lblPngScale')),
           buildSegmented(
             'preview.pngScale',
@@ -683,6 +702,7 @@
           buildCheckbox('markdown.plantuml', tr('chkMdPlantuml'), state.plantuml.markdownPlantuml),
           buildCheckbox('markdown.dot', tr('chkMdDot'), state.plantuml.markdownDot),
           buildCheckbox('markdown.wavedrom', tr('chkMdWaveDrom'), state.plantuml.markdownWavedrom),
+          buildCheckbox('markdown.d2', tr('chkMdD2'), state.plantuml.markdownD2 !== false),
         ),
         h(
           'div',

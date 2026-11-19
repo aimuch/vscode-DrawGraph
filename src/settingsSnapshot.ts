@@ -37,6 +37,7 @@ export interface SettingsSnapshot {
   };
   preview: {
     mermaidTheme: string;
+    mermaidLook: string;
     pngScale: number;
     pngTransparent: boolean;
     followActiveEditor: boolean;
@@ -51,12 +52,14 @@ export interface SettingsSnapshot {
     render: string;
     server: string;
     jar: string;
+    d2Path: string;
     exportOnSave: string;
     exportOnSaveOutDir: string;
     markdownMermaid: boolean;
     markdownPlantuml: boolean;
     markdownDot: boolean;
     markdownWavedrom: boolean;
+    markdownD2: boolean;
   };
 }
 
@@ -72,6 +75,7 @@ const RESTRICTED_SETTINGS = new Set([
   'plantuml.render',
   'plantuml.server',
   'plantuml.jar',
+  'd2.path',
   'exportOnSave',
   'exportOnSaveOutDir',
 ]);
@@ -90,6 +94,7 @@ const ALLOWED_SETTINGS = new Set([
   'drawio.autoLoadWorkspaceLibrary',
   'drawio.url',
   'mermaid.theme',
+  'mermaid.look',
   'preview.pngScale',
   'preview.pngTransparent',
   'preview.followActiveEditor',
@@ -102,12 +107,14 @@ const ALLOWED_SETTINGS = new Set([
   'plantuml.render',
   'plantuml.server',
   'plantuml.jar',
+  'd2.path',
   'exportOnSave',
   'exportOnSaveOutDir',
   'markdown.mermaid',
   'markdown.plantuml',
   'markdown.dot',
   'markdown.wavedrom',
+  'markdown.d2',
 ]);
 
 export function getSettingsSnapshot(): SettingsSnapshot {
@@ -151,6 +158,7 @@ export function getSettingsSnapshot(): SettingsSnapshot {
     },
     preview: {
       mermaidTheme: cfg.get<string>('mermaid.theme', 'auto'),
+      mermaidLook: cfg.get<string>('mermaid.look', 'classic'),
       pngScale: cfg.get<number>('preview.pngScale', 2),
       pngTransparent: cfg.get<boolean>('preview.pngTransparent', false),
       followActiveEditor: cfg.get<boolean>('preview.followActiveEditor', true),
@@ -165,12 +173,14 @@ export function getSettingsSnapshot(): SettingsSnapshot {
       render: cfg.get<string>('plantuml.render', 'auto'),
       server: cfg.get<string>('plantuml.server', 'https://www.plantuml.com/plantuml'),
       jar: cfg.get<string>('plantuml.jar', ''),
+      d2Path: cfg.get<string>('d2.path', ''),
       exportOnSave: cfg.get<string>('exportOnSave', 'off'),
       exportOnSaveOutDir: cfg.get<string>('exportOnSaveOutDir', ''),
       markdownMermaid: cfg.get<boolean>('markdown.mermaid', true),
       markdownPlantuml: cfg.get<boolean>('markdown.plantuml', true),
       markdownDot: cfg.get<boolean>('markdown.dot', true),
       markdownWavedrom: cfg.get<boolean>('markdown.wavedrom', true),
+      markdownD2: cfg.get<boolean>('markdown.d2', true),
     },
   };
 }

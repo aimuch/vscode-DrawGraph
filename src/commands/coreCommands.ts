@@ -11,6 +11,7 @@ import { encodePlantUml, extractPlantUmlSourceFromSvg, pickBlock, splitDiagrams 
 import { diagramKind, type PreviewManager } from '../preview/previewManager';
 import type { SettingsPanelManager } from '../settingsPanel';
 import {
+  D2_TEMPLATE,
   DIAGRAM_TEMPLATES,
   DOT_TEMPLATE,
   DRAWIO_TEMPLATE,
@@ -94,7 +95,7 @@ export function registerCoreCommands({ context, drawio, previews, settingsPanel 
     context.subscriptions.push(vscode.commands.registerCommand(id, fn));
   const asUri = (arg: unknown) => (arg instanceof vscode.Uri ? arg : undefined);
 
-  const newTextDiagram = async (language: 'mermaid' | 'plantuml' | 'dot' | 'wavedrom', content: string) => {
+  const newTextDiagram = async (language: 'mermaid' | 'plantuml' | 'dot' | 'wavedrom' | 'd2', content: string) => {
     const document = await vscode.workspace.openTextDocument({ language, content });
     await vscode.window.showTextDocument(document);
     await previews.open(document.uri, true);
@@ -197,7 +198,7 @@ export function registerCoreCommands({ context, drawio, previews, settingsPanel 
       const doc = await vscode.workspace.openTextDocument(targetUri);
       const kind = diagramKind(doc);
       const isMarkdown = doc.languageId === 'markdown' || /\.md$/i.test(targetUri.path);
-      if (kind !== 'plantuml' && kind !== 'mermaid' && !isMarkdown) {
+      if (!kind && !isMarkdown) {
         void vscode.window.showWarningMessage(t('Open a PlantUML, Mermaid, or Markdown file with diagrams first.'));
         return [];
       }
@@ -267,6 +268,14 @@ export function registerCoreCommands({ context, drawio, previews, settingsPanel 
             run: () => previews.renderWaveDromBytes(doc.getText(), format),
           });
         }
+      } else if (kind === 'd2') {
+        if (doc.getText().trim()) {
+          tasks.push({
+            suffix: '',
+            ext: `.${format}`,
+            run: () => previews.renderD2Bytes(doc.getText(), format),
+          });
+        }
       } else if (isMarkdown) {
         const fences = findMarkdownDiagramFences(doc.getText());
         let counter = 0;
@@ -300,6 +309,13 @@ export function registerCoreCommands({ context, drawio, previews, settingsPanel 
               suffix: `-${counter}`,
               ext: `.${format}`,
               run: () => previews.renderWaveDromBytes(fence.content, format),
+            });
+          } else if (fence.kind === 'd2' && fence.content.trim()) {
+            counter++;
+            tasks.push({
+              suffix: `-${counter}`,
+              ext: `.${format}`,
+              run: () => previews.renderD2Bytes(fence.content, format),
             });
           }
         }
@@ -485,6 +501,7 @@ export function registerCoreCommands({ context, drawio, previews, settingsPanel 
   register('drawGraph.plantuml.new', () => newTextDiagram('plantuml', PLANTUML_TEMPLATE));
   register('drawGraph.dot.new', () => newTextDiagram('dot', DOT_TEMPLATE));
   register('drawGraph.wavedrom.new', () => newTextDiagram('wavedrom', WAVEDROM_TEMPLATE));
+  register('drawGraph.d2.new', () => newTextDiagram('d2', D2_TEMPLATE));
 
   register('drawGraph.diagram.newFromTemplate', async (templateId?: unknown) => {
     const chosen =
@@ -630,7 +647,7 @@ export function registerCoreCommands({ context, drawio, previews, settingsPanel 
     } else if (targetUri) {
       const openDoc = vscode.workspace.textDocuments.find((d) => d.uri.toString() === targetUri.toString());
       const kind = openDoc ? diagramKind(openDoc) : undefined;
-      if (kind === 'mermaid' || kind === 'plantuml' || kind === 'dot' || kind === 'wavedrom') {
+      if (kind === 'mermaid' || kind === 'plantuml' || kind === 'dot' || kind === 'wavedrom' || kind === 'd2') {
         contextual.push(
           {
             id: 'previewSide',
@@ -706,6 +723,11 @@ export function registerCoreCommands({ context, drawio, previews, settingsPanel 
             id: 'batchExport',
             label: `$(export) ${t('Export All Diagrams in File…')}`,
             run: () => vscode.commands.executeCommand('drawGraph.exportDocumentDiagrams', targetUri),
+          },
+          {
+            id: 'markdownPublish',
+            label: `$(book) ${t('Compile Markdown for Publish (Static Diagram Assets)')}`,
+            run: () => vscode.commands.executeCommand('drawGraph.markdown.compilePublish', targetUri),
           },
         );
       } else if (/\.(?:drawio|dio|svg|png|xml)$/i.test(targetUri.path)) {
@@ -789,6 +811,30 @@ export function registerCoreCommands({ context, drawio, previews, settingsPanel 
         label: `$(type-hierarchy-sub) ${t('New PlantUML Diagram')}`,
         detail: t('UML sequence, class, component, mindmap…'),
         run: () => newTextDiagram('plantuml', PLANTUML_TEMPLATE),
+      },
+      {
+        id: 'newD2',
+        label: `$(layers) ${t('New D2 Architecture Diagram')}`,
+        detail: t('Modern declarative architecture diagram (.d2)'),
+        run: () => newTextDiagram('d2', D2_TEMPLATE),
+      },
+      {
+        id: 'searchDiagrams',
+        label: `$(search) ${t('Search Nodes Across Workspace Diagrams…')}`,
+        detail: t('Find any service, node, or label across all workspace diagrams'),
+        run: () => vscode.commands.executeCommand('drawGraph.searchDiagrams'),
+      },
+      {
+        id: 'prImpact',
+        label: `$(git-pull-request) ${t('Generate Git PR Impact Diagram…')}`,
+        detail: t('Visualize changed files and downstream affected dependents'),
+        run: () => vscode.commands.executeCommand('drawGraph.generatePrImpactDiagram'),
+      },
+      {
+        id: 'archDrift',
+        label: `$(pulse) ${t('Check Architecture Drift (Code ↔ Diagrams)')}`,
+        detail: t('Find undocumented modules and stale diagram references'),
+        run: () => vscode.commands.executeCommand('drawGraph.checkArchitectureDrift'),
       },
       {
         id: 'newFromTemplate',

@@ -10,6 +10,7 @@ import { extractMermaidErrorLine } from '../language/symbols';
 import { countPages, pickBlock, splitDiagrams } from '../plantuml/encoder';
 import { CancelledError, extractPlantUmlError, PlantUmlRenderer, type WorkerPhase } from '../plantuml/renderer';
 import type { HostToPreviewMessage, PreviewToHostMessage } from '../protocol/messages';
+import { renderD2Svg } from '../renderers/d2Renderer';
 import { renderDotSvg } from '../renderers/dotRenderer';
 import { renderWaveDromToSvg } from '../renderers/wavedromRenderer';
 import {
@@ -20,15 +21,17 @@ import {
 } from '../settingsSnapshot';
 import { StateMachine, type MachineSnapshot, type TransitionRecord, type TransitionTable } from '../stateMachine';
 import { config, decodeDataUri, getNonce, isDarkTheme, resolveAutoExportUri, saveBytes, withExtension } from '../util';
+import { extractWalkthroughSteps } from '../walkthrough/walkthroughCore';
 
-export type DiagramKind = 'mermaid' | 'plantuml' | 'dot' | 'wavedrom';
+export type DiagramKind = 'mermaid' | 'plantuml' | 'dot' | 'wavedrom' | 'd2';
 
 export function diagramKind(document: vscode.TextDocument): DiagramKind | undefined {
   if (
     document.languageId === 'mermaid' ||
     document.languageId === 'plantuml' ||
     document.languageId === 'dot' ||
-    document.languageId === 'wavedrom'
+    document.languageId === 'wavedrom' ||
+    document.languageId === 'd2'
   ) {
     return document.languageId;
   }
@@ -48,6 +51,9 @@ export function diagramKind(document: vscode.TextDocument): DiagramKind | undefi
   }
   if (ext === '.wavedrom') {
     return 'wavedrom';
+  }
+  if (ext === '.d2') {
+    return 'd2';
   }
   return undefined;
 }
@@ -430,6 +436,7 @@ class DiagramPreview {
         requestId,
         source,
         theme: mermaidTheme(),
+        look: mermaidLook(),
         format,
       });
     });
@@ -454,13 +461,14 @@ class DiagramPreview {
       }
     }
     const text = document.getText();
+    this.post({ type: 'walkthrough', steps: extractWalkthroughSteps(text) });
     if (this.kind === 'mermaid') {
       this.lifecycle.send('START_RENDER');
-      this.post({ type: 'mermaid', source: text, theme: mermaidTheme() });
+      this.post({ type: 'mermaid', source: text, theme: mermaidTheme(), look: mermaidLook() });
       return;
     }
 
-    if (this.kind === 'dot' || this.kind === 'wavedrom') {
+    if (this.kind === 'dot' || this.kind === 'wavedrom' || this.kind === 'd2') {
       if (!text.trim()) {
         this.lastBlockKey = undefined;
         this.diagnostics?.clear(this.uri);
@@ -481,7 +489,9 @@ class DiagramPreview {
         const svg =
           this.kind === 'dot'
             ? await renderDotSvg(text, config().get('plantuml.dot', ''), vscode.workspace.isTrusted)
-            : renderWaveDromToSvg(text);
+            : this.kind === 'd2'
+              ? await renderD2Svg(text, config().get('d2.path', ''), vscode.workspace.isTrusted)
+              : renderWaveDromToSvg(text);
         this.diagnostics?.clear(this.uri);
         this.post({ type: 'svg', svg, info: '', canNav: false });
       } catch (err) {
@@ -697,9 +707,10 @@ class DiagramPreview {
           const pdfBytes = buildPdfDocument([{ bytes: pngBytes, format: 'png', scale }]);
           await saveBytes(withExtension(this.uri, '.pdf'), pdfBytes, { PDF: ['pdf'] });
         } else if (msg.format === 'html') {
+          const steps = this.document ? extractWalkthroughSteps(this.document.getText()) : [];
           const html = buildInteractiveHtmlBundle({
             title: path.basename(this.uri.path),
-            pages: [{ name: path.basename(this.uri.path), svg: msg.data }],
+            pages: [{ name: path.basename(this.uri.path), svg: msg.data, steps }],
             lang: getLanguage(),
             defaultTheme: isDarkTheme() ? 'dark' : 'light',
           });
@@ -852,6 +863,13 @@ class DiagramPreview {
       <button id="laserToggleBtn" type="button">${tr('Laser')}</button>
       <button id="exitPresentBtn" type="button">${tr('Exit Presentation (Esc)')}</button>
     </div>
+    <div id="walkthroughHud" hidden>
+      <button id="stepPrevBtn" type="button" title="${tr('Previous step (←)')}">◀</button>
+      <span id="stepCaption"></span>
+      <button id="stepNextBtn" type="button" title="${tr('Next step (→)')}">▶</button>
+      <button id="stepPlayBtn" type="button" title="${tr('Auto-play walkthrough')}">▶▶</button>
+      <button id="stepCloseBtn" type="button" title="${tr('Reset spotlight (Esc)')}">✕</button>
+    </div>
     <div id="laserDot" hidden></div>
     <div id="findBar" hidden>
       <input id="findInput" type="text" placeholder="${tr('Find in diagram…')}">
@@ -902,6 +920,10 @@ export function mermaidTheme(): string {
     return isDarkTheme() ? 'dark' : 'default';
   }
   return theme;
+}
+
+export function mermaidLook(): 'classic' | 'handDrawn' {
+  return config().get<string>('mermaid.look', 'classic') === 'handDrawn' ? 'handDrawn' : 'classic';
 }
 
 export type OffscreenWorkerPhase = 'cold' | 'booting' | 'busy' | 'warm_idle' | 'disposed';
@@ -1193,6 +1215,19 @@ export class PreviewManager implements vscode.WebviewPanelSerializer {
     return pngBytes;
   }
 
+  async renderD2Bytes(source: string, format: 'svg' | 'png' | 'pdf'): Promise<Uint8Array> {
+    const svg = await renderD2Svg(source, config().get('d2.path', ''), vscode.workspace.isTrusted);
+    if (format === 'svg') {
+      return Buffer.from(svg, 'utf8');
+    }
+    const pngBytes = await this.rasterizeSvgToPngBytes(svg);
+    if (format === 'pdf') {
+      const scale = Math.max(1, config().get<number>('preview.pngScale', 2));
+      return buildPdfDocument([{ bytes: pngBytes, format: 'png', scale }]);
+    }
+    return pngBytes;
+  }
+
   /**
    * Rasterizes an arbitrary standalone SVG string into PNG bytes via the background webview worker.
    */
@@ -1304,9 +1339,17 @@ export class PreviewManager implements vscode.WebviewPanelSerializer {
       try {
         let svgMarkup = msg.source;
         if (msg.jobKind !== 'svg_raster') {
-          if (msg.theme !== lastTheme) {
-            window.mermaid.initialize({ startOnLoad: false, theme: msg.theme || 'default', securityLevel: 'strict', htmlLabels: false, flowchart: { htmlLabels: false } });
-            lastTheme = msg.theme;
+          const renderKey = (msg.theme || 'default') + ':' + (msg.look === 'handDrawn' ? 'handDrawn' : 'classic');
+          if (renderKey !== lastTheme) {
+            window.mermaid.initialize({
+              startOnLoad: false,
+              theme: msg.theme || 'default',
+              look: msg.look === 'handDrawn' ? 'handDrawn' : 'classic',
+              securityLevel: 'strict',
+              htmlLabels: false,
+              flowchart: { htmlLabels: false },
+            });
+            lastTheme = renderKey;
           }
           const id = 'dg-worker-' + (++seq);
           const out = await window.mermaid.render(id, msg.source);
@@ -1360,6 +1403,7 @@ export class PreviewManager implements vscode.WebviewPanelSerializer {
         requestId,
         source,
         theme: mermaidTheme(),
+        look: mermaidLook(),
         format,
         jobKind,
       });
@@ -1441,13 +1485,15 @@ export class PreviewManager implements vscode.WebviewPanelSerializer {
       }
       return;
     }
-    if (kind === 'dot' || kind === 'wavedrom') {
+    if (kind === 'dot' || kind === 'wavedrom' || kind === 'd2') {
       try {
         const target = resolveAutoExportUri(document.uri, ext);
         const data =
           kind === 'dot'
             ? await this.renderDotBytes(document.getText(), mode)
-            : await this.renderWaveDromBytes(document.getText(), mode);
+            : kind === 'd2'
+              ? await this.renderD2Bytes(document.getText(), mode)
+              : await this.renderWaveDromBytes(document.getText(), mode);
         await vscode.workspace.fs.writeFile(target, data);
         void vscode.window.setStatusBarMessage(t('Exported to {0}', vscode.workspace.asRelativePath(target)), 2500);
       } catch (err) {

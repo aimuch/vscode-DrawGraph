@@ -33,6 +33,12 @@
   const presentHud = $('presentHud');
   const laserToggleBtn = $('laserToggleBtn');
   const exitPresentBtn = $('exitPresentBtn');
+  const walkthroughHud = document.getElementById('walkthroughHud');
+  const stepPrevBtn = document.getElementById('stepPrevBtn');
+  const stepNextBtn = document.getElementById('stepNextBtn');
+  const stepPlayBtn = document.getElementById('stepPlayBtn');
+  const stepCloseBtn = document.getElementById('stepCloseBtn');
+  const stepCaption = document.getElementById('stepCaption');
   const laserDot = $('laserDot');
   const minimap = $('minimap');
   const minimapSvg = $('minimapSvg');
@@ -77,6 +83,11 @@
   let activeMatchIdx = -1;
   let presentationMode = false;
   let laserActive = false;
+  /** @type {Array<{ index: number, title: string, targets: string[] }>} */
+  let walkthroughSteps = [];
+  let walkthroughIdx = -1;
+  /** @type {ReturnType<typeof setInterval> | undefined} */
+  let walkthroughTimer;
   let rafId = 0;
   /** @type {ReturnType<typeof setTimeout> | undefined} */
   let persistTimer;
@@ -333,6 +344,9 @@
     if (!findBar.hidden && findInput.value.trim()) {
       runSearch(findInput.value, false);
     }
+    if (walkthroughSteps.length > 0 && walkthroughIdx >= 0) {
+      applyWalkthroughStep(walkthroughIdx, false);
+    }
     if (view.mode === 'auto_fit') {
       fit(false);
     } else {
@@ -513,17 +527,132 @@
     }
   }
 
+  // ---- Step-by-Step Architecture Walkthrough Playback ----------------------------------
+
+  function stopWalkthroughAutoPlay() {
+    if (walkthroughTimer !== undefined) {
+      clearInterval(walkthroughTimer);
+      walkthroughTimer = undefined;
+    }
+    if (stepPlayBtn) {
+      stepPlayBtn.setAttribute('aria-pressed', 'false');
+      stepPlayBtn.textContent = '▶▶';
+    }
+  }
+
+  function updateWalkthroughHud() {
+    if (!walkthroughHud || !stepCaption) {
+      return;
+    }
+    if (walkthroughSteps.length === 0) {
+      walkthroughHud.hidden = true;
+      return;
+    }
+    walkthroughHud.hidden = false;
+    if (walkthroughIdx < 0 || walkthroughIdx >= walkthroughSteps.length) {
+      stepCaption.textContent = `Walkthrough (${walkthroughSteps.length} steps) · ←/→`;
+    } else {
+      const s = walkthroughSteps[walkthroughIdx];
+      stepCaption.textContent = `${walkthroughIdx + 1}/${walkthroughSteps.length}: ${s.title}`;
+    }
+  }
+
+  /**
+   * @param {number} idx
+   * @param {boolean} [center]
+   */
+  function applyWalkthroughStep(idx, center = true) {
+    if (walkthroughSteps.length === 0) {
+      return;
+    }
+    walkthroughIdx = ((idx % walkthroughSteps.length) + walkthroughSteps.length) % walkthroughSteps.length;
+    updateWalkthroughHud();
+    if (!currentSvg) {
+      return;
+    }
+    clearSpotlight();
+    const step = walkthroughSteps[walkthroughIdx];
+    const needles = (step.targets || []).map((t) => t.toLowerCase()).filter((t) => t.length >= 1);
+    if (needles.length === 0) {
+      return;
+    }
+    const candidates = currentSvg.querySelectorAll(
+      'g.node, g.cluster, g.edgePath, g.actor, g.classGroup, g.statediagram-state, g.er.entityBox, g.elem, g[id^="elem_"], g[id^="flowchart-"], g.d2-node, g.d2-container',
+    );
+    /** @type {Element | null} */
+    let firstMatched = null;
+    for (const el of candidates) {
+      const txt = (el.textContent || '').trim().toLowerCase();
+      const idAttr = (el.getAttribute('id') || '').toLowerCase();
+      const hit = needles.some((nd) => txt === nd || txt.includes(nd) || idAttr.includes(nd));
+      if (hit) {
+        el.classList.add('drawgraph-spotlight-target');
+        if (!firstMatched) {
+          firstMatched = el;
+        }
+      }
+    }
+    if (firstMatched) {
+      currentSvg.classList.add('drawgraph-has-spotlight');
+      if (center) {
+        centerViewportOnElement(firstMatched);
+      }
+    }
+  }
+
+  function resetWalkthroughSpotlight() {
+    stopWalkthroughAutoPlay();
+    walkthroughIdx = -1;
+    clearSpotlight();
+    updateWalkthroughHud();
+  }
+
+  stepPrevBtn?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    stopWalkthroughAutoPlay();
+    applyWalkthroughStep(walkthroughIdx <= 0 ? walkthroughSteps.length - 1 : walkthroughIdx - 1);
+  });
+  stepNextBtn?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    stopWalkthroughAutoPlay();
+    applyWalkthroughStep(walkthroughIdx < 0 ? 0 : walkthroughIdx + 1);
+  });
+  stepCloseBtn?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    resetWalkthroughSpotlight();
+  });
+  stepPlayBtn?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (walkthroughTimer !== undefined) {
+      stopWalkthroughAutoPlay();
+      return;
+    }
+    if (walkthroughSteps.length === 0) {
+      return;
+    }
+    applyWalkthroughStep(walkthroughIdx < 0 ? 0 : walkthroughIdx + 1);
+    stepPlayBtn.setAttribute('aria-pressed', 'true');
+    stepPlayBtn.textContent = '⏸';
+    walkthroughTimer = setInterval(() => {
+      if (walkthroughSteps.length === 0) {
+        stopWalkthroughAutoPlay();
+        return;
+      }
+      applyWalkthroughStep(walkthroughIdx + 1);
+    }, 2400);
+  });
+
   // Explicit single-flight coalescing state machine for Mermaid renders:
   // `idle` -> `rendering` <-> `rendering_dirty` -> `idle`
   let mermaidTheme = '';
   let renderCount = 0;
   /** @type {'idle' | 'rendering' | 'rendering_dirty'} */
   let mermaidPhase = 'idle';
-  /** @type {{source: string, theme: string} | null} */
+  /** @type {{source: string, theme: string, look: string} | null} */
   let nextMermaidJob = null;
 
-  async function renderMermaid(/** @type {string} */ source, /** @type {string} */ theme) {
-    nextMermaidJob = { source, theme };
+  async function renderMermaid(/** @type {string} */ source, /** @type {string} */ theme, /** @type {string} */ look = 'classic') {
+    nextMermaidJob = { source, theme, look: look === 'handDrawn' ? 'handDrawn' : 'classic' };
     if (mermaidPhase === 'rendering' || mermaidPhase === 'rendering_dirty') {
       mermaidPhase = 'rendering_dirty';
       return;
@@ -535,7 +664,7 @@
         const job = nextMermaidJob;
         nextMermaidJob = null;
         mermaidPhase = 'rendering';
-        await renderMermaidNow(job.source, job.theme);
+        await renderMermaidNow(job.source, job.theme, job.look);
       }
     } finally {
       mermaidPhase = 'idle';
@@ -545,7 +674,7 @@
     }
   }
 
-  async function renderMermaidNow(/** @type {string} */ source, /** @type {string} */ theme) {
+  async function renderMermaidNow(/** @type {string} */ source, /** @type {string} */ theme, /** @type {string} */ look = 'classic') {
     if (!mermaid) {
       showError(MSG_MERMAID_LOAD);
       return;
@@ -555,15 +684,17 @@
       return;
     }
     document.body.dataset.theme = theme;
-    if (theme !== mermaidTheme) {
+    const renderKey = `${theme}:${look}`;
+    if (renderKey !== mermaidTheme) {
       mermaid.initialize({
         startOnLoad: false,
         theme,
+        look: look === 'handDrawn' ? 'handDrawn' : 'classic',
         securityLevel: 'strict',
         htmlLabels: false,
         flowchart: { htmlLabels: false },
       });
-      mermaidTheme = theme;
+      mermaidTheme = renderKey;
     }
     const id = `drawgraph-mermaid-${++renderCount}`;
     try {
@@ -712,22 +843,26 @@
    * @param {string} source
    * @param {string} theme
    * @param {'svg' | 'png'} format
+   * @param {string} [look]
    */
-  async function renderMermaidOffscreen(requestId, source, theme, format) {
+  async function renderMermaidOffscreen(requestId, source, theme, format, look = 'classic') {
     if (!mermaid) {
       vscode.postMessage({ type: 'offscreenRendered', requestId, error: MSG_MERMAID_LOAD });
       return;
     }
     try {
-      if (theme !== mermaidTheme) {
+      const safeLook = look === 'handDrawn' ? 'handDrawn' : 'classic';
+      const renderKey = `${theme}:${safeLook}`;
+      if (renderKey !== mermaidTheme) {
         mermaid.initialize({
           startOnLoad: false,
           theme,
+          look: safeLook,
           securityLevel: 'strict',
           htmlLabels: false,
           flowchart: { htmlLabels: false },
         });
-        mermaidTheme = theme;
+        mermaidTheme = renderKey;
       }
       const id = `drawgraph-offscreen-${++renderCount}`;
       const { svg } = await mermaid.render(id, source);
@@ -955,7 +1090,7 @@
   let pointerMovedDuringDrag = false;
   stage.addEventListener('click', (e) => {
     const target = /** @type {Element | null} */ (e.target instanceof Element ? e.target : null);
-    if (!target || target.closest('#findBar, #minimap, #presentHud')) {
+    if (!target || target.closest('#findBar, #minimap, #presentHud, #walkthroughHud')) {
       return;
     }
     if (e.ctrlKey || e.metaKey) {
@@ -1035,7 +1170,7 @@
       return;
     }
     const target = /** @type {Element | null} */ (e.target instanceof Element ? e.target : null);
-    if (target && target.closest('#findBar, #minimap, #presentHud')) {
+    if (target && target.closest('#findBar, #minimap, #presentHud, #walkthroughHud')) {
       return;
     }
     if ((e.ctrlKey || e.metaKey) && target && target.closest('text, foreignObject, a')) {
@@ -1092,6 +1227,11 @@
       closeFindBar();
       return;
     }
+    if (e.key === 'Escape' && walkthroughIdx >= 0) {
+      e.preventDefault();
+      resetWalkthroughSpotlight();
+      return;
+    }
     if (e.key === 'Escape' && presentationMode) {
       e.preventDefault();
       if (!clearSpotlight()) {
@@ -1100,6 +1240,18 @@
       return;
     }
     if (e.ctrlKey || e.metaKey || e.altKey || e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
+      return;
+    }
+    if (e.key === 'ArrowRight' && walkthroughSteps.length > 0) {
+      e.preventDefault();
+      stopWalkthroughAutoPlay();
+      applyWalkthroughStep(walkthroughIdx < 0 ? 0 : walkthroughIdx + 1);
+      return;
+    }
+    if (e.key === 'ArrowLeft' && walkthroughSteps.length > 0) {
+      e.preventDefault();
+      stopWalkthroughAutoPlay();
+      applyWalkthroughStep(walkthroughIdx <= 0 ? walkthroughSteps.length - 1 : walkthroughIdx - 1);
       return;
     }
     if (e.key === '/') {
@@ -1150,7 +1302,17 @@
         info.textContent = '';
         prevItem.hidden = true;
         nextItem.hidden = true;
-        void renderMermaid(String(msg.source ?? ''), String(msg.theme || 'default'));
+        void renderMermaid(String(msg.source ?? ''), String(msg.theme || 'default'), String(msg.look || 'classic'));
+        break;
+      case 'walkthrough':
+        walkthroughSteps = Array.isArray(msg.steps) ? msg.steps : [];
+        if (walkthroughSteps.length === 0) {
+          stopWalkthroughAutoPlay();
+          walkthroughIdx = -1;
+        } else if (walkthroughIdx >= walkthroughSteps.length) {
+          walkthroughIdx = walkthroughSteps.length - 1;
+        }
+        updateWalkthroughHud();
         break;
       case 'svg':
         info.textContent = msg.info || '';
@@ -1301,6 +1463,7 @@
           String(msg.source ?? ''),
           String(msg.theme || 'default'),
           msg.format === 'png' ? 'png' : 'svg',
+          String(msg.look || 'classic'),
         );
         break;
       case 'loading':

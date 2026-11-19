@@ -7,7 +7,8 @@ import { extractDiagramFromSvg, isSvgDiagramPath } from '../drawio/drawioSvg';
 import { measureMxfileBounds, renderMxfileToPreviewSvg, unionMxfileBounds } from '../drawio/mxfileToSvg';
 import { t } from '../l10n';
 import { splitDiagrams } from '../plantuml/encoder';
-import { mermaidTheme, type PreviewManager } from '../preview/previewManager';
+import { mermaidLook, mermaidTheme, type PreviewManager } from '../preview/previewManager';
+import { renderD2ToSvgOffline } from '../renderers/d2Renderer';
 import { renderDotToSvgOffline } from '../renderers/dotRenderer';
 import { renderWaveDromToSvg } from '../renderers/wavedromRenderer';
 import { StateMachine, type MachineSnapshot, type TransitionRecord, type TransitionTable } from '../stateMachine';
@@ -195,7 +196,11 @@ export class VisualDiffManager implements vscode.Disposable {
   ) {
     this.subs.push(
       vscode.workspace.onDidChangeConfiguration((e) => {
-        if (e.affectsConfiguration('drawGraph.language') || e.affectsConfiguration('drawGraph.mermaid.theme')) {
+        if (
+          e.affectsConfiguration('drawGraph.language') ||
+          e.affectsConfiguration('drawGraph.mermaid.theme') ||
+          e.affectsConfiguration('drawGraph.mermaid.look')
+        ) {
           for (const s of this.sessions) {
             void this.refreshSession(s);
           }
@@ -291,7 +296,7 @@ export class VisualDiffManager implements vscode.Disposable {
       baseRef = picked.ref;
     }
 
-    const diagramExtRe = /\.(?:drawio|dio|drawio\.svg|drawio\.png|dio\.svg|dio\.png|mmd|mermaid|puml|plantuml|pu|iuml|wsd|dot|gv|wavedrom|wave\.json)$/i;
+    const diagramExtRe = /\.(?:drawio|dio|drawio\.svg|drawio\.png|dio\.svg|dio\.png|mmd|mermaid|puml|plantuml|pu|iuml|wsd|dot|gv|wavedrom|wave\.json|d2)$/i;
     const relPaths = new Set<string>();
     try {
       const { stdout } = await execFileAsync('git', ['-c', 'core.fsmonitor=false', 'diff', '--name-only', baseRef], {
@@ -340,7 +345,7 @@ export class VisualDiffManager implements vscode.Disposable {
     let left = beforeUri;
     let right = afterUri;
     const filters = {
-      Diagrams: ['drawio', 'dio', 'svg', 'png', 'mmd', 'mermaid', 'puml', 'plantuml', 'pu', 'iuml', 'wsd', 'dot', 'gv', 'wavedrom'],
+      Diagrams: ['drawio', 'dio', 'svg', 'png', 'mmd', 'mermaid', 'puml', 'plantuml', 'pu', 'iuml', 'wsd', 'dot', 'gv', 'wavedrom', 'd2'],
     };
     if (!left) {
       const picked = await vscode.window.showOpenDialog({
@@ -383,7 +388,7 @@ export class VisualDiffManager implements vscode.Disposable {
    */
   async openInMemoryComparison(
     title: string,
-    format: 'mermaid' | 'plantuml' | 'drawio' | 'dot' | 'wavedrom',
+    format: 'mermaid' | 'plantuml' | 'drawio' | 'dot' | 'wavedrom' | 'd2',
     beforeSource: string,
     afterSource: string,
     beforeLabel = t('Current Diagram'),
@@ -395,6 +400,7 @@ export class VisualDiffManager implements vscode.Disposable {
       drawio: '.drawio',
       dot: '.dot',
       wavedrom: '.wavedrom',
+      d2: '.d2',
     };
     const extHint = extMap[format];
     const virtualUri = vscode.Uri.parse(`untitled:ai-diff${extHint}`);
@@ -530,6 +536,7 @@ export class VisualDiffManager implements vscode.Disposable {
       reviewFiles: session.reviewQueue ? session.reviewQueue.map((u) => vscode.workspace.asRelativePath(u, false)) : [],
       reviewIndex: session.reviewIndex,
       mermaidTheme: mermaidTheme(),
+      mermaidLook: mermaidLook(),
       labels: this.buildUiLabels(),
       emptyText: t('Empty / Not Present'),
     };
@@ -592,6 +599,14 @@ export class VisualDiffManager implements vscode.Disposable {
     if (/\.(?:wavedrom|wave\.json)$/i.test(lower)) {
       try {
         return { label, empty: false, renderKind: 'svg', payload: renderWaveDromToSvg(text) };
+      } catch (err) {
+        const errSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="420" height="80"><rect width="100%" height="100%" fill="#fff5f5"/><text x="16" y="44" fill="#c53030" font-family="sans-serif" font-size="13">${escapeXml((err as Error).message)}</text></svg>`;
+        return { label, empty: false, renderKind: 'svg', payload: errSvg };
+      }
+    }
+    if (/\.d2$/i.test(lower)) {
+      try {
+        return { label, empty: false, renderKind: 'svg', payload: renderD2ToSvgOffline(text) };
       } catch (err) {
         const errSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="420" height="80"><rect width="100%" height="100%" fill="#fff5f5"/><text x="16" y="44" fill="#c53030" font-family="sans-serif" font-size="13">${escapeXml((err as Error).message)}</text></svg>`;
         return { label, empty: false, renderKind: 'svg', payload: errSvg };

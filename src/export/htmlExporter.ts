@@ -2,9 +2,12 @@
 // bundle for 1 or N SVG diagram pages, with wheel zoom, drag pan, multi-page tabs,
 // live search, minimap, theme toggle, and spotlight/laser presentation mode.
 
+import type { WalkthroughStep } from '../walkthrough/walkthroughCore';
+
 export interface HtmlDiagramPage {
   name: string;
   svg: string;
+  steps?: WalkthroughStep[];
 }
 
 export interface InteractiveHtmlOptions {
@@ -31,6 +34,7 @@ export function buildInteractiveHtmlBundle(opts: InteractiveHtmlOptions): string
   const pages = opts.pages.map((p, idx) => ({
     name: p.name || (isZh ? `第 ${idx + 1} 页` : `Page ${idx + 1}`),
     svgB64: Buffer.from(sanitizeSvgMarkup(p.svg), 'utf8').toString('base64'),
+    steps: p.steps ?? [],
   }));
 
   const L = isZh
@@ -101,7 +105,7 @@ export function buildInteractiveHtmlBundle(opts: InteractiveHtmlOptions): string
     padding: 6px 10px; background: var(--bar); border: 1px solid var(--border); border-radius: 7px;
     box-shadow: 0 6px 20px rgba(0,0,0,0.16); z-index: 20;
   }
-  #findBox[hidden], #minimap[hidden], #hud[hidden], #laser[hidden] { display: none !important; }
+  #findBox[hidden], #minimap[hidden], #hud[hidden], #stepHud[hidden], #laser[hidden] { display: none !important; }
   #minimap {
     position: absolute; right: 14px; bottom: 14px; width: 184px; height: 124px;
     background: var(--bar); border: 1px solid var(--border); border-radius: 7px;
@@ -119,7 +123,12 @@ export function buildInteractiveHtmlBundle(opts: InteractiveHtmlOptions): string
     background: rgba(15,23,42,0.86); border: 1px solid rgba(255,255,255,0.18); z-index: 30;
   }
   #hud button { color: #fff; border-color: rgba(255,255,255,0.24); border-radius: 999px; }
-  svg.dg-spot g.node, svg.dg-spot g.edgePath, svg.dg-spot g.cluster, svg.dg-spot g.elem { opacity: 0.18; transition: opacity 0.16s; }
+  #stepHud {
+    position: fixed; bottom: 56px; left: 50%; transform: translateX(-50%);
+    display: flex; align-items: center; gap: 8px; padding: 5px 12px; border-radius: 999px;
+    background: var(--bar); border: 1px solid var(--border); box-shadow: 0 4px 16px rgba(0,0,0,0.18); z-index: 25; font-size: 12px;
+  }
+  svg.dg-spot g.node, svg.dg-spot g.edgePath, svg.dg-spot g.cluster, svg.dg-spot g.elem, svg.dg-spot g.d2-node { opacity: 0.18; transition: opacity 0.16s; }
   svg.dg-spot .dg-spot-on, svg.dg-spot .dg-spot-on * { opacity: 1 !important; filter: drop-shadow(0 0 8px rgba(37,99,235,0.5)); }
   #laser {
     position: fixed; width: 14px; height: 14px; margin: -7px 0 0 -7px; border-radius: 50%;
@@ -156,6 +165,12 @@ export function buildInteractiveHtmlBundle(opts: InteractiveHtmlOptions): string
       <button id="laserBtn" type="button">${escHtml(L.laser)}</button>
       <button id="exitBtn" type="button">${escHtml(L.exit)}</button>
     </div>
+    <div id="stepHud" hidden>
+      <button id="stepPrev" type="button">◀</button>
+      <span id="stepText"></span>
+      <button id="stepNext" type="button">▶</button>
+      <button id="stepClear" type="button">✕</button>
+    </div>
     <div id="laser" hidden></div>
   </div>
 <script>
@@ -170,6 +185,38 @@ export function buildInteractiveHtmlBundle(opts: InteractiveHtmlOptions): string
   const minimap = $('minimap'), miniSvg = $('miniSvg'), miniVp = $('miniVp');
   const findBox = $('findBox'), findIn = $('findIn'), findCnt = $('findCnt');
   const hud = $('hud'), laserEl = $('laser'), laserBtn = $('laserBtn');
+  const stepHud = $('stepHud'), stepText = $('stepText');
+  let stepIdx = -1;
+
+  function applyStep(idx) {
+    const steps = (PAGES[pageIdx] && PAGES[pageIdx].steps) || [];
+    if (!steps.length || !curSvg) return;
+    stepIdx = ((idx % steps.length) + steps.length) % steps.length;
+    const st = steps[stepIdx];
+    stepText.textContent = (stepIdx + 1) + '/' + steps.length + ': ' + st.title;
+    curSvg.querySelectorAll('.dg-spot-on').forEach((x) => x.classList.remove('dg-spot-on'));
+    const needles = (st.targets || []).map((t) => String(t).toLowerCase());
+    let hit = false;
+    curSvg.querySelectorAll('g.node, g.elem, g.cluster, g.edgePath, g.d2-node, g.d2-container').forEach((el) => {
+      const txt = (el.textContent || '').trim().toLowerCase();
+      const idAttr = (el.getAttribute('id') || '').toLowerCase();
+      if (needles.some((nd) => txt === nd || txt.includes(nd) || idAttr.includes(nd))) {
+        el.classList.add('dg-spot-on');
+        hit = true;
+      }
+    });
+    curSvg.classList.toggle('dg-spot', hit);
+  }
+  function clearStep() {
+    stepIdx = -1;
+    curSvg?.classList.remove('dg-spot');
+    curSvg?.querySelectorAll('.dg-spot-on').forEach((x) => x.classList.remove('dg-spot-on'));
+    const steps = (PAGES[pageIdx] && PAGES[pageIdx].steps) || [];
+    if (steps.length) stepText.textContent = steps.length + ' steps · ←/→';
+  }
+  $('stepPrev').onclick = () => applyStep(stepIdx <= 0 ? ((PAGES[pageIdx].steps || []).length - 1) : stepIdx - 1);
+  $('stepNext').onclick = () => applyStep(stepIdx < 0 ? 0 : stepIdx + 1);
+  $('stepClear').onclick = clearStep;
 
   function decodeUtf8B64(b64) {
     const bin = atob(b64);
@@ -232,6 +279,10 @@ export function buildInteractiveHtmlBundle(opts: InteractiveHtmlOptions): string
       clone.removeAttribute('style');
       miniSvg.replaceChildren(clone);
     }
+    const steps = PAGES[pageIdx].steps || [];
+    stepIdx = -1;
+    stepHud.hidden = steps.length === 0;
+    if (steps.length) stepText.textContent = steps.length + ' steps · ←/→';
     fit();
   }
 
@@ -340,7 +391,10 @@ export function buildInteractiveHtmlBundle(opts: InteractiveHtmlOptions): string
       }
       return;
     }
-    if (e.key === 'Escape' && presenting) togglePresent(false);
+    if (e.key === 'Escape' && stepIdx >= 0) clearStep();
+    else if (e.key === 'Escape' && presenting) togglePresent(false);
+    else if (e.key === 'ArrowRight' && (PAGES[pageIdx].steps || []).length) { e.preventDefault(); applyStep(stepIdx < 0 ? 0 : stepIdx + 1); }
+    else if (e.key === 'ArrowLeft' && (PAGES[pageIdx].steps || []).length) { e.preventDefault(); applyStep(stepIdx <= 0 ? PAGES[pageIdx].steps.length - 1 : stepIdx - 1); }
     else if (e.key === 'f') fit();
     else if (e.key === '0') zoomAt(1);
     else if (e.key === '+' || e.key === '=') zoomAt(zoom * 1.25);

@@ -205,4 +205,35 @@ export function registerAiCommands({ context, aiStudio }: AiCommandDeps): void {
     }
     return models;
   });
+
+  register('drawGraph.ai.createStyleGuide', async (destArg?: unknown): Promise<vscode.Uri | undefined> => {
+    const folder = vscode.workspace.workspaceFolders?.[0]?.uri;
+    if (!folder && !(destArg instanceof vscode.Uri)) {
+      return undefined;
+    }
+    const dest = destArg instanceof vscode.Uri ? destArg : vscode.Uri.joinPath(folder!, '.vscode', 'drawgraph-ai.md');
+    const starter = [
+      '# DrawGraph AI Diagram Style Guide',
+      '',
+      '<!-- Automatically loaded by DrawGraph AI Diagram Studio in trusted workspaces -->',
+      '',
+      '## Visual & Layout Conventions',
+      '- Prefer left-to-right (`LR` / `direction: right`) for service architectures and top-down (`TD`) for workflows.',
+      '- Group internal microservices into clear subgraphs / containers (`Frontend`, `Backend`, `Data Layer`).',
+      '- Use cylinder shapes for databases/caches and diamond shapes for decision gates.',
+      '',
+      '## Naming & Labeling',
+      '- Keep node labels concise (2–4 words) and annotate edges with protocol/event names (`HTTPS`, `gRPC`, `Kafka`).',
+      '- Avoid generic labels like `Service A`; use concrete domain names from the codebase.',
+      '',
+    ].join('\n');
+    try {
+      await vscode.workspace.fs.stat(dest);
+    } catch {
+      await vscode.workspace.fs.writeFile(dest, Buffer.from(starter, 'utf8'));
+    }
+    const doc = await vscode.workspace.openTextDocument(dest);
+    await vscode.window.showTextDocument(doc);
+    return dest;
+  });
 }

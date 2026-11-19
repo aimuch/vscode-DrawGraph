@@ -1,14 +1,15 @@
-# DrawGraph — 在 VS Code 中预览、对比与编辑 Draw.io / Mermaid / PlantUML / Graphviz DOT / WaveDrom
+# DrawGraph — 在 VS Code 中预览、对比与编辑 Draw.io / Mermaid / PlantUML / D2 / Graphviz DOT / WaveDrom
 
 [![CI](https://github.com/aimuch/vscode-DrawGraph/actions/workflows/ci.yml/badge.svg)](https://github.com/aimuch/vscode-DrawGraph/actions/workflows/ci.yml)
 
-DrawGraph 是一个全功能工程架构与硬件图表 VS Code 插件，把五种常用的工程图表放进同一个编辑器里：
+DrawGraph 是一个全功能 AI 驱动的工程架构与硬件图表 VS Code 插件，把六种常用的工程图表放进同一个编辑器里：
 
 | 格式 | 文件扩展名 | 编辑方式 |
 | --- | --- | --- |
 | **draw.io** | `.drawio` `.dio` `.drawio.xml` `.dio.xml` `.drawio.svg` `.dio.svg` `.drawio.png` `.dio.png` | 可视化编辑器（内嵌 draw.io），直接拖拽编辑 + 与 Mermaid/PlantUML 双向互转 |
-| **Mermaid** | `.mmd` `.mermaid`，以及 Markdown 中的 ```` ```mermaid ```` 代码块 | 文本编辑 + 实时预览 + 与 Draw.io / PlantUML 双向互转 |
+| **Mermaid** | `.mmd` `.mermaid`，以及 Markdown 中的 ```` ```mermaid ```` 代码块 | 文本编辑 + 实时预览（支持经典 / 手绘白板风格）+ 与 Draw.io / PlantUML 双向互转 |
 | **PlantUML** | `.puml` `.plantuml` `.pu` `.iuml` `.wsd`，以及 Markdown 中的 ```` ```plantuml ```` / ```` ```puml ```` 代码块 | 文本编辑 + 实时预览 + 与 Mermaid 双向互转 |
+| **D2** | `.d2`，以及 Markdown 中的 ```` ```d2 ```` 代码块 | 现代声明式架构图语言，内置零依赖离线容器/表格 SVG 引擎 + 可选本地 `d2` CLI |
 | **Graphviz DOT** | `.dot` `.gv`，以及 Markdown 中的 ```` ```dot ```` / ```` ```graphviz ```` 代码块 | 内置零依赖离线布局渲染 + 可选本地 `dot` 引擎 |
 | **WaveDrom** | `.wavedrom` `.wave.json`，以及 Markdown 中的 ```` ```wavedrom ```` / ```` ```bitfield ```` 代码块 | 硬件数字时序波形图（`signal`）与芯片寄存器位域表（`reg`）纯离线预览 |
 
@@ -22,7 +23,7 @@ DrawGraph 是一个全功能工程架构与硬件图表 VS Code 插件，把五�
 然后在 VS Code 扩展视图右上角的 `…` 菜单中选择「从 VSIX 安装…」，或者在终端运行：
 
 ```bash
-code --install-extension drawgraph-0.5.0.vsix
+code --install-extension drawgraph-0.6.0.vsix
 ```
 
 安装包默认保持超轻量（约 1.7 MB，已内嵌 Mermaid）；如需在无外网环境下使用 draw.io，可在设置抽屉中一键**下载或导入官方 `draw.war` / `.zip` 离线引擎包**（由本地 `127.0.0.1` 服务加载），见下文“渲染方式与隐私”。

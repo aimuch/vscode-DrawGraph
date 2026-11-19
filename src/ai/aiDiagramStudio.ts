@@ -2,11 +2,13 @@ import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { convertDrawioToMermaid } from '../converters/drawioToText';
 import type { VisualDiffManager } from '../diff/visualDiffPanel';
+import { extractDrawioPages } from '../drawio/codeLinksXml';
 import { computeMinimalTextChange } from '../drawio/minimalEdit';
 import { type DrawioEditorProvider, readDrawioXmlFromUri } from '../drawio/drawioEditorProvider';
 import { renderMxfileToPreviewSvg } from '../drawio/mxfileToSvg';
 import { getLanguage, t } from '../l10n';
-import { mermaidTheme, type PreviewManager } from '../preview/previewManager';
+import { mermaidLook, mermaidTheme, type PreviewManager } from '../preview/previewManager';
+import { renderD2ToSvgOffline } from '../renderers/d2Renderer';
 import { renderDotToSvgOffline } from '../renderers/dotRenderer';
 import { renderWaveDromToSvg } from '../renderers/wavedromRenderer';
 import {
@@ -30,6 +32,7 @@ import {
   extractAndNormalizeAiDiagram,
   isThinkingInProgress,
   parseArchitectureFindings,
+  spliceDrawioPageXml,
   stripThinkingBlocks,
   type AiDiagramFormat,
   type AiTaskMode,
@@ -81,12 +84,14 @@ function detectFormatFromUriOrLang(uri: vscode.Uri, languageId?: string): AiDiag
   if (languageId === 'plantuml') return 'plantuml';
   if (languageId === 'dot') return 'dot';
   if (languageId === 'wavedrom') return 'wavedrom';
+  if (languageId === 'd2') return 'd2';
   const p = uri.path.toLowerCase();
   if (/\.(?:drawio|dio|drawio\.svg|drawio\.png|dio\.svg|dio\.png)$/i.test(p)) return 'drawio';
   if (/\.(?:mmd|mermaid)$/i.test(p)) return 'mermaid';
   if (/\.(?:puml|plantuml|pu|iuml|wsd)$/i.test(p)) return 'plantuml';
   if (/\.(?:dot|gv)$/i.test(p)) return 'dot';
   if (/\.(?:wavedrom|wave\.json)$/i.test(p)) return 'wavedrom';
+  if (/\.d2$/i.test(p)) return 'd2';
   return undefined;
 }
 
@@ -146,6 +151,16 @@ export class AiDiagramStudioManager implements vscode.Disposable {
   private currentPreset: OptimizePreset = 'layout';
   private lastGeneratedCode = '';
   private lastGeneratedFormat: AiDiagramFormat = 'mermaid';
+  private selectedPageIndex = 0;
+  private versions: Array<{
+    id: number;
+    label: string;
+    format: AiDiagramFormat;
+    code: string;
+    explanation: string;
+    mode: AiTaskMode;
+  }> = [];
+  private activeVersionId = 0;
   private history: Array<{ role: 'user' | 'assistant'; text: string }> = [];
   private pendingOpenOptions: OpenStudioOptions | undefined;
   private readonly subs: vscode.Disposable[] = [];
@@ -324,6 +339,32 @@ export class AiDiagramStudioManager implements vscode.Disposable {
     return undefined;
   }
 
+  private async readWorkspaceStyleGuide(): Promise<string | undefined> {
+    if (!vscode.workspace.isTrusted) {
+      return undefined;
+    }
+    const ws = vscode.workspace.workspaceFolders?.[0]?.uri;
+    if (!ws) {
+      return undefined;
+    }
+    const candidates = [
+      vscode.Uri.joinPath(ws, '.vscode', 'drawgraph-ai.md'),
+      vscode.Uri.joinPath(ws, 'drawgraph-ai.md'),
+    ];
+    for (const uri of candidates) {
+      try {
+        const bytes = await vscode.workspace.fs.readFile(uri);
+        const text = Buffer.from(bytes).toString('utf8').trim();
+        if (text) {
+          return text.slice(0, 4000);
+        }
+      } catch {
+        // File not present
+      }
+    }
+    return undefined;
+  }
+
   private collectActiveCodeContext(): { fileName: string; content: string; isSelection: boolean } | undefined {
     const ed = vscode.window.activeTextEditor;
     if (!ed) {
@@ -495,6 +536,14 @@ export class AiDiagramStudioManager implements vscode.Disposable {
     const codeCtx = this.collectActiveCodeContext();
     const aiCfg = getAiConfigSync();
     const diagSummary = target ? this.collectDiagnosticSummary(target.uri) : '';
+    const styleGuide = await this.readWorkspaceStyleGuide();
+    const drawioPages =
+      target && target.format === 'drawio' && target.source.includes('<diagram')
+        ? extractDrawioPages(target.source).map((p) => p.name)
+        : [];
+    if (this.selectedPageIndex >= Math.max(1, drawioPages.length)) {
+      this.selectedPageIndex = 0;
+    }
 
     void this.panel.webview.postMessage({
       type: 'studioState',
@@ -506,6 +555,7 @@ export class AiDiagramStudioManager implements vscode.Disposable {
       model: aiCfg.effectiveModel || aiCfg.provider,
       hasApiKey: aiCfg.hasApiKey,
       requiresApiKey: aiCfg.requiresApiKey,
+      hasStyleGuide: Boolean(styleGuide),
       target: target
         ? {
             uri: target.uri.toString(),
@@ -513,10 +563,15 @@ export class AiDiagramStudioManager implements vscode.Disposable {
             format: target.format,
             hasDiagnostics: Boolean(diagSummary),
             diagnostics: diagSummary,
+            pages: drawioPages,
+            selectedPageIndex: this.selectedPageIndex,
           }
         : null,
       codeContextLabel: codeCtx ? `${codeCtx.fileName}${codeCtx.isSelection ? ' (selection)' : ''}` : null,
       mermaidTheme: mermaidTheme(),
+      mermaidLook: mermaidLook(),
+      versions: this.versions.map((v) => ({ id: v.id, label: v.label, format: v.format })),
+      activeVersionId: this.activeVersionId,
       strings: this.buildStudioStrings(),
       settings: getSettingsSnapshot(),
     });
@@ -525,21 +580,24 @@ export class AiDiagramStudioManager implements vscode.Disposable {
   private async renderPreviewPayload(
     code: string,
     format: AiDiagramFormat,
-  ): Promise<{ renderKind: 'mermaid' | 'svg'; payload: string; mermaidTheme?: string }> {
+  ): Promise<{ renderKind: 'mermaid' | 'svg'; payload: string; mermaidTheme?: string; mermaidLook?: 'classic' | 'handDrawn' }> {
     if (!code.trim()) {
       return { renderKind: 'svg', payload: '' };
     }
     if (format === 'mermaid') {
-      return { renderKind: 'mermaid', payload: code, mermaidTheme: mermaidTheme() };
+      return { renderKind: 'mermaid', payload: code, mermaidTheme: mermaidTheme(), mermaidLook: mermaidLook() };
     }
     if (format === 'drawio') {
-      return { renderKind: 'svg', payload: renderMxfileToPreviewSvg(code) };
+      return { renderKind: 'svg', payload: renderMxfileToPreviewSvg(code, this.selectedPageIndex) };
     }
     if (format === 'dot') {
       return { renderKind: 'svg', payload: renderDotToSvgOffline(code) };
     }
     if (format === 'wavedrom') {
       return { renderKind: 'svg', payload: renderWaveDromToSvg(code) };
+    }
+    if (format === 'd2') {
+      return { renderKind: 'svg', payload: renderD2ToSvgOffline(code) };
     }
     const bytes = await this.previews.renderPlantUmlBytes(code, 'svg');
     return { renderKind: 'svg', payload: Buffer.from(bytes).toString('utf8') };
@@ -551,6 +609,7 @@ export class AiDiagramStudioManager implements vscode.Disposable {
     prompt: string;
     optimizePreset?: OptimizePreset;
     includeCodeContext?: boolean;
+    pageIndex?: number;
     skipConsent?: boolean;
   }): Promise<void> {
     if (!this.panel) {
@@ -566,24 +625,45 @@ export class AiDiagramStudioManager implements vscode.Disposable {
     if (args.optimizePreset) {
       this.currentPreset = args.optimizePreset;
     }
+    if (typeof args.pageIndex === 'number' && args.pageIndex >= 0) {
+      this.selectedPageIndex = args.pageIndex;
+    }
 
     const target = await this.resolveTargetDiagram(this.boundTargetUri);
-    const effectiveFormat =
-      args.mode === 'generate' ? args.format : (target?.format ?? args.format);
+    // Allow cross-format AI re-draw in modify/optimize when user explicitly selects another format
+    const effectiveFormat = args.format || target?.format || 'mermaid';
     const codeCtx = args.includeCodeContext ? this.collectActiveCodeContext() : undefined;
+    const teamGuidelines = await this.readWorkspaceStyleGuide();
     const diagErrors = target && args.mode === 'fix' ? this.collectDiagnosticSummary(target.uri) : undefined;
+
+    let currentSourceForAi = args.mode === 'generate' ? undefined : target?.source;
+    let splicedMultiPageDrawio = false;
+    if (
+      currentSourceForAi &&
+      target?.format === 'drawio' &&
+      effectiveFormat === 'drawio' &&
+      currentSourceForAi.includes('<diagram')
+    ) {
+      const pages = extractDrawioPages(currentSourceForAi);
+      if (pages.length > 1 && this.selectedPageIndex >= 0 && this.selectedPageIndex < pages.length) {
+        currentSourceForAi = `<mxfile>\n  ${pages[this.selectedPageIndex].diagramXml}\n</mxfile>`;
+        splicedMultiPageDrawio = true;
+      }
+    }
+
     const drawioSummary =
-      target && target.format === 'drawio' && target.source.includes('<mx')
-        ? convertDrawioToMermaid(target.source)
+      currentSourceForAi && target?.format === 'drawio' && currentSourceForAi.includes('<mx')
+        ? convertDrawioToMermaid(currentSourceForAi)
         : undefined;
 
     const fullPrompt = buildAiDiagramPrompt({
       mode: args.mode,
       format: effectiveFormat,
       userPrompt: args.prompt,
-      currentDiagram: args.mode === 'generate' ? undefined : target?.source,
+      currentDiagram: currentSourceForAi,
       drawioSummaryMermaid: drawioSummary,
       codeContext: codeCtx ? { fileName: codeCtx.fileName, content: codeCtx.content } : undefined,
+      teamGuidelines,
       diagnosticErrors: diagErrors,
       optimizePreset: args.optimizePreset ?? this.currentPreset,
       history: this.history,
@@ -675,19 +755,35 @@ export class AiDiagramStudioManager implements vscode.Disposable {
         });
       } else {
         const extracted = extractAndNormalizeAiDiagram(result.text, effectiveFormat, true);
-        this.lastGeneratedCode = extracted.code;
+        const finalCode =
+          splicedMultiPageDrawio && target?.source && extracted.code
+            ? spliceDrawioPageXml(target.source, this.selectedPageIndex, extracted.code)
+            : extracted.code;
+        this.lastGeneratedCode = finalCode;
         this.lastGeneratedFormat = effectiveFormat;
+        if (finalCode) {
+          const versionId = this.versions.length + 1;
+          this.versions.push({
+            id: versionId,
+            label: `v${versionId}`,
+            format: effectiveFormat,
+            code: finalCode,
+            explanation: extracted.explanation,
+            mode: args.mode,
+          });
+          this.activeVersionId = versionId;
+        }
         this.history.push(
           { role: 'user', text: args.prompt || `${args.mode} (${effectiveFormat})` },
-          { role: 'assistant', text: `${extracted.explanation}\n${extracted.code.slice(0, 600)}`.trim() },
+          { role: 'assistant', text: `${extracted.explanation}\n${finalCode.slice(0, 600)}`.trim() },
         );
-        let preview: { renderKind: 'mermaid' | 'svg'; payload: string; mermaidTheme?: string } = {
+        let preview: { renderKind: 'mermaid' | 'svg'; payload: string; mermaidTheme?: string; mermaidLook?: 'classic' | 'handDrawn' } = {
           renderKind: 'svg',
           payload: '',
         };
-        if (extracted.code) {
+        if (finalCode) {
           try {
-            preview = await this.renderPreviewPayload(extracted.code, effectiveFormat);
+            preview = await this.renderPreviewPayload(finalCode, effectiveFormat);
           } catch (renderErr) {
             const msg = renderErr instanceof Error ? renderErr.message : String(renderErr);
             preview = {
@@ -701,10 +797,12 @@ export class AiDiagramStudioManager implements vscode.Disposable {
           type: 'streamComplete',
           mode: args.mode,
           format: effectiveFormat,
-          code: extracted.code,
+          code: finalCode,
           explanation: extracted.explanation,
           findings: [],
           preview,
+          versions: this.versions.map((v) => ({ id: v.id, label: v.label, format: v.format })),
+          activeVersionId: this.activeVersionId,
           canApplyToTarget: Boolean(target && target.format === effectiveFormat),
           targetLabel: target?.label ?? '',
           modelLabel: `${result.provider} · ${result.modelName}`,
@@ -844,6 +942,7 @@ export class AiDiagramStudioManager implements vscode.Disposable {
         ? convertDrawioToMermaid(target.source)
         : undefined;
 
+    const teamGuidelines = await this.readWorkspaceStyleGuide();
     const fullPrompt = buildAiDiagramPrompt({
       mode: args.mode,
       format,
@@ -851,6 +950,7 @@ export class AiDiagramStudioManager implements vscode.Disposable {
       currentDiagram: args.mode === 'generate' ? undefined : target?.source,
       drawioSummaryMermaid: drawioSummary,
       codeContext: codeCtx ? { fileName: codeCtx.fileName, content: codeCtx.content } : undefined,
+      teamGuidelines,
       diagnosticErrors: diagErrors,
       optimizePreset: args.optimizePreset,
       lang: getLanguage(),
@@ -962,7 +1062,8 @@ export class AiDiagramStudioManager implements vscode.Disposable {
         const prompt = typeof msg.prompt === 'string' ? msg.prompt : '';
         const optimizePreset = msg.optimizePreset as OptimizePreset | undefined;
         const includeCodeContext = msg.includeCodeContext !== false;
-        await this.startStudioRun({ mode, format, prompt, optimizePreset, includeCodeContext });
+        const pageIndex = typeof msg.pageIndex === 'number' ? msg.pageIndex : undefined;
+        await this.startStudioRun({ mode, format, prompt, optimizePreset, includeCodeContext, pageIndex });
         break;
       }
       case 'stop':
@@ -970,10 +1071,52 @@ export class AiDiagramStudioManager implements vscode.Disposable {
         break;
       case 'clearHistory':
         this.history = [];
+        this.versions = [];
+        this.activeVersionId = 0;
         this.lastGeneratedCode = '';
         this.lifecycle.send('RESET_SESSION');
         await this.pushContextState();
         break;
+      case 'selectVersion': {
+        const vid = Number(msg.versionId);
+        const found = this.versions.find((v) => v.id === vid);
+        if (found) {
+          this.activeVersionId = found.id;
+          this.lastGeneratedCode = found.code;
+          this.lastGeneratedFormat = found.format;
+          const preview = await this.renderPreviewPayload(found.code, found.format);
+          const target = await this.resolveTargetDiagram(this.boundTargetUri);
+          void this.panel?.webview.postMessage({
+            type: 'streamComplete',
+            mode: found.mode,
+            format: found.format,
+            code: found.code,
+            explanation: found.explanation,
+            findings: [],
+            preview,
+            versions: this.versions.map((v) => ({ id: v.id, label: v.label, format: v.format })),
+            activeVersionId: this.activeVersionId,
+            canApplyToTarget: Boolean(target && target.format === found.format),
+            targetLabel: target?.label ?? '',
+          });
+        }
+        break;
+      }
+      case 'compareVersions': {
+        const a = this.versions.find((v) => v.id === Number(msg.fromId));
+        const b = this.versions.find((v) => v.id === Number(msg.toId));
+        if (a && b && a.format === b.format) {
+          await this.visualDiff.openInMemoryComparison(
+            `✨ AI Studio (${a.label} ↔ ${b.label})`,
+            b.format,
+            a.code,
+            b.code,
+            a.label,
+            b.label,
+          );
+        }
+        break;
+      }
       case 'applyResult': {
         const code = typeof msg.code === 'string' ? msg.code : this.lastGeneratedCode;
         const format = (msg.format as AiDiagramFormat) || this.lastGeneratedFormat;
@@ -1104,12 +1247,18 @@ export class AiDiagramStudioManager implements vscode.Disposable {
         <option value="plantuml">PlantUML</option>
         <option value="dot">Graphviz DOT</option>
         <option value="wavedrom">WaveDrom</option>
+        <option value="d2">D2 (.d2)</option>
       </select>
     </div>
     <div id="targetInfoWrap" class="ctxItem">
       <span id="lblTarget" class="ctxLabel">Target:</span>
       <span id="targetBadge" class="targetBadge">New Diagram</span>
     </div>
+    <div id="pagePickerWrap" class="ctxItem" hidden>
+      <label for="pageSelect" class="ctxLabel">Page:</label>
+      <select id="pageSelect"></select>
+    </div>
+    <span id="guidelinesBadge" class="guidelinesBadge" hidden title="Workspace AI style guide loaded (.vscode/drawgraph-ai.md)">✓ Style Guide</span>
     <label id="codeContextWrap" class="ctxCheckbox" hidden>
       <input id="includeCodeChk" type="checkbox" checked>
       <span id="codeContextText">Include code context</span>
@@ -1142,10 +1291,17 @@ export class AiDiagramStudioManager implements vscode.Disposable {
 
     <div id="resultContainer" hidden>
       <div id="diagramOutputSection" hidden>
+        <div id="versionHistoryBar" hidden></div>
         <div class="outputHeader">
           <div class="outputTabs">
             <button type="button" id="tabPreviewBtn" class="outTab active">Live Preview</button>
             <button type="button" id="tabSourceBtn" class="outTab">Source Code</button>
+            <div class="previewZoomBar" id="previewZoomBar">
+              <button type="button" id="studioZoomOut" title="Zoom out">−</button>
+              <button type="button" id="studioZoomReset" title="Reset zoom">100%</button>
+              <button type="button" id="studioZoomIn" title="Zoom in">+</button>
+              <button type="button" id="studioZoomFit" title="Fit">Fit</button>
+            </div>
           </div>
           <div class="outputActions">
             <button type="button" id="applyBtn" class="primaryActionBtn">Apply to Active Diagram</button>

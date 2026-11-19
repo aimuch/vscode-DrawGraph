@@ -420,6 +420,56 @@ body.presentation-mode #toolbar {
   border-color: #ef4444;
 }
 
+#walkthroughHud {
+  position: absolute;
+  bottom: 14px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 15;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.45));
+  background: var(--vscode-editorWidget-background, rgba(30, 30, 30, 0.92));
+  color: var(--vscode-foreground);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.28);
+  font-size: 12px;
+  user-select: none;
+  backdrop-filter: blur(6px);
+}
+
+#walkthroughHud button {
+  height: 22px;
+  padding: 0 8px;
+  border-radius: 11px;
+  border: 1px solid var(--vscode-panel-border, rgba(128, 128, 128, 0.35));
+  background: transparent;
+  color: var(--vscode-foreground);
+  font: inherit;
+  cursor: pointer;
+}
+
+#walkthroughHud button:hover {
+  background: var(--vscode-toolbar-hoverBackground, rgba(128, 128, 128, 0.2));
+}
+
+#walkthroughHud button[aria-pressed='true'] {
+  background: var(--vscode-button-background, #007acc);
+  color: var(--vscode-button-foreground, #ffffff);
+  border-color: transparent;
+}
+
+#stepCaption {
+  max-width: 340px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+  padding: 0 4px;
+}
+
 #laserDot {
   position: absolute;
   width: 14px;
@@ -445,7 +495,9 @@ svg.drawgraph-has-spotlight .messageLine0,
 svg.drawgraph-has-spotlight .messageLine1,
 svg.drawgraph-has-spotlight .messageText,
 svg.drawgraph-has-spotlight g.elem,
-svg.drawgraph-has-spotlight g[id^='elem_'] {
+svg.drawgraph-has-spotlight g[id^='elem_'],
+svg.drawgraph-has-spotlight g.d2-node,
+svg.drawgraph-has-spotlight g.d2-container {
   opacity: 0.2;
   transition: opacity 0.16s ease;
 }

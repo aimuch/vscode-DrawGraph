@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.6.0
+
+- **D2 (`.d2`) Modern Architecture Diagram Language Support**: Full first-class support for D2 (`syntaxes/d2.tmLanguage.json`, language configuration, snippets, zero-dependency offline container/node/edge/SQL-table SVG renderer + optional local `d2` CLI via `drawGraph.d2.path`), integrated across live preview, Markdown ```` ```d2 ```` fences, Document Outline, static linter, Diagram Explorer, Visual Diff, AI Diagram Studio, and `DrawGraph: New D2 Architecture Diagram`.
+- **Mermaid Hand-Drawn Whiteboard Look (`drawGraph.mermaid.look`)**: Toggle between `classic` crisp geometry and `handDrawn` rough whiteboard sketch style in VS Code Settings or the slide-in Settings Drawer across Diagram Preview, Markdown preview, Visual Diff, and AI Diagram Studio.
+- **Step-by-Step Architecture Walkthrough Playback**: Annotate Mermaid (`%% step 1: ...`), PlantUML (`' step 1: ...`), DOT (`// step 1: ...`), or D2 (`# step 1: ...`) diagrams to play back ordered narrative steps with `←` / `→` arrow keys, auto-play, and node spotlight dimming in both **Diagram Preview** and **Standalone Interactive HTML Exports**.
+- **AI Diagram Studio v0.6 Upgrades**:
+  - **Multi-Turn Version History Timeline**: Clickable `v1 · v2 · v3` version pills with instant **Diff vN-1 ↔ vN** in Visual Diff.
+  - **Workspace AI Style Guide Injection**: Automatically reads `.vscode/drawgraph-ai.md` (or `drawgraph-ai.md`) in trusted workspaces (`DrawGraph: Create Workspace AI Diagram Style Guide`).
+  - **Draw.io Single-Page Precision AI Modification**: Select a specific `<diagram>` page in multi-page `.drawio` files, send only that page to AI, and splice updates back without disturbing other pages.
+  - **Preview Zoom/Fit Controls & Cross-Format AI Re-draw**: Scale previews (`−` / `100%` / `+` / `Fit`) and convert/re-draw diagrams across formats inside AI Studio.
+- **VS Code Chat Participant (`@drawgraph`)**: Invoke `@drawgraph` directly inside VS Code Chat with `/gen`, `/fix`, `/review`, and `/impact` commands (runtime feature-detected for VS Code 1.85+ compatibility).
+- **Workspace Cross-Diagram Node Search (`DrawGraph: Search Nodes Across Workspace Diagrams…`)**: Search nodes and labels across all workspace `.drawio`, `.mmd`, `.puml`, `.dot`, `.wavedrom`, `.d2`, and `.md` diagrams with instant jump-to-file/page/line and preview highlighting, plus a `$(search)` action in the Diagrams Explorer title bar.
+- **Architecture Drift Detection (`DrawGraph: Check Architecture Drift`)**: Compare codebase modules/classes against diagram tokens and links to detect undocumented code items and stale diagram references, with a one-click **`✨ Sync Missing Nodes with AI`** action.
+- **Git Diff / PR Architecture Impact Diagram (`DrawGraph: Generate Git Diff / PR Impact Diagram…`)**: Analyze `git diff --name-status` + workspace imports to render color-coded Added/Modified/Deleted files and 1-hop downstream impacted dependents in Mermaid, D2, or Draw.io.
+- **Markdown One-Click Publish Compiler (`DrawGraph: Compile Markdown for Publish`)**: Batch-render all diagram code fences (`mermaid`, `plantuml`, `dot`, `wavedrom`, `d2`) and local `.drawio` links in a `.md` file into static `.svg`/`.png` assets (`<doc>.assets/`) and emit a portable `<doc>.published.md`.
+- **Diagrams-as-Code CI Workflow Scaffolder (`DrawGraph: Scaffold Diagrams-as-Code GitHub Actions CI Workflow`)**: Generate `.github/workflows/drawgraph-check.yml` + zero-dependency `.github/scripts/drawgraph-ci-check.mjs` to validate diagram syntax and links in CI.
+
 ## 0.5.0
 
 - **Multi-Provider AI Engine & OS Keychain SecretStorage (`src/ai/aiProviders.ts`)**: Added first-class support for **VS Code Built-in LM (`vscode.lm`)**, **DeepSeek**, **Kimi (Moonshot)**, **Doubao (Volcengine Ark)**, **Qwen (DashScope)**, **OpenAI**, **Ollama**, **Magpie Gateway** (auto-discovering `~/.config/magpie/gateway.json`), **CC Switch Gateway**, and **OpenAI Compatible** endpoints, with `GET /models` auto-discovery (`DrawGraph: Discover Available AI Models…`), SSE streaming + `<think>` reasoning-tag filtering, per-host privacy consent, `machine`-scoped configuration hardening, and API keys stored exclusively in `vscode.SecretStorage`.

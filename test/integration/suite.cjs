@@ -1164,6 +1164,77 @@ test('v0.5 AI Diagram Studio, Multi-Provider SSE Streaming, SecretStorage, Synta
   }
 });
 
+test('v0.6: D2 live preview, Markdown ```d2 & publish compiler, cross-diagram search, drift check, CI & AI style guide', async () => {
+  const d2Uri = file('v06-arch.d2');
+  const mdUri = file('v06-publish.md');
+  const driftSrcUri = file('v06BillingEngine.ts');
+  const styleGuideUri = file('.vscode/drawgraph-ai.md');
+  const ciRootUri = file('v06-ci-temp');
+
+  fs.writeFileSync(
+    d2Uri.fsPath,
+    'direction: right\n# step 1: Ingress\nclient: Web Client\nbackend: Core {\n  api: Billing Gateway\n}\nclient -> backend.api: HTTPS\n',
+  );
+  fs.writeFileSync(
+    mdUri.fsPath,
+    '# V06 Doc\n\n```d2\na: Frontend\nb: Backend\na -> b: REST\n```\n',
+  );
+  fs.writeFileSync(driftSrcUri.fsPath, 'export class V06BillingEngine { charge() {} }\n');
+  fs.mkdirSync(ciRootUri.fsPath, { recursive: true });
+
+  try {
+    // 1. D2 live preview renders cleanly
+    const d2Doc = await vscode.workspace.openTextDocument(d2Uri);
+    assert.equal(d2Doc.languageId, 'd2');
+    await vscode.window.showTextDocument(d2Doc, vscode.ViewColumn.One);
+    await vscode.commands.executeCommand('drawGraph.preview.openToSide', d2Uri);
+    await waitFor(
+      'D2 preview renders SVG',
+      () =>
+        api.diagnostics
+          .previews()
+          .some((p) => p.uri === d2Uri.toString() && p.kind === 'd2' && p.status.state === 'rendered'),
+      8000,
+    );
+
+    // 2. Cross-diagram node search finds D2 node label
+    const searchHits = await vscode.commands.executeCommand('drawGraph.searchDiagrams', 'Billing Gateway');
+    assert.ok(
+      Array.isArray(searchHits) && searchHits.some((h) => h.diagramType === 'd2' && h.label.includes('Billing Gateway')),
+      'Cross-diagram search indexed D2 node',
+    );
+
+    // 3. Architecture drift detection finds undocumented V06BillingEngine
+    const driftReport = await vscode.commands.executeCommand('drawGraph.checkArchitectureDrift', false);
+    assert.ok(
+      driftReport &&
+        driftReport.undocumentedCodeItems.some((u) => u.name === 'V06BillingEngine'),
+      'Architecture drift detected undocumented V06BillingEngine class',
+    );
+
+    // 4. Markdown One-Click Publish Compiler renders ```d2 fence into .assets/*.svg + .published.md
+    const pubRes = await vscode.commands.executeCommand('drawGraph.markdown.compilePublish', mdUri, 'svg');
+    assert.ok(pubRes && pubRes.renderedCount === 1 && pubRes.assetUris.length === 1);
+    assert.ok(fs.existsSync(pubRes.outputMarkdownUri.fsPath));
+    assert.match(fs.readFileSync(pubRes.outputMarkdownUri.fsPath, 'utf8'), /v06-publish\.assets\/diagram-1-d2\.svg/);
+    assert.match(fs.readFileSync(pubRes.assetUris[0].fsPath, 'utf8'), /^<svg\b/);
+
+    // 5. CI Workflow scaffolder & AI Style Guide scaffolder
+    const ciRes = await vscode.commands.executeCommand('drawGraph.ci.createWorkflow', ciRootUri);
+    assert.ok(ciRes && fs.existsSync(ciRes.workflowUri.fsPath) && fs.existsSync(ciRes.scriptUri.fsPath));
+
+    const guideOut = await vscode.commands.executeCommand('drawGraph.ai.createStyleGuide', styleGuideUri);
+    assert.ok(guideOut && fs.existsSync(styleGuideUri.fsPath));
+  } finally {
+    await vscode.commands.executeCommand('workbench.action.closeAllEditors');
+    for (const f of [d2Uri, mdUri, driftSrcUri, styleGuideUri, file('v06-publish.published.md')]) {
+      if (fs.existsSync(f.fsPath)) fs.unlinkSync(f.fsPath);
+    }
+    fs.rmSync(file('v06-publish.assets').fsPath, { recursive: true, force: true });
+    fs.rmSync(ciRootUri.fsPath, { recursive: true, force: true });
+  }
+});
+
 exports.run = async function run() {
   const failures = [];
   for (const { name, fn } of tests) {

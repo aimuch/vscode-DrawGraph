@@ -1,4 +1,5 @@
 import { splitDiagrams, stripBlockComments } from '../plantuml/encoder';
+import { parseD2Graph } from '../renderers/d2Renderer';
 import { parseDotGraph } from '../renderers/dotRenderer';
 import { parseWaveJson } from '../renderers/wavedromRenderer';
 
@@ -15,7 +16,7 @@ export interface OutlineNode {
 }
 
 export interface MarkdownDiagramFence {
-  kind: 'mermaid' | 'plantuml' | 'dot' | 'wavedrom';
+  kind: 'mermaid' | 'plantuml' | 'dot' | 'wavedrom' | 'd2';
   startLine: number;
   endLine: number;
   content: string;
@@ -249,7 +250,7 @@ export function parsePlantUmlOutline(text: string): OutlineNode[] {
   return result;
 }
 
-/** Finds ```mermaid, ```plantuml / ```puml, ```dot / ```graphviz, and ```wavedrom / ```bitfield fences in Markdown. */
+/** Finds ```mermaid, ```plantuml / ```puml, ```dot / ```graphviz, ```wavedrom / ```bitfield, and ```d2 fences in Markdown. */
 export function findMarkdownDiagramFences(text: string): MarkdownDiagramFence[] {
   const lines = text.split(/\r?\n/);
   const fences: MarkdownDiagramFence[] = [];
@@ -258,7 +259,7 @@ export function findMarkdownDiagramFences(text: string): MarkdownDiagramFence[] 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
     if (!active) {
-      const open = /^\s*(`{3,}|~{3,})\s*(mermaid|plantuml|puml|dot|graphviz|wavedrom|bitfield)(?:\s+.*)?$/i.exec(line);
+      const open = /^\s*(`{3,}|~{3,})\s*(mermaid|plantuml|puml|dot|graphviz|wavedrom|bitfield|d2)(?:\s+.*)?$/i.exec(line);
       if (open) {
         const lang = open[2].toLowerCase();
         const kind: MarkdownDiagramFence['kind'] =
@@ -268,7 +269,9 @@ export function findMarkdownDiagramFences(text: string): MarkdownDiagramFence[] 
               ? 'dot'
               : lang === 'wavedrom' || lang === 'bitfield'
                 ? 'wavedrom'
-                : 'plantuml';
+                : lang === 'd2'
+                  ? 'd2'
+                  : 'plantuml';
         active = {
           kind,
           marker: open[1],
@@ -428,6 +431,52 @@ export function parseWaveDromOutline(text: string): OutlineNode[] {
       ];
     }
     return [];
+  } catch {
+    return [];
+  }
+}
+
+/** Parses outline symbols from a D2 diagram document. */
+export function parseD2Outline(text: string): OutlineNode[] {
+  try {
+    const g = parseD2Graph(text);
+    const totalLines = Math.max(0, text.split(/\r?\n/).length - 1);
+    const byId = new Map<string, OutlineNode>();
+    const roots: OutlineNode[] = [];
+
+    for (const node of g.nodes.values()) {
+      const outline: OutlineNode = {
+        name: node.label || node.id,
+        detail: node.isContainer ? 'container' : node.shape,
+        kind: node.isContainer ? 'container' : node.shape === 'sql_table' || node.shape === 'class' ? 'class' : 'participant',
+        startLine: node.line,
+        endLine: node.line,
+        selectionLine: node.line,
+        children: [],
+      };
+      byId.set(node.id, outline);
+    }
+
+    for (const node of g.nodes.values()) {
+      const outline = byId.get(node.id)!;
+      if (node.parentId && byId.has(node.parentId)) {
+        byId.get(node.parentId)!.children.push(outline);
+      } else {
+        roots.push(outline);
+      }
+    }
+
+    return [
+      {
+        name: 'D2 Diagram',
+        detail: `direction: ${g.direction}`,
+        kind: 'diagram',
+        startLine: 0,
+        endLine: totalLines,
+        selectionLine: 0,
+        children: roots,
+      },
+    ];
   } catch {
     return [];
   }

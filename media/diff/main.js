@@ -160,8 +160,9 @@
   /**
    * @param {any} side
    * @param {string} theme
+   * @param {string} [look]
    */
-  async function resolveSideVisual(side, theme) {
+  async function resolveSideVisual(side, theme, look) {
     if (!side || side.empty) {
       return null;
     }
@@ -170,7 +171,14 @@
     }
     let svgText = String(side.payload || '');
     if (side.renderKind === 'mermaid' && mermaid) {
-      mermaid.initialize({ startOnLoad: false, theme: theme || 'default', securityLevel: 'strict', htmlLabels: false, flowchart: { htmlLabels: false } });
+      mermaid.initialize({
+        startOnLoad: false,
+        theme: theme || 'default',
+        look: look === 'handDrawn' ? 'handDrawn' : 'classic',
+        securityLevel: 'strict',
+        htmlLabels: false,
+        flowchart: { htmlLabels: false },
+      });
       const id = `dg-diff-mmd-${++mmdSeq}`;
       const out = await mermaid.render(id, svgText);
       document.getElementById(`d${id}`)?.remove();
@@ -473,8 +481,8 @@
 
     const epoch = ++loadEpoch;
     const [visA, visB] = await Promise.all([
-      resolveSideVisual(msg.before, msg.mermaidTheme),
-      resolveSideVisual(msg.after, msg.mermaidTheme),
+      resolveSideVisual(msg.before, msg.mermaidTheme, msg.mermaidLook),
+      resolveSideVisual(msg.after, msg.mermaidTheme, msg.mermaidLook),
     ]);
     if (epoch !== loadEpoch) {
       return;

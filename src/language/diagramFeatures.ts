@@ -3,6 +3,7 @@ import * as vscode from 'vscode';
 import { renderMxfileToPreviewSvg } from '../drawio/mxfileToSvg';
 import { t } from '../l10n';
 import { splitDiagrams } from '../plantuml/encoder';
+import { renderD2ToSvgOffline, validateD2SyntaxStatic } from '../renderers/d2Renderer';
 import { renderDotToSvgOffline, validateDotSyntaxStatic } from '../renderers/dotRenderer';
 import { renderWaveDromToSvg, validateWaveDromSyntaxStatic } from '../renderers/wavedromRenderer';
 import { config } from '../util';
@@ -29,6 +30,7 @@ import {
 } from './completionsAndFormat';
 import {
   findMarkdownDiagramFences,
+  parseD2Outline,
   parseDotOutline,
   parseMermaidOutline,
   parsePlantUmlOutline,
@@ -80,7 +82,7 @@ export class DiagramDiagnostics implements vscode.Disposable {
 
   private scheduleStaticLint(document: vscode.TextDocument, delayMs: number): void {
     const lang = document.languageId;
-    if (lang !== 'mermaid' && lang !== 'plantuml' && lang !== 'dot' && lang !== 'wavedrom') {
+    if (lang !== 'mermaid' && lang !== 'plantuml' && lang !== 'dot' && lang !== 'wavedrom' && lang !== 'd2') {
       return;
     }
     const key = document.uri.toString();
@@ -113,7 +115,9 @@ export class DiagramDiagnostics implements vscode.Disposable {
         ? validateDotSyntaxStatic(document.getText())
         : lang === 'wavedrom'
           ? validateWaveDromSyntaxStatic(document.getText())
-          : validateDiagramSyntaxStatic(document.getText(), lang as 'mermaid' | 'plantuml');
+          : lang === 'd2'
+            ? validateD2SyntaxStatic(document.getText())
+            : validateDiagramSyntaxStatic(document.getText(), lang as 'mermaid' | 'plantuml');
     const syntaxDiags = issues.map((iss) => {
       const safeLine = Math.max(0, Math.min(iss.line, Math.max(0, document.lineCount - 1)));
       const lineText = document.lineAt(safeLine);
@@ -263,7 +267,9 @@ class DiagramSymbolProvider implements vscode.DocumentSymbolProvider {
           ? parseDotOutline(text)
           : document.languageId === 'wavedrom'
             ? parseWaveDromOutline(text)
-            : parseMermaidOutline(text);
+            : document.languageId === 'd2'
+              ? parseD2Outline(text)
+              : parseMermaidOutline(text);
     return nodes.map((n) => toDocumentSymbol(document, n));
   }
 }
@@ -355,7 +361,7 @@ class DiagramCodeLensProvider implements vscode.CodeLensProvider {
       return lenses;
     }
 
-    if (document.languageId === 'dot' || document.languageId === 'wavedrom') {
+    if (document.languageId === 'dot' || document.languageId === 'wavedrom' || document.languageId === 'd2') {
       const firstLine = text.split(/\r?\n/).findIndex((l) => {
         const lt = l.trim();
         return lt.length > 0 && !lt.startsWith('//') && !lt.startsWith('#');
@@ -489,9 +495,9 @@ class DiagramHoverProvider implements vscode.HoverProvider {
     }
 
     // Hover thumbnail preview for local diagram references in code comments, docs, and diagrams
-    if (document.uri.scheme === 'file' && /\.(?:drawio|dio|svg|png|dot|gv|wavedrom|mmd|mermaid|puml|plantuml)\b/i.test(lineText)) {
+    if (document.uri.scheme === 'file' && /\.(?:drawio|dio|svg|png|dot|gv|wavedrom|d2|mmd|mermaid|puml|plantuml)\b/i.test(lineText)) {
       const pathRe =
-        /(?:\(|"|'|=\s*|@see\s+|\s|^)([A-Za-z0-9_./-]+\.(?:drawio\.svg|drawio\.png|dio\.svg|dio\.png|wave\.json|drawio|dio|dot|gv|wavedrom|mmd|mermaid|puml|plantuml|svg|png))(?:\)|"|'|\s|$|[,;:])/g;
+        /(?:\(|"|'|=\s*|@see\s+|\s|^)([A-Za-z0-9_./-]+\.(?:drawio\.svg|drawio\.png|dio\.svg|dio\.png|wave\.json|drawio|dio|dot|gv|wavedrom|d2|mmd|mermaid|puml|plantuml|svg|png))(?:\)|"|'|\s|$|[,;:])/g;
       let m: RegExpExecArray | null;
       while ((m = pathRe.exec(lineText)) !== null) {
         const rel = m[1];
@@ -527,6 +533,9 @@ class DiagramHoverProvider implements vscode.HoverProvider {
             } else if (/\.(?:wavedrom|wave\.json)$/i.test(rel)) {
               const svg = renderWaveDromToSvg(Buffer.from(bytes).toString('utf8'));
               dataUri = `data:image/svg+xml;base64,${Buffer.from(svg, 'utf8').toString('base64')}`;
+            } else if (/\.d2$/i.test(rel)) {
+              const svg = renderD2ToSvgOffline(Buffer.from(bytes).toString('utf8'));
+              dataUri = `data:image/svg+xml;base64,${Buffer.from(svg, 'utf8').toString('base64')}`;
             } else if (/\.svg$/i.test(rel)) {
               dataUri = `data:image/svg+xml;base64,${Buffer.from(bytes).toString('base64')}`;
             } else if (/\.png$/i.test(rel)) {
@@ -541,7 +550,9 @@ class DiagramHoverProvider implements vscode.HoverProvider {
                   ? 'plantuml'
                   : /\.(?:dot|gv)$/i.test(rel)
                     ? 'dot'
-                    : 'wavedrom';
+                    : /\.d2$/i.test(rel)
+                      ? 'd2'
+                      : 'wavedrom';
             const openArgs = encodeURIComponent(JSON.stringify([targetUri, 0, dtype]));
             const diffArgs = encodeURIComponent(JSON.stringify([targetUri]));
             const header = `**${path.basename(rel)}** — [${t('Open Diagram')}](command:drawGraph.explorer.openEntry?${openArgs}) · [${t('Visual Diff')}](command:drawGraph.visualDiff?${diffArgs})`;
@@ -703,7 +714,7 @@ class MarkdownDiagramDropProvider implements vscode.DocumentDropEditProvider {
         }
       }
     }
-    if (!targetUri || !/\.(?:drawio|dio|mmd|mermaid|puml|plantuml|dot|gv|wavedrom|svg|png)$/i.test(targetUri.path)) {
+    if (!targetUri || !/\.(?:drawio|dio|mmd|mermaid|puml|plantuml|dot|gv|wavedrom|d2|svg|png)$/i.test(targetUri.path)) {
       return undefined;
     }
     // If only text/uri-list came from standard file explorer for plain .png/.svg (not .drawio.svg/.png), let built-in handler run unless from our tree
@@ -761,6 +772,7 @@ export function registerLanguageFeatures(context: vscode.ExtensionContext): Diag
     { language: 'plantuml' },
     { language: 'dot' },
     { language: 'wavedrom' },
+    { language: 'd2' },
   ];
   const withMarkdownSelector: vscode.DocumentSelector = [
     ...allDiagramSelector,

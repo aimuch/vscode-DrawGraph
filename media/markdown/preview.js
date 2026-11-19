@@ -244,14 +244,16 @@
       return;
     }
 
-    let initializedTheme = '';
+    let initializedKey = '';
     for (const block of blocks) {
       const configured = block.dataset.mermaidTheme || 'auto';
+      const look = block.dataset.mermaidLook === 'handDrawn' ? 'handDrawn' : 'classic';
       if (forceThemeRefresh && configured !== 'auto') {
         continue;
       }
       const theme = configured === 'auto' ? (isDark() ? 'dark' : 'default') : configured;
-      if (block.dataset.renderedTheme === theme && block.dataset.rendered === '1') {
+      const renderKey = `${theme}:${look}`;
+      if (block.dataset.renderedTheme === renderKey && block.dataset.rendered === '1') {
         continue;
       }
       if (block.dataset.mermaidSource === undefined) {
@@ -259,17 +261,18 @@
       }
       const source = block.dataset.mermaidSource;
       block.setAttribute('data-rendered', '1');
-      block.dataset.renderedTheme = theme;
+      block.dataset.renderedTheme = renderKey;
 
-      if (theme !== initializedTheme) {
+      if (renderKey !== initializedKey) {
         mermaid.initialize({
           startOnLoad: false,
           theme,
+          look,
           securityLevel: 'strict',
           htmlLabels: false,
           flowchart: { htmlLabels: false },
         });
-        initializedTheme = theme;
+        initializedKey = renderKey;
       }
 
       const id = `drawgraph-md-mermaid-${++counter}`;

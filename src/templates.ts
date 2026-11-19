@@ -73,9 +73,33 @@ export const WAVEDROM_REG_TEMPLATE = `{
 }
 `;
 
+export const D2_TEMPLATE = `direction: right
+
+client: Web Client {
+  shape: rectangle
+}
+
+backend: Backend Cluster {
+  gateway: API Gateway
+  service: Order Service
+  cache: Redis Cache {
+    shape: cylinder
+  }
+  gateway -> service: gRPC
+  service -> cache: read/write
+}
+
+db: Primary Database {
+  shape: cylinder
+}
+
+client -> backend.gateway: HTTPS
+backend.service -> db: SQL
+`;
+
 export interface DiagramTemplate {
   id: string;
-  kind: 'mermaid' | 'plantuml' | 'drawio' | 'dot' | 'wavedrom';
+  kind: 'mermaid' | 'plantuml' | 'drawio' | 'dot' | 'wavedrom' | 'd2';
   label: string;
   detail: string;
   content: string;
@@ -285,5 +309,12 @@ stop
     label: 'WaveDrom: Hardware Register BitField',
     detail: '16/32-bit register bit-field layout table',
     content: WAVEDROM_REG_TEMPLATE,
+  },
+  {
+    id: 'd2-architecture',
+    kind: 'd2',
+    label: 'D2: Modern Architecture Diagram',
+    detail: 'Declarative containers, shapes, and directed flows',
+    content: D2_TEMPLATE,
   },
 ];

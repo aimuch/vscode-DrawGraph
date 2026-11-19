@@ -207,7 +207,7 @@ test('v0.5 package manifest, untrusted workspace restrictions, and EN/ZH localiz
   const nlsEn = JSON.parse(readFileSync('package.nls.json', 'utf8'));
   const nlsZh = JSON.parse(readFileSync('package.nls.zh-cn.json', 'utf8'));
 
-  assert.equal(pkg.version, '0.5.0');
+  assert.match(pkg.version, /^0\.[5-9]\.\d+/);
   assert.ok(pkg.capabilities.untrustedWorkspaces.restrictedConfigurations.includes('drawGraph.ai.baseUrl'));
   assert.equal(pkg.contributes.configuration.properties['drawGraph.ai.provider'].scope, 'machine');
   assert.equal(pkg.contributes.configuration.properties['drawGraph.ai.baseUrl'].scope, 'machine');

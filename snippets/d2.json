@@ -1,0 +1,33 @@
+{
+  "D2 Architecture": {
+    "prefix": "d2arch",
+    "body": [
+      "direction: right",
+      "",
+      "client: Web Client",
+      "backend: Backend VPC {",
+      "  api: API Gateway",
+      "  auth: Auth Service",
+      "  db: PostgreSQL {",
+      "    shape: cylinder",
+      "  }",
+      "  api -> auth: verify",
+      "  auth -> db: query",
+      "}",
+      "client -> backend.api: HTTPS"
+    ],
+    "description": "D2 layered architecture diagram"
+  },
+  "D2 SQL Table": {
+    "prefix": "d2sql",
+    "body": [
+      "${1:users}: {",
+      "  shape: sql_table",
+      "  id: int {constraint: primary_key}",
+      "  email: varchar {constraint: unique}",
+      "  created_at: timestamp",
+      "}"
+    ],
+    "description": "D2 SQL table schema"
+  }
+}

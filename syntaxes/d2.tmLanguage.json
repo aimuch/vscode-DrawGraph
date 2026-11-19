@@ -1,0 +1,28 @@
+{
+  "scopeName": "source.d2",
+  "name": "D2",
+  "patterns": [
+    {
+      "name": "comment.line.number-sign.d2",
+      "match": "#.*$"
+    },
+    {
+      "name": "string.quoted.double.d2",
+      "begin": "\"",
+      "end": "\"",
+      "patterns": [{ "name": "constant.character.escape.d2", "match": "\\\\." }]
+    },
+    {
+      "name": "keyword.operator.arrow.d2",
+      "match": "(<->|->|<-|--)"
+    },
+    {
+      "name": "keyword.control.d2",
+      "match": "\\b(direction|shape|style|label|icon|near|link|constraint|vars|classes|layers|scenarios|steps)\\b"
+    },
+    {
+      "name": "constant.language.shape.d2",
+      "match": "\\b(rectangle|square|page|parallelogram|document|cylinder|queue|package|step|callout|stored_data|person|diamond|oval|circle|hexagon|cloud|sql_table|class|right|down|left|up)\\b"
+    }
+  ]
+}

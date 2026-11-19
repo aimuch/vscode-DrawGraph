@@ -1,4 +1,5 @@
 import type { SettingsSnapshot } from '../settingsSnapshot';
+import type { WalkthroughStep } from '../walkthrough/walkthroughCore';
 
 export type SettingsDrawerActionId =
   | 'downloadOfflinePack'
@@ -41,7 +42,7 @@ export type PreviewToHostMessage =
 
 /** Discriminated union of all messages sent from the Extension Host to the Diagram Preview webview. */
 export type HostToPreviewMessage =
-  | { type: 'mermaid'; source: string; theme: string }
+  | { type: 'mermaid'; source: string; theme: string; look?: 'classic' | 'handDrawn' }
   | { type: 'svg'; svg: string; info: string; canNav: boolean }
   | {
       type: 'config';
@@ -53,13 +54,14 @@ export type HostToPreviewMessage =
       settings?: SettingsSnapshot;
     }
   | { type: 'silentExport'; format: 'svg' | 'png' | 'pdf' }
-  | { type: 'renderOffscreen'; requestId: number; source: string; theme: string; format: 'svg' | 'png' }
+  | { type: 'renderOffscreen'; requestId: number; source: string; theme: string; look?: 'classic' | 'handDrawn'; format: 'svg' | 'png' }
   | { type: 'loading' }
   | { type: 'empty' }
   | { type: 'error'; message: string }
   | { type: 'settingsState'; settings: SettingsSnapshot }
   | { type: 'toggleSettings'; open?: boolean; settings?: SettingsSnapshot }
-  | { type: 'highlightCode'; candidates: string[] };
+  | { type: 'highlightCode'; candidates: string[] }
+  | { type: 'walkthrough'; steps: WalkthroughStep[] };
 
 /** Discriminated union of messages sent from the Draw.io bridge webview to the Extension Host. */
 export type DrawioToHostMessage =

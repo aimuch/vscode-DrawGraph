@@ -4,6 +4,7 @@ import * as vscode from 'vscode';
 import { t } from '../l10n';
 import { encodePlantUml, splitDiagrams } from '../plantuml/encoder';
 import { PlantUmlRenderer } from '../plantuml/renderer';
+import { renderD2ToSvgOffline } from '../renderers/d2Renderer';
 import { renderDotToSvgOffline } from '../renderers/dotRenderer';
 import { renderWaveDromToSvg } from '../renderers/wavedromRenderer';
 import { config } from '../util';
@@ -186,7 +187,8 @@ export function mermaidMarkdownPlugin(md: MarkdownIt): MarkdownIt {
     const line = token.map ? ` data-line="${token.map[0]}"` : '';
     if (lang === 'mermaid' && cfg.get<boolean>('markdown.mermaid', true)) {
       const theme = md.utils.escapeHtml(cfg.get<string>('mermaid.theme', 'auto'));
-      return `<div class="drawgraph-mermaid code-line"${line} data-mermaid-theme="${theme}">${md.utils.escapeHtml(token.content)}</div>\n`;
+      const look = cfg.get<string>('mermaid.look', 'classic') === 'handDrawn' ? 'handDrawn' : 'classic';
+      return `<div class="drawgraph-mermaid code-line"${line} data-mermaid-theme="${theme}" data-mermaid-look="${look}">${md.utils.escapeHtml(token.content)}</div>\n`;
     }
     if ((lang === 'plantuml' || lang === 'puml') && cfg.get<boolean>('markdown.plantuml', true)) {
       return renderPlantUmlFence(md, token.content, line, resolveMarkdownBaseDir(env));
@@ -203,6 +205,14 @@ export function mermaidMarkdownPlugin(md: MarkdownIt): MarkdownIt {
       try {
         const dataUri = getOrComputeStaticDataUri(`wavedrom\0${token.content}`, () => renderWaveDromToSvg(token.content));
         return `<div class="drawgraph-plantuml drawgraph-wavedrom code-line"${line}><img src="${dataUri}" alt="WaveDrom diagram"></div>\n`;
+      } catch (err) {
+        return `<div class="drawgraph-plantuml code-line"${line}><pre class="drawgraph-error">${md.utils.escapeHtml((err as Error).message)}</pre></div>\n`;
+      }
+    }
+    if (lang === 'd2' && cfg.get<boolean>('markdown.d2', true)) {
+      try {
+        const dataUri = getOrComputeStaticDataUri(`d2\0${token.content}`, () => renderD2ToSvgOffline(token.content));
+        return `<div class="drawgraph-plantuml drawgraph-d2 code-line"${line}><img src="${dataUri}" alt="D2 diagram"></div>\n`;
       } catch (err) {
         return `<div class="drawgraph-plantuml code-line"${line}><pre class="drawgraph-error">${md.utils.escapeHtml((err as Error).message)}</pre></div>\n`;
       }

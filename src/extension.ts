@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { AiDiagramStudioManager } from './ai/aiDiagramStudio';
 import { initAiSecretStorage } from './ai/aiProviders';
+import { registerDrawGraphChatParticipant } from './ai/chatParticipant';
 import { registerAdvancedCommands } from './commands/advancedCommands';
 import { registerAiCommands } from './commands/aiCommands';
 import { registerCoreCommands } from './commands/coreCommands';
@@ -66,11 +67,13 @@ export function activate(context: vscode.ExtensionContext) {
 
   registerCoreCommands({ context, drawio, previews, settingsPanel });
   registerAiCommands({ context, aiStudio });
+  registerDrawGraphChatParticipant(context, aiStudio);
   registerAdvancedCommands({
     context,
     drawio,
     previews,
     visualDiff,
+    aiStudio,
     offlinePack,
     explorer,
     settingsPanel,
