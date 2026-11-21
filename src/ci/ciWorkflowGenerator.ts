@@ -82,8 +82,12 @@ function checkFile(filePath) {
       errors.push(\`\${filePath}: Mismatched PlantUML @start/@end blocks (\${starts} vs \${ends})\`);
     }
   } else if (ext === '.dot' || ext === '.gv' || ext === '.d2') {
-    const opens = (text.match(/\\{/g) || []).length;
-    const closes = (text.match(/\\}/g) || []).length;
+    const clean = text
+      .split(/\\r?\\n/)
+      .map((ln) => ln.replace(/"(?:\\\\.|[^"\\\\])*"|'(?:\\\\.|[^'\\\\])*'/g, '""').replace(/(?:\\/\\/|#).*$/, ''))
+      .join('\\n');
+    const opens = (clean.match(/\\{/g) || []).length;
+    const closes = (clean.match(/\\}/g) || []).length;
     if (opens !== closes) {
       errors.push(\`\${filePath}: Unbalanced braces ({ = \${opens}, } = \${closes})\`);
     }

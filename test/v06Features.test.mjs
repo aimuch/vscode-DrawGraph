@@ -3,6 +3,7 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
+import { deflateRawSync } from 'node:zlib';
 import * as esbuild from 'esbuild';
 
 const outdir = mkdtempSync(join(tmpdir(), 'drawgraph-v06-test-'));
@@ -18,6 +19,7 @@ await esbuild.build({
     symbols: 'src/language/symbols.ts',
     aiCore: 'src/ai/diagramAiCore.ts',
     settingsStrings: 'src/settingsStrings.ts',
+    codeLinksXml: 'src/drawio/codeLinksXml.ts',
   },
   bundle: true,
   format: 'esm',
@@ -41,6 +43,7 @@ const { buildAiDiagramPrompt, extractAndNormalizeAiDiagram, spliceDrawioPageXml 
   join(outdir, 'aiCore.mjs')
 );
 const { SETTINGS_DRAWER_STRINGS } = await import(join(outdir, 'settingsStrings.mjs'));
+const { expandCompressedDiagrams } = await import(join(outdir, 'codeLinksXml.mjs'));
 
 test('D2 parser, offline SVG renderer, static linter, and document outline', () => {
   const sample = [
@@ -217,4 +220,47 @@ test('EN/ZH localization parity for package.nls and SETTINGS_DRAWER_STRINGS in v
     Object.keys(SETTINGS_DRAWER_STRINGS.en).sort(),
     Object.keys(SETTINGS_DRAWER_STRINGS['zh-cn']).sort(),
   );
+});
+
+test('Review regressions: D2 dotted block scope, chained edges, dark mode, walkthrough D2 decl, compressed Draw.io, and HTML ZH', () => {
+  // 1. D2 dotted container `a.b { ... }` pops cleanly so `outside` stays top-level
+  const d2Dotted = [
+    'a.b {',
+    '  inner: Inside',
+    '}',
+    'outside: Top Level',
+    'client -> gateway -> db: SQL',
+  ].join('\n');
+  const g = parseD2Graph(d2Dotted);
+  assert.equal(g.nodes.get('outside')?.parentId, undefined);
+  assert.equal(g.edges.length, 2);
+  assert.equal(g.edges[0].from, 'client');
+  assert.equal(g.edges[0].to, 'gateway');
+  assert.equal(g.edges[1].from, 'gateway');
+  assert.equal(g.edges[1].to, 'db');
+  assert.equal(g.edges[1].label, 'SQL');
+
+  // 2. D2 dark theme SVG
+  const darkSvg = renderD2ToSvgOffline(d2Dotted, { dark: true });
+  assert.match(darkSvg, /fill="#0f172a"/);
+
+  // 3. Walkthrough extracts D2 single-line declaration targets
+  const wt = extractWalkthroughSteps('# step 1: Gateway\ngateway: API Gateway\n');
+  assert.equal(wt.length, 1);
+  assert.ok(wt[0].targets.includes('gateway') && wt[0].targets.includes('API Gateway'));
+
+  // 4. Compressed Draw.io diagram expands cleanly for cross-diagram search
+  const rawModel = '<mxGraphModel><root><mxCell id="0"/><mxCell id="1" parent="0"/><mxCell id="x" value="PaymentHub" vertex="1" parent="1"/></root></mxGraphModel>';
+  const compressed = deflateRawSync(Buffer.from(encodeURIComponent(rawModel), 'utf8')).toString('base64');
+  const expanded = expandCompressedDiagrams(`<mxfile><diagram id="p2" name="Payments">${compressed}</diagram></mxfile>`);
+  assert.match(expanded, /value="PaymentHub"/);
+
+  // 5. HTML exporter zh-cn localizes step hint and shifts HUD only in presentation mode
+  const zhHtml = buildInteractiveHtmlBundle({
+    title: '演示',
+    lang: 'zh-cn',
+    pages: [{ name: 'P1', svg: '<svg xmlns="http://www.w3.org/2000/svg" width="100" height="80"></svg>', steps: wt }],
+  });
+  assert.match(zhHtml, /步 · ←\/→/);
+  assert.match(zhHtml, /body\.present #stepHud/);
 });

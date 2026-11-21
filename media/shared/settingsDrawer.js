@@ -714,6 +714,8 @@
             buildTextInput('plantuml.server', state.plantuml.server, 'https://www.plantuml.com/plantuml', untrusted),
             h('label', { className: 'settingsKey' }, tr('lblPumlJar')),
             buildTextInput('plantuml.jar', state.plantuml.jar, tr('phJar'), untrusted),
+            h('label', { className: 'settingsKey' }, tr('lblD2Path')),
+            buildTextInput('d2.path', state.plantuml.d2Path || '', tr('phD2Path'), untrusted),
             h('label', { className: 'settingsKey' }, tr('lblExportOutDir')),
             buildTextInput('exportOnSaveOutDir', state.plantuml.exportOnSaveOutDir || '', tr('phExportOutDir'), untrusted),
           ),

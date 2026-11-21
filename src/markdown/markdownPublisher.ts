@@ -2,12 +2,8 @@ import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { readDrawioXmlFromUri } from '../drawio/drawioEditorProvider';
 import { renderMxfileToPreviewSvg } from '../drawio/mxfileToSvg';
-import { t } from '../l10n';
 import { findMarkdownDiagramFences } from '../language/symbols';
 import type { PreviewManager } from '../preview/previewManager';
-import { renderD2ToSvgOffline } from '../renderers/d2Renderer';
-import { renderDotToSvgOffline } from '../renderers/dotRenderer';
-import { renderWaveDromToSvg } from '../renderers/wavedromRenderer';
 
 export interface MarkdownPublishResult {
   readonly outputMarkdownUri: vscode.Uri;
@@ -54,18 +50,11 @@ export async function compileMarkdownForPublish(
     } else if (f.kind === 'plantuml') {
       bytes = await previews.renderPlantUmlBytes(f.content, imageFormat, baseDir);
     } else if (f.kind === 'dot') {
-      bytes =
-        imageFormat === 'svg'
-          ? Buffer.from(renderDotToSvgOffline(f.content), 'utf8')
-          : await previews.renderDotBytes(f.content, 'png');
+      bytes = await previews.renderDotBytes(f.content, imageFormat);
     } else if (f.kind === 'wavedrom') {
-      bytes =
-        imageFormat === 'svg'
-          ? Buffer.from(renderWaveDromToSvg(f.content), 'utf8')
-          : await previews.renderWaveDromBytes(f.content, 'png');
+      bytes = await previews.renderWaveDromBytes(f.content, imageFormat);
     } else {
-      const svg = renderD2ToSvgOffline(f.content);
-      bytes = imageFormat === 'svg' ? Buffer.from(svg, 'utf8') : await previews.rasterizeSvgToPngBytes(svg);
+      bytes = await previews.renderD2Bytes(f.content, imageFormat);
     }
 
     const fileName = `diagram-${num}-${f.kind}.${imageFormat}`;
@@ -78,14 +67,17 @@ export async function compileMarkdownForPublish(
     lines.splice(f.startLine, f.endLine - f.startLine + 1, mdImageLine);
   }
 
-  // Also expand local `.drawio` / `.dio` markdown links `[label](arch.drawio)` into rendered images
+  // Also expand local `.drawio` / `.dio` markdown links `[label](arch.drawio)` or `![label](arch.drawio)`
+  // Replace in reverse index order so earlier match offsets stay exact and `$` sequences aren't interpreted.
   let compiledText = lines.join('\n');
-  const drawioLinkRe = /\[([^\]]+)\]\(([^)\s]+\.(?:drawio|dio))\)/gi;
+  const drawioLinkRe = /!?\[([^\]]+)\]\(([^)\s]+\.(?:drawio|dio))\)/gi;
   const drawioMatches = [...compiledText.matchAll(drawioLinkRe)];
   if (drawioMatches.length > 0) {
     await vscode.workspace.fs.createDirectory(assetsDirUri);
-    for (const m of drawioMatches) {
-      const full = m[0];
+    for (let mi = drawioMatches.length - 1; mi >= 0; mi--) {
+      const m = drawioMatches[mi];
+      const matchStart = m.index ?? 0;
+      const matchEnd = matchStart + m[0].length;
       const alt = m[1];
       const rel = m[2];
       try {
@@ -98,7 +90,8 @@ export async function compileMarkdownForPublish(
         const assetUri = vscode.Uri.joinPath(assetsDirUri, fileName);
         await vscode.workspace.fs.writeFile(assetUri, bytes);
         assetUris.push(assetUri);
-        compiledText = compiledText.replace(full, `![${alt}](./${assetsFolderName}/${fileName})`);
+        const replacement = `![${alt}](./${assetsFolderName}/${fileName})`;
+        compiledText = `${compiledText.slice(0, matchStart)}${replacement}${compiledText.slice(matchEnd)}`;
       } catch {
         // Leave unresolved link intact
       }
@@ -106,10 +99,6 @@ export async function compileMarkdownForPublish(
   }
 
   await vscode.workspace.fs.writeFile(outputMarkdownUri, Buffer.from(compiledText, 'utf8'));
-  void vscode.window.setStatusBarMessage(
-    t('Compiled {0} diagram(s) into {1}', diagramIdx, path.basename(outputMarkdownUri.path)),
-    4000,
-  );
 
   return { outputMarkdownUri, assetUris, renderedCount: diagramIdx };
 }

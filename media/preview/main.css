@@ -470,6 +470,17 @@ body.presentation-mode #toolbar {
   padding: 0 4px;
 }
 
+@media (max-width: 560px) {
+  #walkthroughHud {
+    bottom: auto;
+    top: 10px;
+    max-width: calc(100% - 24px);
+  }
+  #stepCaption {
+    max-width: 160px;
+  }
+}
+
 #laserDot {
   position: absolute;
   width: 14px;

@@ -91,7 +91,8 @@ export function parseD2Graph(source: string): ParsedD2Graph {
     return lastNode!;
   };
 
-  const scopeStack: string[] = [];
+  // Each entry on scopeStack represents ONE `{ ... }` block (which may span multiple dotted segments like `a.b {`).
+  const scopeStack: string[][] = [];
   const rawLines = source.replace(/\r\n/g, '\n').split('\n');
 
   for (let li = 0; li < rawLines.length; li++) {
@@ -104,7 +105,8 @@ export function parseD2Graph(source: string): ParsedD2Graph {
       continue;
     }
 
-    const prefix = scopeStack.length > 0 ? `${scopeStack.join('.')}.` : '';
+    const flatScope = scopeStack.flat();
+    const prefix = flatScope.length > 0 ? `${flatScope.join('.')}.` : '';
 
     // Global direction
     const dirMatch = /^direction\s*:\s*(right|down|left|up)\b/i.exec(stripped);
@@ -114,9 +116,9 @@ export function parseD2Graph(source: string): ParsedD2Graph {
     }
 
     // Check if inside a style block (`node.style { fill: ... }`)
-    const topScope = scopeStack[scopeStack.length - 1];
-    if (topScope === 'style' && scopeStack.length >= 2) {
-      const ownerId = scopeStack.slice(0, -1).join('.');
+    const topScope = flatScope[flatScope.length - 1];
+    if (topScope === 'style' && flatScope.length >= 2) {
+      const ownerId = flatScope.slice(0, -1).join('.');
       const owner = nodes.get(ownerId);
       const kv = /^([a-zA-Z0-9_-]+)\s*:\s*(.+)$/.exec(stripped);
       if (owner && kv) {
@@ -129,8 +131,8 @@ export function parseD2Graph(source: string): ParsedD2Graph {
     }
 
     // Property on current container (shape, label, style.fill, style.stroke)
-    if (scopeStack.length > 0) {
-      const ownerId = scopeStack.join('.');
+    if (flatScope.length > 0) {
+      const ownerId = flatScope.join('.');
       const owner = nodes.get(ownerId);
       const propMatch = /^(shape|label|style\.fill|style\.stroke|style\.stroke-dash)\s*:\s*(.+)$/i.exec(stripped);
       if (owner && propMatch) {
@@ -157,29 +159,35 @@ export function parseD2Graph(source: string): ParsedD2Graph {
       }
     }
 
-    // Edge statement: `A -> B: label` or `A <-> B` or `A -- B`
-    const edgeMatch = /^(.+?)\s*(<->|->|<-|--)\s*([^:{]+?)(?:\s*:\s*([^{]+?))?(?:\s*\{([^}]*)\})?$/.exec(stripped);
-    if (edgeMatch) {
-      const rawFrom = edgeMatch[1].trim();
-      const op = edgeMatch[2];
-      const rawTo = edgeMatch[3].trim();
-      const label = edgeMatch[4] ? unquoteD2(edgeMatch[4]) : undefined;
-      const inlineStyle = edgeMatch[5] || '';
-      const fromId = rawFrom.includes('.') || !prefix ? rawFrom : `${prefix}${rawFrom}`;
-      const toId = rawTo.includes('.') || !prefix ? rawTo : `${prefix}${rawTo}`;
-      const nFrom = ensureNode(fromId, li);
-      const nTo = ensureNode(toId, li);
-      const actualFrom = op === '<-' ? nTo.id : nFrom.id;
-      const actualTo = op === '<-' ? nFrom.id : nTo.id;
-      edges.push({
-        from: actualFrom,
-        to: actualTo,
-        label,
-        bidirectional: op === '<->',
-        dashed: /stroke-dash/i.test(inlineStyle) || op === '--',
-        line: li,
-      });
-      continue;
+    // Edge statement (supports chained edges `A -> B -> C: label`, `A <-> B`, `A -- B`)
+    const edgeSuffixMatch = /^(.*?)(?:\s*:\s*([^{]+?))?(?:\s*\{([^}]*)\})?$/.exec(stripped);
+    const edgeBody = edgeSuffixMatch ? edgeSuffixMatch[1].trim() : stripped;
+    if (/(?:<->|->|<-|--)/.test(edgeBody) && !edgeBody.includes(':')) {
+      const tokens = edgeBody.split(/\s*(<->|->|<-|--)\s*/).map((s) => s.trim()).filter(Boolean);
+      if (tokens.length >= 3 && tokens.length % 2 === 1) {
+        const label = edgeSuffixMatch?.[2] ? unquoteD2(edgeSuffixMatch[2]) : undefined;
+        const inlineStyle = edgeSuffixMatch?.[3] || '';
+        for (let ti = 0; ti < tokens.length - 2; ti += 2) {
+          const rawFrom = tokens[ti];
+          const op = tokens[ti + 1];
+          const rawTo = tokens[ti + 2];
+          const fromId = rawFrom.includes('.') || !prefix ? rawFrom : `${prefix}${rawFrom}`;
+          const toId = rawTo.includes('.') || !prefix ? rawTo : `${prefix}${rawTo}`;
+          const nFrom = ensureNode(fromId, li);
+          const nTo = ensureNode(toId, li);
+          const actualFrom = op === '<-' ? nTo.id : nFrom.id;
+          const actualTo = op === '<-' ? nFrom.id : nTo.id;
+          edges.push({
+            from: actualFrom,
+            to: actualTo,
+            label: ti === tokens.length - 3 ? label : undefined,
+            bidirectional: op === '<->',
+            dashed: /stroke-dash/i.test(inlineStyle) || op === '--',
+            line: li,
+          });
+        }
+        continue;
+      }
     }
 
     // Container/Block open: `id: Label {` or `id {` or `id.style {`
@@ -188,8 +196,8 @@ export function parseD2Graph(source: string): ParsedD2Graph {
       const rawKey = openBlock[1].trim();
       const rawLabel = openBlock[2]?.trim();
       const trailing = openBlock[3].trim();
-      if (rawKey === 'style' && scopeStack.length > 0) {
-        scopeStack.push('style');
+      if (rawKey === 'style' && flatScope.length > 0) {
+        scopeStack.push(['style']);
       } else {
         const fullId = `${prefix}${rawKey}`;
         const node = ensureNode(fullId, li, rawLabel || undefined);
@@ -212,7 +220,8 @@ export function parseD2Graph(source: string): ParsedD2Graph {
             node.isContainer = false;
           }
         } else {
-          scopeStack.push(...rawKey.split('.').map((s) => unquoteD2(s).trim()).filter(Boolean));
+          const segs = rawKey.split('.').map((s) => unquoteD2(s).trim()).filter(Boolean);
+          scopeStack.push(segs.length > 0 ? segs : [rawKey]);
         }
       }
       continue;
@@ -245,7 +254,8 @@ export function parseD2Graph(source: string): ParsedD2Graph {
   return { direction, nodes, edges };
 }
 
-export function renderD2ToSvgOffline(source: string): string {
+export function renderD2ToSvgOffline(source: string, opts?: { dark?: boolean }): string {
+  const dark = opts?.dark === true;
   const g = parseD2Graph(source);
   const allNodes = [...g.nodes.values()];
   if (allNodes.length === 0) {
@@ -388,12 +398,54 @@ export function renderD2ToSvgOffline(source: string): string {
     totalH = Math.max(totalH, b.y + b.h + PAD);
   }
 
+  const pal = dark
+    ? {
+        bg: '#0f172a',
+        clusterFill: '#1e293b',
+        clusterStroke: '#475569',
+        clusterText: '#cbd5e1',
+        edgeStroke: '#94a3b8',
+        edgeLabelBg: '#1e293b',
+        edgeLabelBorder: '#475569',
+        edgeLabelText: '#e2e8f0',
+        nodeFill: '#1e293b',
+        nodeStroke: '#64748b',
+        cylFill: '#172554',
+        cylStroke: '#60a5fa',
+        diaFill: '#422006',
+        diaStroke: '#facc15',
+        nodeText: '#f8fafc',
+        tableRowStroke: '#334155',
+        tableHeaderFill: '#334155',
+        tableTypeText: '#94a3b8',
+      }
+    : {
+        bg: '#ffffff',
+        clusterFill: '#f8fafc',
+        clusterStroke: '#94a3b8',
+        clusterText: '#334155',
+        edgeStroke: '#475569',
+        edgeLabelBg: '#ffffff',
+        edgeLabelBorder: '#e2e8f0',
+        edgeLabelText: '#334155',
+        nodeFill: '#ffffff',
+        nodeStroke: '#334155',
+        cylFill: '#eff6ff',
+        cylStroke: '#3b82f6',
+        diaFill: '#fefce8',
+        diaStroke: '#eab308',
+        nodeText: '#0f172a',
+        tableRowStroke: '#e2e8f0',
+        tableHeaderFill: '#1e293b',
+        tableTypeText: '#64748b',
+      };
+
   const svgParts: string[] = [
     `<svg xmlns="http://www.w3.org/2000/svg" width="${Math.ceil(totalW)}" height="${Math.ceil(totalH)}" viewBox="0 0 ${Math.ceil(totalW)} ${Math.ceil(totalH)}">`,
     `<defs>`,
-    `<marker id="d2-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 1 L 10 5 L 0 9 z" fill="#475569"/></marker>`,
+    `<marker id="d2-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 1 L 10 5 L 0 9 z" fill="${pal.edgeStroke}"/></marker>`,
     `</defs>`,
-    `<rect width="100%" height="100%" fill="#ffffff" rx="6"/>`,
+    `<rect width="100%" height="100%" fill="${pal.bg}" rx="6"/>`,
   ];
 
   // Draw containers outer-to-inner
@@ -401,12 +453,12 @@ export function renderD2ToSvgOffline(source: string): string {
   for (const c of outerToInner) {
     const b = boxMap.get(c.id);
     if (!b) continue;
-    const fill = c.fill || '#f8fafc';
-    const stroke = c.stroke || '#94a3b8';
+    const fill = c.fill || pal.clusterFill;
+    const stroke = c.stroke || pal.clusterStroke;
     svgParts.push(
       `<g class="cluster" data-id="${escXml(c.id)}">` +
         `<rect x="${b.x}" y="${b.y}" width="${b.w}" height="${b.h}" rx="10" fill="${escXml(fill)}" stroke="${escXml(stroke)}" stroke-width="1.5" stroke-dasharray="6 3"/>` +
-        `<text x="${b.x + 12}" y="${b.y + 20}" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif" font-size="12" font-weight="600" fill="#334155">${escXml(c.label)}</text>` +
+        `<text x="${b.x + 12}" y="${b.y + 20}" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif" font-size="12" font-weight="600" fill="${pal.clusterText}">${escXml(c.label)}</text>` +
         `</g>`,
     );
   }
@@ -429,10 +481,10 @@ export function renderD2ToSvgOffline(source: string): string {
     const startMarker = e.bidirectional ? ' marker-start="url(#d2-arrow)"' : '';
     svgParts.push(
       `<g class="edgePath" data-from="${escXml(e.from)}" data-to="${escXml(e.to)}">` +
-        `<path d="${d}" fill="none" stroke="#475569" stroke-width="1.6"${dash}${startMarker} marker-end="url(#d2-arrow)"/>` +
+        `<path d="${d}" fill="none" stroke="${pal.edgeStroke}" stroke-width="1.6"${dash}${startMarker} marker-end="url(#d2-arrow)"/>` +
         (e.label
-          ? `<rect x="${mx - e.label.length * 3.6 - 6}" y="${my - 10}" width="${e.label.length * 7.2 + 12}" height="18" rx="4" fill="#ffffff" stroke="#e2e8f0" stroke-width="0.8"/>` +
-            `<text x="${mx}" y="${my + 3}" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif" font-size="11" fill="#334155">${escXml(e.label)}</text>`
+          ? `<rect x="${mx - e.label.length * 3.6 - 6}" y="${my - 10}" width="${e.label.length * 7.2 + 12}" height="18" rx="4" fill="${pal.edgeLabelBg}" stroke="${pal.edgeLabelBorder}" stroke-width="0.8"/>` +
+            `<text x="${mx}" y="${my + 3}" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif" font-size="11" fill="${pal.edgeLabelText}">${escXml(e.label)}</text>`
           : '') +
         `</g>`,
     );
@@ -442,21 +494,21 @@ export function renderD2ToSvgOffline(source: string): string {
   for (const n of leaves) {
     const b = boxMap.get(n.id);
     if (!b) continue;
-    const fill = n.fill || (n.shape === 'cylinder' ? '#eff6ff' : n.shape === 'diamond' ? '#fefce8' : '#ffffff');
-    const stroke = n.stroke || (n.shape === 'cylinder' ? '#3b82f6' : n.shape === 'diamond' ? '#eab308' : '#334155');
+    const fill = n.fill || (n.shape === 'cylinder' ? pal.cylFill : n.shape === 'diamond' ? pal.diaFill : pal.nodeFill);
+    const stroke = n.stroke || (n.shape === 'cylinder' ? pal.cylStroke : n.shape === 'diamond' ? pal.diaStroke : pal.nodeStroke);
     let shapeSvg = '';
     if (n.shape === 'sql_table' && n.fields && n.fields.length > 0) {
       const rows = n.fields
         .map(
           (f, idx) =>
-            `<line x1="${b.x}" y1="${b.y + 30 + idx * 22}" x2="${b.x + b.w}" y2="${b.y + 30 + idx * 22}" stroke="#e2e8f0" stroke-width="1"/>` +
-            `<text x="${b.x + 10}" y="${b.y + 46 + idx * 22}" font-family="monospace" font-size="11" fill="#0f172a">${escXml(f.name)}</text>` +
-            `<text x="${b.x + b.w - 10}" y="${b.y + 46 + idx * 22}" text-anchor="end" font-family="monospace" font-size="10.5" fill="#64748b">${escXml(f.type)}${f.constraint ? ` (${escXml(f.constraint)})` : ''}</text>`,
+            `<line x1="${b.x}" y1="${b.y + 30 + idx * 22}" x2="${b.x + b.w}" y2="${b.y + 30 + idx * 22}" stroke="${pal.tableRowStroke}" stroke-width="1"/>` +
+            `<text x="${b.x + 10}" y="${b.y + 46 + idx * 22}" font-family="monospace" font-size="11" fill="${pal.nodeText}">${escXml(f.name)}</text>` +
+            `<text x="${b.x + b.w - 10}" y="${b.y + 46 + idx * 22}" text-anchor="end" font-family="monospace" font-size="10.5" fill="${pal.tableTypeText}">${escXml(f.type)}${f.constraint ? ` (${escXml(f.constraint)})` : ''}</text>`,
         )
         .join('');
       shapeSvg =
-        `<rect x="${b.x}" y="${b.y}" width="${b.w}" height="${b.h}" rx="6" fill="#ffffff" stroke="${escXml(stroke)}" stroke-width="1.6"/>` +
-        `<rect x="${b.x}" y="${b.y}" width="${b.w}" height="30" rx="6" fill="#1e293b"/>` +
+        `<rect x="${b.x}" y="${b.y}" width="${b.w}" height="${b.h}" rx="6" fill="${pal.nodeFill}" stroke="${escXml(stroke)}" stroke-width="1.6"/>` +
+        `<rect x="${b.x}" y="${b.y}" width="${b.w}" height="30" rx="6" fill="${pal.tableHeaderFill}"/>` +
         `<text x="${b.x + b.w / 2}" y="${b.y + 19}" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif" font-size="12" font-weight="600" fill="#ffffff">${escXml(n.label)}</text>` +
         rows;
     } else if (n.shape === 'cylinder') {
@@ -464,21 +516,21 @@ export function renderD2ToSvgOffline(source: string): string {
       shapeSvg =
         `<path d="M ${b.x} ${b.y + ry} A ${b.w / 2} ${ry} 0 0 1 ${b.x + b.w} ${b.y + ry} L ${b.x + b.w} ${b.y + b.h - ry} A ${b.w / 2} ${ry} 0 0 1 ${b.x} ${b.y + b.h - ry} Z" fill="${escXml(fill)}" stroke="${escXml(stroke)}" stroke-width="1.6"/>` +
         `<ellipse cx="${b.x + b.w / 2}" cy="${b.y + ry}" rx="${b.w / 2}" ry="${ry}" fill="${escXml(fill)}" stroke="${escXml(stroke)}" stroke-width="1.6"/>` +
-        `<text x="${b.x + b.w / 2}" y="${b.y + b.h / 2 + 6}" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif" font-size="12.5" font-weight="500" fill="#0f172a">${escXml(n.label)}</text>`;
+        `<text x="${b.x + b.w / 2}" y="${b.y + b.h / 2 + 6}" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif" font-size="12.5" font-weight="500" fill="${pal.nodeText}">${escXml(n.label)}</text>`;
     } else if (n.shape === 'diamond') {
       const cx = b.x + b.w / 2;
       const cy = b.y + b.h / 2;
       shapeSvg =
         `<polygon points="${cx},${b.y} ${b.x + b.w},${cy} ${cx},${b.y + b.h} ${b.x},${cy}" fill="${escXml(fill)}" stroke="${escXml(stroke)}" stroke-width="1.6"/>` +
-        `<text x="${cx}" y="${cy + 4}" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif" font-size="12" font-weight="500" fill="#0f172a">${escXml(n.label)}</text>`;
+        `<text x="${cx}" y="${cy + 4}" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif" font-size="12" font-weight="500" fill="${pal.nodeText}">${escXml(n.label)}</text>`;
     } else if (n.shape === 'oval' || n.shape === 'circle' || n.shape === 'person') {
       shapeSvg =
         `<ellipse cx="${b.x + b.w / 2}" cy="${b.y + b.h / 2}" rx="${b.w / 2}" ry="${b.h / 2}" fill="${escXml(fill)}" stroke="${escXml(stroke)}" stroke-width="1.6"/>` +
-        `<text x="${b.x + b.w / 2}" y="${b.y + b.h / 2 + 4}" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif" font-size="12.5" font-weight="500" fill="#0f172a">${escXml(n.label)}</text>`;
+        `<text x="${b.x + b.w / 2}" y="${b.y + b.h / 2 + 4}" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif" font-size="12.5" font-weight="500" fill="${pal.nodeText}">${escXml(n.label)}</text>`;
     } else {
       shapeSvg =
         `<rect x="${b.x}" y="${b.y}" width="${b.w}" height="${b.h}" rx="8" fill="${escXml(fill)}" stroke="${escXml(stroke)}" stroke-width="1.6"/>` +
-        `<text x="${b.x + b.w / 2}" y="${b.y + b.h / 2 + 4}" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif" font-size="12.5" font-weight="500" fill="#0f172a">${escXml(n.label)}</text>`;
+        `<text x="${b.x + b.w / 2}" y="${b.y + b.h / 2 + 4}" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif" font-size="12.5" font-weight="500" fill="${pal.nodeText}">${escXml(n.label)}</text>`;
     }
     svgParts.push(`<g class="node" data-id="${escXml(n.id)}">${shapeSvg}</g>`);
   }
@@ -487,14 +539,19 @@ export function renderD2ToSvgOffline(source: string): string {
   return svgParts.join('\n');
 }
 
-export async function renderD2Svg(source: string, d2Path: string, isTrusted: boolean): Promise<string> {
+export async function renderD2Svg(
+  source: string,
+  d2Path: string,
+  isTrusted: boolean,
+  opts?: { dark?: boolean },
+): Promise<string> {
   if (isTrusted && d2Path.trim()) {
     const cliSvg = await tryRunD2Cli(source, d2Path.trim());
     if (cliSvg) {
       return cliSvg;
     }
   }
-  return renderD2ToSvgOffline(source);
+  return renderD2ToSvgOffline(source, opts);
 }
 
 function tryRunD2Cli(source: string, bin: string): Promise<string | undefined> {

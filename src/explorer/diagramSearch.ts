@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { extractDrawioPages } from '../drawio/codeLinksXml';
+import { expandCompressedDiagrams, extractDrawioPages } from '../drawio/codeLinksXml';
 import { type DrawioEditorProvider, readDrawioXmlFromUri } from '../drawio/drawioEditorProvider';
 import { t } from '../l10n';
 import { findMarkdownDiagramFences } from '../language/symbols';
@@ -30,8 +30,11 @@ function decodeHtmlEntities(s: string): string {
     .trim();
 }
 
-function extractDrawioLabels(xml: string): Array<{ label: string; pageId?: string; pageName?: string }> {
-  const results: Array<{ label: string; pageId?: string; pageName?: string }> = [];
+export function extractDrawioLabels(
+  rawXml: string,
+): Array<{ label: string; pageIndex: number; pageId?: string; pageName?: string }> {
+  const xml = expandCompressedDiagrams(rawXml);
+  const results: Array<{ label: string; pageIndex: number; pageId?: string; pageName?: string }> = [];
   const pages = extractDrawioPages(xml);
   const valRe = /\bvalue="([^"]{2,120})"/g;
 
@@ -42,7 +45,7 @@ function extractDrawioLabels(xml: string): Array<{ label: string; pageId?: strin
       while ((m = valRe.exec(p.diagramXml)) !== null) {
         const clean = decodeHtmlEntities(m[1]);
         if (clean.length >= 2) {
-          results.push({ label: clean, pageId: p.id, pageName: p.name });
+          results.push({ label: clean, pageIndex: p.index, pageId: p.id, pageName: p.name });
         }
       }
     }
@@ -51,7 +54,7 @@ function extractDrawioLabels(xml: string): Array<{ label: string; pageId?: strin
     while ((m = valRe.exec(xml)) !== null) {
       const clean = decodeHtmlEntities(m[1]);
       if (clean.length >= 2) {
-        results.push({ label: clean });
+        results.push({ label: clean, pageIndex: 0 });
       }
     }
   }
@@ -97,15 +100,16 @@ export async function searchWorkspaceDiagramNodes(query = ''): Promise<DiagramSe
   const needle = query.trim().toLowerCase();
   const uris = await vscode.workspace.findFiles(SEARCH_DIAGRAM_GLOB, EXCLUDE_GLOB, 350);
   const matches: DiagramSearchMatch[] = [];
+  const SCAN_CONCURRENCY = 12;
 
-  for (const uri of uris) {
+  const inspectUri = async (uri: vscode.Uri): Promise<void> => {
     const lower = uri.path.toLowerCase();
     const relPath = vscode.workspace.asRelativePath(uri, false);
 
     if (/\.(?:drawio|dio)(?:\.svg)?$/i.test(lower)) {
       try {
         const xml = await readDrawioXmlFromUri(uri);
-        if (!xml) continue;
+        if (!xml) return;
         const labels = extractDrawioLabels(xml);
         const seen = new Set<string>();
         for (const item of labels) {
@@ -118,7 +122,7 @@ export async function searchWorkspaceDiagramNodes(query = ''): Promise<DiagramSe
             relPath,
             diagramType: 'drawio',
             label: item.label,
-            line: 0,
+            line: item.pageIndex,
             pageId: item.pageId,
             pageName: item.pageName,
           });
@@ -126,12 +130,12 @@ export async function searchWorkspaceDiagramNodes(query = ''): Promise<DiagramSe
       } catch {
         // Ignore unreadable
       }
-      continue;
+      return;
     }
 
     try {
       const bytes = await vscode.workspace.fs.readFile(uri);
-      if (bytes.byteLength > 1024 * 1024) continue;
+      if (bytes.byteLength > 1024 * 1024) return;
       const text = Buffer.from(bytes).toString('utf8');
 
       if (lower.endsWith('.md')) {
@@ -148,7 +152,7 @@ export async function searchWorkspaceDiagramNodes(query = ''): Promise<DiagramSe
             });
           }
         }
-        continue;
+        return;
       }
 
       const dtype: DiagramSearchMatch['diagramType'] = /\.(?:mmd|mermaid)$/i.test(lower)
@@ -173,8 +177,20 @@ export async function searchWorkspaceDiagramNodes(query = ''): Promise<DiagramSe
     } catch {
       // Ignore
     }
-  }
+  };
 
+  let cursor = 0;
+  const workerCount = Math.min(SCAN_CONCURRENCY, uris.length);
+  await Promise.all(
+    Array.from({ length: workerCount }, async () => {
+      while (cursor < uris.length) {
+        const idx = cursor++;
+        await inspectUri(uris[idx]);
+      }
+    }),
+  );
+
+  matches.sort((a, b) => a.relPath.localeCompare(b.relPath) || a.line - b.line);
   return matches;
 }
 

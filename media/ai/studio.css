@@ -142,12 +142,23 @@ body {
 }
 
 .guidelinesBadge {
-  padding: 2px 7px;
+  padding: 2px 8px;
   border-radius: 999px;
   font-size: 11px;
+  cursor: pointer;
+  background: rgba(128, 128, 128, 0.12);
+  color: var(--vscode-descriptionForeground);
+  border: 1px dashed rgba(128, 128, 128, 0.45);
+}
+
+.guidelinesBadge.is-loaded {
   background: rgba(16, 185, 129, 0.16);
   color: var(--vscode-testing-iconPassed, #10b981);
   border: 1px solid rgba(16, 185, 129, 0.38);
+}
+
+.guidelinesBadge:hover {
+  filter: brightness(1.12);
 }
 
 #versionHistoryBar {
@@ -405,15 +416,13 @@ body {
   max-height: 440px;
   overflow: auto;
   padding: 14px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  text-align: center;
   background: var(--vscode-editor-background);
 }
 
 .previewCanvas svg {
-  max-width: 100%;
-  height: auto;
+  display: inline-block;
+  vertical-align: middle;
 }
 
 .sourceCodeView {

@@ -35,7 +35,7 @@ function stripHtmlTags(raw: string): string {
   return unescapeXml(raw.replace(/<br\s*\/?>/gi, '\n').replace(/<[^>]+>/g, '')).trim();
 }
 
-function expandCompressedDiagrams(xml: string): string {
+export function expandCompressedDiagrams(xml: string): string {
   return xml.replace(/<diagram\b([^>]*)>([\s\S]*?)<\/diagram>/gi, (full, attrs: string, inner: string) => {
     const trimmed = inner.trim();
     if (!trimmed || trimmed.includes('<mxGraphModel')) {

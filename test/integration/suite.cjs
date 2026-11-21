@@ -1167,9 +1167,19 @@ test('v0.5 AI Diagram Studio, Multi-Provider SSE Streaming, SecretStorage, Synta
 test('v0.6: D2 live preview, Markdown ```d2 & publish compiler, cross-diagram search, drift check, CI & AI style guide', async () => {
   const d2Uri = file('v06-arch.d2');
   const mdUri = file('v06-publish.md');
+  const drawioMultiUri = file('v06-compressed-multi.drawio');
   const driftSrcUri = file('v06BillingEngine.ts');
   const styleGuideUri = file('.vscode/drawgraph-ai.md');
   const ciRootUri = file('v06-ci-temp');
+  const { deflateRawSync } = require('node:zlib');
+
+  const p1Xml = '<mxGraphModel><root><mxCell id="0"/><mxCell id="1" parent="0"/><mxCell id="a" value="PageOneNode" vertex="1" parent="1"/></root></mxGraphModel>';
+  const p2Xml = '<mxGraphModel><root><mxCell id="0"/><mxCell id="1" parent="0"/><mxCell id="b" value="CompressedPageTwoNode" vertex="1" parent="1"/></root></mxGraphModel>';
+  const p2Comp = deflateRawSync(Buffer.from(encodeURIComponent(p2Xml), 'utf8')).toString('base64');
+  fs.writeFileSync(
+    drawioMultiUri.fsPath,
+    `<mxfile><diagram id="p1" name="Overview">${p1Xml}</diagram><diagram id="p2" name="Detail">${p2Comp}</diagram></mxfile>`,
+  );
 
   fs.writeFileSync(
     d2Uri.fsPath,
@@ -1177,7 +1187,7 @@ test('v0.6: D2 live preview, Markdown ```d2 & publish compiler, cross-diagram se
   );
   fs.writeFileSync(
     mdUri.fsPath,
-    '# V06 Doc\n\n```d2\na: Frontend\nb: Backend\na -> b: REST\n```\n',
+    '# V06 Doc\n\n```d2\na: Frontend\nb: Backend\na -> b: REST\n```\n\n![ArchImg](./v06-compressed-multi.drawio)\n',
   );
   fs.writeFileSync(driftSrcUri.fsPath, 'export class V06BillingEngine { charge() {} }\n');
   fs.mkdirSync(ciRootUri.fsPath, { recursive: true });
@@ -1197,11 +1207,16 @@ test('v0.6: D2 live preview, Markdown ```d2 & publish compiler, cross-diagram se
       8000,
     );
 
-    // 2. Cross-diagram node search finds D2 node label
+    // 2. Cross-diagram node search finds D2 node label AND compressed multi-page Draw.io Page 2 with pageIndex === 1
     const searchHits = await vscode.commands.executeCommand('drawGraph.searchDiagrams', 'Billing Gateway');
     assert.ok(
       Array.isArray(searchHits) && searchHits.some((h) => h.diagramType === 'd2' && h.label.includes('Billing Gateway')),
       'Cross-diagram search indexed D2 node',
+    );
+    const drawioHits = await vscode.commands.executeCommand('drawGraph.searchDiagrams', 'CompressedPageTwoNode');
+    assert.ok(
+      Array.isArray(drawioHits) && drawioHits.some((h) => h.diagramType === 'drawio' && h.line === 1 && h.pageName === 'Detail'),
+      'Cross-diagram search decompressed Draw.io Page 2 and preserved pageIndex === 1',
     );
 
     // 3. Architecture drift detection finds undocumented V06BillingEngine
@@ -1212,11 +1227,14 @@ test('v0.6: D2 live preview, Markdown ```d2 & publish compiler, cross-diagram se
       'Architecture drift detected undocumented V06BillingEngine class',
     );
 
-    // 4. Markdown One-Click Publish Compiler renders ```d2 fence into .assets/*.svg + .published.md
+    // 4. Markdown One-Click Publish Compiler renders ```d2 fence AND ![ArchImg](.drawio) without double `!`
     const pubRes = await vscode.commands.executeCommand('drawGraph.markdown.compilePublish', mdUri, 'svg');
-    assert.ok(pubRes && pubRes.renderedCount === 1 && pubRes.assetUris.length === 1);
+    assert.ok(pubRes && pubRes.renderedCount === 2 && pubRes.assetUris.length === 2);
     assert.ok(fs.existsSync(pubRes.outputMarkdownUri.fsPath));
-    assert.match(fs.readFileSync(pubRes.outputMarkdownUri.fsPath, 'utf8'), /v06-publish\.assets\/diagram-1-d2\.svg/);
+    const pubMd = fs.readFileSync(pubRes.outputMarkdownUri.fsPath, 'utf8');
+    assert.match(pubMd, /v06-publish\.assets\/diagram-1-d2\.svg/);
+    assert.match(pubMd, /!\[ArchImg\]\(\.\/v06-publish\.assets\/drawio-2\.svg\)/);
+    assert.doesNotMatch(pubMd, /!!\[ArchImg\]/);
     assert.match(fs.readFileSync(pubRes.assetUris[0].fsPath, 'utf8'), /^<svg\b/);
 
     // 5. CI Workflow scaffolder & AI Style Guide scaffolder
@@ -1227,7 +1245,7 @@ test('v0.6: D2 live preview, Markdown ```d2 & publish compiler, cross-diagram se
     assert.ok(guideOut && fs.existsSync(styleGuideUri.fsPath));
   } finally {
     await vscode.commands.executeCommand('workbench.action.closeAllEditors');
-    for (const f of [d2Uri, mdUri, driftSrcUri, styleGuideUri, file('v06-publish.published.md')]) {
+    for (const f of [d2Uri, mdUri, drawioMultiUri, driftSrcUri, styleGuideUri, file('v06-publish.published.md')]) {
       if (fs.existsSync(f.fsPath)) fs.unlinkSync(f.fsPath);
     }
     fs.rmSync(file('v06-publish.assets').fsPath, { recursive: true, force: true });

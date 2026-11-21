@@ -60,6 +60,7 @@ export interface HeadlessAiTaskArgs {
   applyImmediately?: boolean;
   openNewIfNoTarget?: boolean;
   skipConsent?: boolean;
+  externalToken?: vscode.CancellationToken;
 }
 
 export interface HeadlessAiTaskResult {
@@ -519,6 +520,11 @@ export class AiDiagramStudioManager implements vscode.Disposable {
       copiedToast: t('Copied!'),
       appliedToast: t('Applied!'),
       findingsTitle: t('Architecture Findings'),
+      lblPage: t('Page'),
+      styleGuideLoaded: t('Style Guide'),
+      styleGuideCreate: t('+ Style Guide'),
+      btnFit: t('Fit'),
+      diffVersions: t('Diff {0} ↔ {1}'),
     };
   }
 
@@ -636,7 +642,15 @@ export class AiDiagramStudioManager implements vscode.Disposable {
     const teamGuidelines = await this.readWorkspaceStyleGuide();
     const diagErrors = target && args.mode === 'fix' ? this.collectDiagnosticSummary(target.uri) : undefined;
 
-    let currentSourceForAi = args.mode === 'generate' ? undefined : target?.source;
+    let currentSourceForAi =
+      args.mode === 'generate'
+        ? undefined
+        : (args.mode === 'modify' || args.mode === 'optimize') &&
+            this.activeVersionId > 0 &&
+            this.lastGeneratedCode &&
+            this.lastGeneratedFormat === effectiveFormat
+          ? this.lastGeneratedCode
+          : target?.source;
     let splicedMultiPageDrawio = false;
     if (
       currentSourceForAi &&
@@ -762,7 +776,7 @@ export class AiDiagramStudioManager implements vscode.Disposable {
         this.lastGeneratedCode = finalCode;
         this.lastGeneratedFormat = effectiveFormat;
         if (finalCode) {
-          const versionId = this.versions.length + 1;
+          const versionId = (this.versions[this.versions.length - 1]?.id ?? 0) + 1;
           this.versions.push({
             id: versionId,
             label: `v${versionId}`,
@@ -771,6 +785,9 @@ export class AiDiagramStudioManager implements vscode.Disposable {
             explanation: extracted.explanation,
             mode: args.mode,
           });
+          while (this.versions.length > 20) {
+            this.versions.shift();
+          }
           this.activeVersionId = versionId;
         }
         this.history.push(
@@ -962,11 +979,17 @@ export class AiDiagramStudioManager implements vscode.Disposable {
         title: t('DrawGraph AI: Processing diagram…'),
         cancellable: true,
       },
-      async (_progress, token) => {
+      async (_progress, progressToken) => {
+        const linkedCts = new vscode.CancellationTokenSource();
+        const subProgress = progressToken.onCancellationRequested(() => linkedCts.cancel());
+        const subExt = args.externalToken?.onCancellationRequested(() => linkedCts.cancel());
+        if (args.externalToken?.isCancellationRequested || progressToken.isCancellationRequested) {
+          linkedCts.cancel();
+        }
         this.headlessInFlight++;
         try {
           const res = await runAiPrompt(this.context, fullPrompt, {
-            token,
+            token: linkedCts.token,
             skipConsent: args.skipConsent,
           });
           if (args.mode === 'explain') {
@@ -1011,6 +1034,9 @@ export class AiDiagramStudioManager implements vscode.Disposable {
           void vscode.window.showErrorMessage(t('DrawGraph AI failed: {0}', msg));
           throw err;
         } finally {
+          subProgress.dispose();
+          subExt?.dispose();
+          linkedCts.dispose();
           this.headlessInFlight = Math.max(0, this.headlessInFlight - 1);
         }
       },
@@ -1160,6 +1186,10 @@ export class AiDiagramStudioManager implements vscode.Disposable {
       case 'openExtensionSettings':
         await openExtensionSettingsInVscode();
         break;
+      case 'openStyleGuide':
+        await vscode.commands.executeCommand('drawGraph.ai.createStyleGuide');
+        await this.pushContextState();
+        break;
     }
   }
 
@@ -1255,10 +1285,10 @@ export class AiDiagramStudioManager implements vscode.Disposable {
       <span id="targetBadge" class="targetBadge">New Diagram</span>
     </div>
     <div id="pagePickerWrap" class="ctxItem" hidden>
-      <label for="pageSelect" class="ctxLabel">Page:</label>
+      <label for="pageSelect" id="lblPage" class="ctxLabel">Page:</label>
       <select id="pageSelect"></select>
     </div>
-    <span id="guidelinesBadge" class="guidelinesBadge" hidden title="Workspace AI style guide loaded (.vscode/drawgraph-ai.md)">✓ Style Guide</span>
+    <button type="button" id="guidelinesBadge" class="guidelinesBadge" title="Open or create workspace AI style guide (.vscode/drawgraph-ai.md)">+ Style Guide</button>
     <label id="codeContextWrap" class="ctxCheckbox" hidden>
       <input id="includeCodeChk" type="checkbox" checked>
       <span id="codeContextText">Include code context</span>

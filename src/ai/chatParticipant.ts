@@ -3,7 +3,18 @@
 
 import * as vscode from 'vscode';
 import type { AiDiagramStudioManager } from './aiDiagramStudio';
+import type { AiDiagramFormat } from './diagramAiCore';
 import { t } from '../l10n';
+
+function inferFormatFromPrompt(prompt: string): AiDiagramFormat {
+  const lower = prompt.toLowerCase();
+  if (/\bd2\b/.test(lower)) return 'd2';
+  if (/\bdraw\.?io\b|\bmxfile\b/.test(lower)) return 'drawio';
+  if (/\bplantuml\b|\bpuml\b/.test(lower)) return 'plantuml';
+  if (/\bgraphviz\b|\bdot\b/.test(lower)) return 'dot';
+  if (/\bwavedrom\b|\bbitfield\b|波形|寄存器/.test(lower)) return 'wavedrom';
+  return 'mermaid';
+}
 
 interface ChatRequestLike {
   prompt: string;
@@ -39,13 +50,28 @@ export function registerDrawGraphChatParticipant(
   try {
     const participant = chatNs.createChatParticipant(
       'drawgraph.assistant',
-      async (request, _chatCtx, stream) => {
+      async (request, _chatCtx, stream, token) => {
         const cmd = request.command || 'gen';
         const prompt = request.prompt.trim();
 
         if (cmd === 'impact') {
           stream.markdown(`${t('Generating PR / Git Diff architecture impact diagram…')}\n\n`);
-          await vscode.commands.executeCommand('drawGraph.generatePrImpactDiagram', 'HEAD', 'mermaid');
+          try {
+            const fmt = inferFormatFromPrompt(prompt);
+            const targetFmt = fmt === 'd2' || fmt === 'drawio' ? fmt : 'mermaid';
+            const doc = await vscode.commands.executeCommand<vscode.TextDocument | vscode.Uri | undefined>(
+              'drawGraph.generatePrImpactDiagram',
+              'HEAD',
+              targetFmt,
+            );
+            if (doc && 'getText' in doc) {
+              stream.markdown(`\`\`\`${targetFmt}\n${doc.getText()}\n\`\`\`\n\n`);
+            } else if (!doc) {
+              stream.markdown(`${t('No changed files found compared to {0}.', 'HEAD')}\n\n`);
+            }
+          } catch (err) {
+            stream.markdown(`${t('DrawGraph AI failed: {0}', (err as Error).message)}\n\n`);
+          }
           stream.button({
             title: `✨ ${t('Open AI Diagram Studio')}`,
             command: 'drawGraph.ai.openStudio',
@@ -58,6 +84,7 @@ export function registerDrawGraphChatParticipant(
             mode: 'fix',
             prompt,
             applyImmediately: true,
+            externalToken: token,
           });
           if (res?.code) {
             stream.markdown(`\`\`\`${res.format}\n${res.code}\`\`\`\n\n${res.explanation || ''}`);
@@ -71,6 +98,7 @@ export function registerDrawGraphChatParticipant(
           const res = await aiStudio.executeHeadlessTask({
             mode: 'explain',
             prompt,
+            externalToken: token,
           });
           if (res?.explanation) {
             stream.markdown(res.explanation);
@@ -84,11 +112,13 @@ export function registerDrawGraphChatParticipant(
         }
 
         // Default `/gen`
+        const inferredFormat = inferFormatFromPrompt(prompt);
         const res = await aiStudio.executeHeadlessTask({
           mode: 'generate',
-          format: 'mermaid',
+          format: inferredFormat,
           prompt: prompt || 'Create a clean system architecture diagram.',
           openNewIfNoTarget: true,
+          externalToken: token,
         });
         if (res?.code) {
           stream.markdown(`\`\`\`${res.format}\n${res.code}\`\`\`\n\n${res.explanation || ''}`);

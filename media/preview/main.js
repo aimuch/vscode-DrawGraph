@@ -129,6 +129,7 @@
         errorBox.hidden = false;
         if (aiFixBtn) aiFixBtn.hidden = false;
         emptyBox.hidden = true;
+        if (walkthroughHud) walkthroughHud.hidden = true;
         canvas.classList.toggle('stale', currentSvg !== null);
         break;
       case 'empty':
@@ -136,6 +137,7 @@
         errorBox.hidden = true;
         if (aiFixBtn) aiFixBtn.hidden = true;
         emptyBox.hidden = false;
+        if (walkthroughHud) walkthroughHud.hidden = true;
         canvas.classList.remove('stale');
         break;
     }
@@ -346,6 +348,8 @@
     }
     if (walkthroughSteps.length > 0 && walkthroughIdx >= 0) {
       applyWalkthroughStep(walkthroughIdx, false);
+    } else {
+      updateWalkthroughHud();
     }
     if (view.mode === 'auto_fit') {
       fit(false);
@@ -544,13 +548,14 @@
     if (!walkthroughHud || !stepCaption) {
       return;
     }
-    if (walkthroughSteps.length === 0) {
+    if (walkthroughSteps.length === 0 || uiPhase === 'error' || uiPhase === 'empty') {
       walkthroughHud.hidden = true;
       return;
     }
     walkthroughHud.hidden = false;
     if (walkthroughIdx < 0 || walkthroughIdx >= walkthroughSteps.length) {
-      stepCaption.textContent = `Walkthrough (${walkthroughSteps.length} steps) · ←/→`;
+      const tmpl = ds.walkthroughHint || '{0} steps · ←/→';
+      stepCaption.textContent = tmpl.replace('{0}', String(walkthroughSteps.length));
     } else {
       const s = walkthroughSteps[walkthroughIdx];
       stepCaption.textContent = `${walkthroughIdx + 1}/${walkthroughSteps.length}: ${s.title}`;
@@ -1382,6 +1387,10 @@
           $('findNext').title = L.findNext;
           $('findClose').title = L.findClose;
           emptyBox.textContent = L.empty;
+          if (L.walkthroughHint) {
+            ds.walkthroughHint = L.walkthroughHint;
+            updateWalkthroughHud();
+          }
           syncBgUi();
           syncLockUi();
         }

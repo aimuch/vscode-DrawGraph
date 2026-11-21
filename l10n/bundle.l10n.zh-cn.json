@@ -342,5 +342,12 @@
   "Published {0} with {1} static diagram assets": "已生成发布版 {0}（含 {1} 张静态图表资源）",
   "Created DrawGraph CI workflow & validation script": "已生成 DrawGraph CI 工作流与零依赖校验脚本",
   "D2: Modern Architecture Diagram": "D2：现代声明式架构图",
-  "Declarative containers, shapes, and directed flows": "声明式容器、语义图形与有向数据流"
+  "Declarative containers, shapes, and directed flows": "声明式容器、语义图形与有向数据流",
+  "{0} steps · ←/→": "共 {0} 步 · ←/→",
+  "Page": "页面",
+  "Style Guide": "绘图规范",
+  "+ Style Guide": "+ 绘图规范",
+  "Diff {0} ↔ {1}": "对比 {0} ↔ {1}",
+  "Generating PR / Git Diff architecture impact diagram…": "正在生成 PR / Git Diff 架构影响面图…",
+  "No syntax errors fixed or operation cancelled.": "未检测到需修复的语法错误，或操作已取消。"
 }

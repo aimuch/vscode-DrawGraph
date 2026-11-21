@@ -339,6 +339,7 @@ class DiagramPreview {
       findNext: t('Next match'),
       findClose: t('Close'),
       empty: t('Nothing to preview yet.'),
+      walkthroughHint: t('{0} steps · ←/→'),
     };
   }
 
@@ -490,7 +491,7 @@ class DiagramPreview {
           this.kind === 'dot'
             ? await renderDotSvg(text, config().get('plantuml.dot', ''), vscode.workspace.isTrusted)
             : this.kind === 'd2'
-              ? await renderD2Svg(text, config().get('d2.path', ''), vscode.workspace.isTrusted)
+              ? await renderD2Svg(text, config().get('d2.path', ''), vscode.workspace.isTrusted, { dark: isDarkTheme() })
               : renderWaveDromToSvg(text);
         this.diagnostics?.clear(this.uri);
         this.post({ type: 'svg', svg, info: '', canNav: false });
@@ -1216,7 +1217,7 @@ export class PreviewManager implements vscode.WebviewPanelSerializer {
   }
 
   async renderD2Bytes(source: string, format: 'svg' | 'png' | 'pdf'): Promise<Uint8Array> {
-    const svg = await renderD2Svg(source, config().get('d2.path', ''), vscode.workspace.isTrusted);
+    const svg = await renderD2Svg(source, config().get('d2.path', ''), vscode.workspace.isTrusted, { dark: false });
     if (format === 'svg') {
       return Buffer.from(svg, 'utf8');
     }

@@ -47,6 +47,7 @@ export function buildInteractiveHtmlBundle(opts: InteractiveHtmlOptions): string
         laser: '激光笔 (L)',
         exit: '退出演示 (Esc)',
         searchPh: '在图表中搜索文本…',
+        stepsHint: '步 · ←/→',
       }
     : {
         fit: 'Fit (F)',
@@ -57,6 +58,7 @@ export function buildInteractiveHtmlBundle(opts: InteractiveHtmlOptions): string
         laser: 'Laser (L)',
         exit: 'Exit (Esc)',
         searchPh: 'Find in diagram…',
+        stepsHint: 'steps · ←/→',
       };
 
   const payloadJson = JSON.stringify(pages).replace(/</g, '\\u003c');
@@ -124,10 +126,11 @@ export function buildInteractiveHtmlBundle(opts: InteractiveHtmlOptions): string
   }
   #hud button { color: #fff; border-color: rgba(255,255,255,0.24); border-radius: 999px; }
   #stepHud {
-    position: fixed; bottom: 56px; left: 50%; transform: translateX(-50%);
+    position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%);
     display: flex; align-items: center; gap: 8px; padding: 5px 12px; border-radius: 999px;
     background: var(--bar); border: 1px solid var(--border); box-shadow: 0 4px 16px rgba(0,0,0,0.18); z-index: 25; font-size: 12px;
   }
+  body.present #stepHud { bottom: 58px; }
   svg.dg-spot g.node, svg.dg-spot g.edgePath, svg.dg-spot g.cluster, svg.dg-spot g.elem, svg.dg-spot g.d2-node { opacity: 0.18; transition: opacity 0.16s; }
   svg.dg-spot .dg-spot-on, svg.dg-spot .dg-spot-on * { opacity: 1 !important; filter: drop-shadow(0 0 8px rgba(37,99,235,0.5)); }
   #laser {
@@ -212,7 +215,7 @@ export function buildInteractiveHtmlBundle(opts: InteractiveHtmlOptions): string
     curSvg?.classList.remove('dg-spot');
     curSvg?.querySelectorAll('.dg-spot-on').forEach((x) => x.classList.remove('dg-spot-on'));
     const steps = (PAGES[pageIdx] && PAGES[pageIdx].steps) || [];
-    if (steps.length) stepText.textContent = steps.length + ' steps · ←/→';
+    if (steps.length) stepText.textContent = steps.length + ' ${escHtml(L.stepsHint)}';
   }
   $('stepPrev').onclick = () => applyStep(stepIdx <= 0 ? ((PAGES[pageIdx].steps || []).length - 1) : stepIdx - 1);
   $('stepNext').onclick = () => applyStep(stepIdx < 0 ? 0 : stepIdx + 1);
@@ -282,7 +285,7 @@ export function buildInteractiveHtmlBundle(opts: InteractiveHtmlOptions): string
     const steps = PAGES[pageIdx].steps || [];
     stepIdx = -1;
     stepHud.hidden = steps.length === 0;
-    if (steps.length) stepText.textContent = steps.length + ' steps · ←/→';
+    if (steps.length) stepText.textContent = steps.length + ' ${escHtml(L.stepsHint)}';
     fit();
   }
 

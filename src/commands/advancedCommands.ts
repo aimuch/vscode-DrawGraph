@@ -1003,46 +1003,64 @@ export function registerAdvancedCommands({
       ),
     ]);
 
+    const DRIFT_CONCURRENCY = 12;
     const codeItems: Array<{ name: string; relPath: string }> = [];
-    for (const uri of codeUris) {
-      const relPath = vscode.workspace.asRelativePath(uri, false);
-      const base = path.basename(uri.path).replace(/\.[^.]+$/, '');
-      if (base.length >= 3 && base !== 'index' && base !== 'main') {
-        codeItems.push({ name: base, relPath });
-      }
-      try {
-        const bytes = await vscode.workspace.fs.readFile(uri);
-        if (bytes.byteLength <= 256 * 1024) {
-          const syms = extractFallbackCodeSymbols(Buffer.from(bytes).toString('utf8'));
-          for (const s of syms) {
-            if (s.kind === 'class' || s.kind === 'interface' || s.kind === 'struct') {
-              codeItems.push({ name: s.name, relPath });
+    let codeCursor = 0;
+    await Promise.all(
+      Array.from({ length: Math.min(DRIFT_CONCURRENCY, codeUris.length) }, async () => {
+        while (codeCursor < codeUris.length) {
+          const uri = codeUris[codeCursor++];
+          const relPath = vscode.workspace.asRelativePath(uri, false);
+          const base = path.basename(uri.path).replace(/\.[^.]+$/, '');
+          if (base.length >= 3 && base !== 'index' && base !== 'main') {
+            codeItems.push({ name: base, relPath });
+          }
+          try {
+            const bytes = await vscode.workspace.fs.readFile(uri);
+            if (bytes.byteLength <= 256 * 1024) {
+              const syms = extractFallbackCodeSymbols(Buffer.from(bytes).toString('utf8'));
+              for (const s of syms) {
+                if (s.kind === 'class' || s.kind === 'interface' || s.kind === 'struct') {
+                  codeItems.push({ name: s.name, relPath });
+                }
+              }
             }
+          } catch {
+            // Skip unreadable source
           }
         }
-      } catch {
-        // Skip unreadable source
-      }
-    }
+      }),
+    );
 
     const diagramTokensByFile = new Map<string, Set<string>>();
-    for (const uri of diagramUris) {
-      try {
-        const relPath = vscode.workspace.asRelativePath(uri, false);
-        const text = /\.(?:drawio|dio)/i.test(uri.path)
-          ? ((await readDrawioXmlFromUri(uri)) ?? '')
-          : Buffer.from(await vscode.workspace.fs.readFile(uri)).toString('utf8');
-        if (text) {
-          const tokens = new Set<string>();
-          for (const m of text.matchAll(/#?[A-Za-z0-9_./-]{3,}/g)) {
-            tokens.add(m[0]);
+    let diagCursor = 0;
+    await Promise.all(
+      Array.from({ length: Math.min(DRIFT_CONCURRENCY, diagramUris.length) }, async () => {
+        while (diagCursor < diagramUris.length) {
+          const uri = diagramUris[diagCursor++];
+          try {
+            const relPath = vscode.workspace.asRelativePath(uri, false);
+            let text = '';
+            if (/\.(?:drawio|dio)/i.test(uri.path)) {
+              text = (await readDrawioXmlFromUri(uri)) ?? '';
+            } else {
+              const bytes = await vscode.workspace.fs.readFile(uri);
+              if (bytes.byteLength > 1024 * 1024) continue;
+              text = Buffer.from(bytes).toString('utf8');
+            }
+            if (text && text.length <= 2 * 1024 * 1024) {
+              const tokens = new Set<string>();
+              for (const m of text.matchAll(/#?[A-Za-z0-9_./-]{3,}/g)) {
+                tokens.add(m[0]);
+              }
+              diagramTokensByFile.set(relPath, tokens);
+            }
+          } catch {
+            // Skip unreadable diagram
           }
-          diagramTokensByFile.set(relPath, tokens);
         }
-      } catch {
-        // Skip unreadable diagram
-      }
-    }
+      }),
+    );
 
     const report = computeArchitectureDrift(
       codeItems,

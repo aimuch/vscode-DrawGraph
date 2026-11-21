@@ -21,6 +21,7 @@
   const lblTarget = $('lblTarget');
   const targetBadge = $('targetBadge');
   const pagePickerWrap = document.getElementById('pagePickerWrap');
+  const lblPage = document.getElementById('lblPage');
   const pageSelect = /** @type {HTMLSelectElement | null} */ (document.getElementById('pageSelect'));
   const guidelinesBadge = document.getElementById('guidelinesBadge');
   const versionHistoryBar = document.getElementById('versionHistoryBar');
@@ -180,20 +181,44 @@
         }
       }
     });
-    const imported = document.importNode(root, true);
+    const imported = /** @type {SVGSVGElement} */ (/** @type {unknown} */ (document.importNode(root, true)));
+    const vb = imported.viewBox && imported.viewBox.baseVal;
+    const natW = (vb && vb.width > 0 ? vb.width : parseFloat(imported.getAttribute('width') || '0')) || 600;
+    const natH = (vb && vb.height > 0 ? vb.height : parseFloat(imported.getAttribute('height') || '0')) || 400;
+    imported.dataset.natW = String(natW);
+    imported.dataset.natH = String(natH);
     previewCanvas.appendChild(imported);
-    applyStudioZoom();
+    fitStudioZoom();
   }
 
   function applyStudioZoom() {
     const svg = previewCanvas.querySelector('svg');
     if (svg) {
-      svg.style.transform = studioZoom === 1 ? '' : `scale(${studioZoom})`;
-      svg.style.transformOrigin = 'top center';
+      const natW = parseFloat(svg.dataset.natW || '0') || 600;
+      const natH = parseFloat(svg.dataset.natH || '0') || 400;
+      svg.style.transform = '';
+      svg.style.width = `${Math.round(natW * studioZoom)}px`;
+      svg.style.height = `${Math.round(natH * studioZoom)}px`;
+      svg.style.maxWidth = 'none';
     }
     if (studioZoomReset) {
       studioZoomReset.textContent = `${Math.round(studioZoom * 100)}%`;
     }
+  }
+
+  function fitStudioZoom() {
+    const svg = previewCanvas.querySelector('svg');
+    if (!svg) {
+      studioZoom = 1;
+      applyStudioZoom();
+      return;
+    }
+    const natW = parseFloat(svg.dataset.natW || '0') || 600;
+    const natH = parseFloat(svg.dataset.natH || '0') || 400;
+    const availW = Math.max(120, (previewCanvas.clientWidth || 480) - 28);
+    const availH = Math.max(120, Math.min(410, (previewCanvas.clientHeight || 360) - 28));
+    studioZoom = Math.min(1, Math.max(0.2, Math.min(availW / natW, availH / natH)));
+    applyStudioZoom();
   }
 
   function renderVersionHistoryBar() {
@@ -231,7 +256,7 @@
               className: 'secondaryActionBtn',
               onClick: () => vscode.postMessage({ type: 'compareVersions', fromId: prev.id, toId: cur.id }),
             },
-            `Diff ${prev.label} ↔ ${cur.label}`,
+            tr('diffVersions', 'Diff {0} ↔ {1}').replace('{0}', prev.label).replace('{1}', cur.label),
           ),
         );
       }
@@ -519,8 +544,10 @@
     applyStudioZoom();
   });
   studioZoomFit?.addEventListener('click', () => {
-    studioZoom = 1;
-    applyStudioZoom();
+    fitStudioZoom();
+  });
+  guidelinesBadge?.addEventListener('click', () => {
+    vscode.postMessage({ type: 'openStyleGuide' });
   });
 
   runBtn.addEventListener('click', triggerRun);
@@ -602,7 +629,17 @@
           currentMermaidLook = msg.mermaidLook;
         }
         if (guidelinesBadge) {
-          guidelinesBadge.hidden = !msg.hasStyleGuide;
+          guidelinesBadge.hidden = false;
+          guidelinesBadge.classList.toggle('is-loaded', Boolean(msg.hasStyleGuide));
+          guidelinesBadge.textContent = msg.hasStyleGuide
+            ? `✓ ${tr('styleGuideLoaded', 'Style Guide')}`
+            : tr('styleGuideCreate', '+ Style Guide');
+        }
+        if (lblPage) {
+          lblPage.textContent = `${tr('lblPage', 'Page')}:`;
+        }
+        if (studioZoomFit) {
+          studioZoomFit.textContent = tr('btnFit', 'Fit');
         }
         if (Array.isArray(msg.versions)) {
           studioVersions = msg.versions;

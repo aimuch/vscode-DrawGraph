@@ -40,6 +40,16 @@ function extractTargetsFromLine(rawLine: string): string[] {
     targets.add(m[2].trim());
   }
 
+  // D2 single-line declarations (`gateway: API Gateway` or `backend: Core {`)
+  const d2Decl = /^([A-Za-z_][A-Za-z0-9_.-]*)\s*:\s*([^{}\n]{2,60})(?:\s*\{)?$/.exec(line);
+  if (d2Decl && !/^(?:direction|shape|style|fill|stroke|constraint|icon|near|link)$/i.test(d2Decl[1])) {
+    targets.add(d2Decl[1].trim());
+    const lbl = d2Decl[2].trim().replace(/^["']|["']$/g, '');
+    if (lbl.length >= 2) {
+      targets.add(lbl);
+    }
+  }
+
   return [...targets].filter((t) => t.length >= 2);
 }
 
